@@ -13,15 +13,19 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Any, Iterable, List, Optional
 
 from src.swe_team.embeddings import embed_ticket
 from src.swe_team.github_integration import comment_on_issue
 from src.swe_team.models import SWETicket, TicketSeverity, TicketStatus
 from src.swe_team.notifier import notify_investigation_summary
+from src.swe_team.rate_limiter import ExponentialBackoff, RateLimitExhausted, RateLimitTracker
 from src.swe_team.supabase_store import SupabaseTicketStore
 
 logger = logging.getLogger(__name__)
+
+# Type alias for fallback agent adapters (duck-typed — must have .invoke())
+_FallbackAgent = Any
 
 _DEFAULT_PROGRAM_PATH = Path("config/swe_team/programs/investigate.md")
 _ORCHESTRATE_PROGRAM_PATH = Path("config/swe_team/programs/orchestrate.md")
@@ -49,6 +53,9 @@ class InvestigatorAgent:
         memory_top_k: int = 5,
         memory_similarity_floor: float = 0.75,
         model_config: Optional[object] = None,
+        rate_limit_config: Optional[object] = None,
+        rate_limit_tracker: Optional[RateLimitTracker] = None,
+        fallback_agents: Optional[List[_FallbackAgent]] = None,
     ) -> None:
         self._program_path = Path(program_path)
         self._claude_path = claude_path
@@ -59,6 +66,16 @@ class InvestigatorAgent:
         self._memory_similarity_floor = memory_similarity_floor
         self._program_cache: Optional[str] = None
         self._model_config = model_config
+        self._fallback_agents: List[_FallbackAgent] = fallback_agents or []
+
+        # Rate limit backoff
+        rl = rate_limit_config
+        self._backoff = ExponentialBackoff(
+            max_retries=getattr(rl, "max_retries_on_429", 3) if rl else 3,
+            initial_delay=getattr(rl, "initial_backoff_seconds", 30) if rl else 30,
+            max_delay=getattr(rl, "max_backoff_seconds", 300) if rl else 300,
+            tracker=rate_limit_tracker,
+        )
 
     def investigate_batch(
         self, tickets: Iterable[SWETicket], *, limit: Optional[int] = None
@@ -107,10 +124,44 @@ class InvestigatorAgent:
             self._record_failure(ticket, started_at, "Prompt template missing")
             return False
 
-        logger.info("Investigating ticket %s via Claude CLI (model=%s)", ticket.ticket_id, model)
+        cwd = self._repo_cwd(ticket)
+        logger.info(
+            "Investigating ticket %s via Claude CLI (model=%s, cwd=%s)",
+            ticket.ticket_id, model, cwd or "SWE-Squad",
+        )
         start = time.monotonic()
         try:
-            stdout, stderr = self._run_claude(prompt, model=model, timeout=timeout)
+            stdout, stderr = self._backoff.execute(
+                lambda: self._run_claude(prompt, model=model, timeout=timeout, cwd=cwd),
+                context=model,
+            )
+        except RateLimitExhausted as exc:
+            # Try fallback agents before giving up
+            fallback_result = self._try_fallback_agents(prompt, ticket)
+            if fallback_result is not None:
+                stdout, stderr = fallback_result, ""
+                # Fall through to success handling below
+                duration_s = time.monotonic() - start
+                report = stdout.strip()
+                if report:
+                    ticket.investigation_report = report
+                    ticket.transition(TicketStatus.INVESTIGATION_COMPLETE)
+                    ticket.metadata["investigation"] = {
+                        "started_at": started_at,
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                        "duration_s": round(duration_s, 2),
+                        "cost_usd": None,
+                        "status": "complete",
+                        "fallback_agent": ticket.metadata.get("fallback_agent_used", "unknown"),
+                    }
+                    notify_investigation_summary(ticket)
+                    return True
+
+            self._record_failure(ticket, started_at, str(exc))
+            ticket.metadata["rate_limited"] = True
+            ticket.metadata["rate_limited_at"] = datetime.now(timezone.utc).isoformat()
+            self._send_rate_limit_alert(ticket, exc)
+            return False
         except (subprocess.TimeoutExpired, OSError, RuntimeError) as exc:
             self._record_failure(ticket, started_at, str(exc))
             return False
@@ -129,6 +180,9 @@ class InvestigatorAgent:
             "completed_at": datetime.now(timezone.utc).isoformat(),
             "duration_s": round(duration_s, 2),
             "cost_usd": cost,
+            "model": model,
+            "repo_cwd": str(cwd) if cwd else "SWE-Squad",
+            "report_chars": len(report),
             "status": "complete",
         }
 
@@ -142,6 +196,46 @@ class InvestigatorAgent:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _try_fallback_agents(
+        self, prompt: str, ticket: SWETicket
+    ) -> Optional[str]:
+        """Attempt to use fallback agents when the primary agent is rate-limited.
+
+        Iterates through configured fallback agents and tries each one.
+        Returns the response text on success, or None if all fail.
+        """
+        if not self._fallback_agents:
+            return None
+
+        for agent in self._fallback_agents:
+            agent_name = getattr(agent, "_name", getattr(agent, "name", "unknown"))
+            try:
+                # Check availability if the method exists
+                if hasattr(agent, "is_available") and not agent.is_available():
+                    logger.info("Fallback agent %s not available, skipping", agent_name)
+                    continue
+
+                logger.info(
+                    "Attempting fallback agent %s for ticket %s",
+                    agent_name, ticket.ticket_id,
+                )
+                result = agent.invoke(prompt, timeout=self._timeout)
+                if result and result.strip():
+                    ticket.metadata["fallback_agent_used"] = agent_name
+                    logger.info(
+                        "Fallback agent %s succeeded for ticket %s",
+                        agent_name, ticket.ticket_id,
+                    )
+                    return result
+            except Exception:
+                logger.warning(
+                    "Fallback agent %s failed for ticket %s",
+                    agent_name, ticket.ticket_id,
+                    exc_info=True,
+                )
+                continue
+        return None
 
     def _eligible(self, ticket: SWETicket) -> bool:
         if ticket.severity not in (TicketSeverity.CRITICAL, TicketSeverity.HIGH):
@@ -282,8 +376,26 @@ class InvestigatorAgent:
             return heavy
         return standard
 
+    # Mapping of GitHub repo slug → local clone path
+    _REPO_PATHS: dict[str, Path] = {
+        "ArtemisAI/LinkedAi": Path("/home/agent/Projects/LinkedAi"),
+        "ArtemisAI/SWE-Squad-DEV": Path("/home/agent/SWE-Squad"),
+    }
+
+    def _repo_cwd(self, ticket: "SWETicket") -> Optional[Path]:
+        """Return the local clone path for the ticket's repo, or None."""
+        repo = ticket.metadata.get("repo") or ticket.metadata.get("github_repo")
+        if not repo:
+            return None
+        path = self._REPO_PATHS.get(repo)
+        if path and path.is_dir():
+            return path
+        logger.warning("investigator: repo '%s' not cloned locally — running in SWE-Squad root", repo)
+        return None
+
     def _run_claude(
-        self, prompt: str, *, model: str = "sonnet", timeout: Optional[int] = None
+        self, prompt: str, *, model: str = "sonnet", timeout: Optional[int] = None,
+        cwd: Optional[Path] = None,
     ) -> tuple[str, str]:
         effective_timeout = timeout or self._timeout
         result = subprocess.run(
@@ -297,6 +409,7 @@ class InvestigatorAgent:
             text=True,
             capture_output=True,
             timeout=effective_timeout,
+            cwd=str(cwd) if cwd else None,
         )
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or "Claude CLI failed")
@@ -315,6 +428,22 @@ class InvestigatorAgent:
             ]
         )
         comment_on_issue(issue_number, body)
+
+    @staticmethod
+    def _send_rate_limit_alert(ticket: SWETicket, exc: Exception) -> None:
+        """Send a Telegram alert when rate limits are exhausted."""
+        from src.swe_team.telegram import send_message
+
+        message = (
+            "<b>Rate Limit Exhausted</b>\n\n"
+            f"Ticket: <code>{ticket.ticket_id}</code>\n"
+            f"Title: {ticket.title[:80]}\n"
+            f"Error: {str(exc)[:200]}"
+        )
+        try:
+            send_message(message, parse_mode="HTML")
+        except Exception:
+            logger.exception("Failed to send rate limit alert for %s", ticket.ticket_id)
 
     def _record_failure(
         self, ticket: SWETicket, started_at: str, error: str
