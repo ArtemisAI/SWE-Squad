@@ -285,7 +285,43 @@ Before pushing any change to `swe_team_runner.py`, `developer.py`, `investigator
 
 ---
 
-## 6. Log Locations
+## 6. Self-Healing Monitor
+
+`scripts/ops/self_heal.py` runs every 5 minutes from cron and responds automatically.
+
+### What it fixes automatically (Tier 1 — no LLM)
+
+| Problem | Action |
+|---------|--------|
+| Daemon dead or log stalled >90 min | Kill old PID + start fresh daemon |
+| Tickets stuck in `investigating`/`in_development` >2h | Reset to `INVESTIGATION_COMPLETE` |
+| False regressions (`gh-issue-*` + `is_regression`) | Resolve with `false_regression_guard` |
+
+### When it invokes Claude Code (Tier 2 — rate-limited, max once per 30 min)
+
+| Trigger | Threshold |
+|---------|-----------|
+| ERROR lines in last 100 log lines | > 4 non-rsync errors |
+| Regression burst | > 5 regression tickets in 35 min |
+
+Claude receives `config/swe_team/programs/health_audit_auto.md` with the trigger reason and recent error context injected. Claude has full tool access and will:
+1. Read logs + query Supabase
+2. Fix stalls and false regressions
+3. Trace code bugs, write fixes, push PRs, merge
+4. Create GH issues for anything it can't fix safely
+
+### Logs
+- `logs/self_heal.log` — every run result (fast checks)
+- `logs/self_heal_claude.log` — full Claude output when invoked
+
+### Cooldown file
+`/tmp/swe_squad_claude_invoked.lock` — mtime controls the 30-min cooldown.
+Delete it to force-allow the next Claude invocation:
+```bash
+rm -f /tmp/swe_squad_claude_invoked.lock
+```
+
+## 7. Log Locations
 
 | Log | Path | Purpose |
 |-----|------|---------|
