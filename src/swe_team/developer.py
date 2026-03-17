@@ -12,7 +12,7 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 
 from src.swe_team.governance import check_fix_complexity
 from src.swe_team.models import SWETicket, TicketStatus
@@ -20,6 +20,9 @@ from src.swe_team.preflight import PreflightCheck
 from src.swe_team.rate_limiter import ExponentialBackoff, RateLimitExhausted, RateLimitTracker
 
 logger = logging.getLogger(__name__)
+
+# Type alias for fallback agent adapters (duck-typed — must have .invoke())
+_FallbackAgent = Any
 
 _DEFAULT_PROGRAM_PATH = Path("config/swe_team/programs/fix.md")
 _DEFAULT_CLAUDE_PATH = "/usr/bin/claude"
@@ -46,6 +49,7 @@ class DeveloperAgent:
         model_config: Optional[object] = None,
         rate_limit_config: Optional[object] = None,
         rate_limit_tracker: Optional[RateLimitTracker] = None,
+        fallback_agents: Optional[List[_FallbackAgent]] = None,
     ) -> None:
         self._repo_root = Path(repo_root)
         self._program_path = Path(program_path)
@@ -54,6 +58,7 @@ class DeveloperAgent:
         self._program_cache: Optional[str] = None
         self._test_command = test_command or self._default_test_command()
         self._model_config = model_config
+        self._fallback_agents: List[_FallbackAgent] = fallback_agents or []
 
         # Rate limit backoff
         rl = rate_limit_config
@@ -171,6 +176,27 @@ class DeveloperAgent:
                 return True
 
             except RateLimitExhausted as exc:
+                # Try fallback agents before giving up
+                if prompt and self._try_fallback_agents(prompt, ticket, timebox):
+                    # Fallback succeeded — check tests and complexity
+                    tests_ok, test_error = self._run_tests(deadline)
+                    if tests_ok:
+                        lines_changed, files_changed = self._diff_stats()
+                        if files_changed:
+                            self._git(["git", "add", "-A"])
+                            if self._git(["git", "diff", "--cached", "--name-only"]).strip():
+                                self._git(["git", "commit", "-m", f"swe-fix: {ticket.ticket_id} (fallback)"])
+                                self._record_automation(ticket)
+                                attempt_record["result"] = "pass"
+                                attempt_record["fallback_agent"] = ticket.metadata.get("fallback_agent_used")
+                                attempts.append(attempt_record)
+                                ticket.transition(TicketStatus.IN_REVIEW)
+                                ticket.metadata["attempts"] = attempts
+                                return True
+                    # Fallback fix didn't pass tests — reset and continue
+                    if base_sha:
+                        self._reset_to(base_sha)
+
                 attempt_record["error"] = str(exc)
                 ticket.metadata["rate_limited"] = True
                 ticket.metadata["rate_limited_at"] = datetime.now(timezone.utc).isoformat()
@@ -208,6 +234,43 @@ class DeveloperAgent:
             required_env_vars=["SWE_TEAM_ID", "SWE_GITHUB_REPO"],
         )
         return preflight.run()
+
+    def _try_fallback_agents(
+        self, prompt: str, ticket: SWETicket, timeout: int
+    ) -> bool:
+        """Attempt to use fallback agents when the primary agent is rate-limited.
+
+        Returns True if a fallback agent succeeded, False otherwise.
+        """
+        if not self._fallback_agents:
+            return False
+
+        for agent in self._fallback_agents:
+            agent_name = getattr(agent, "_name", getattr(agent, "name", "unknown"))
+            try:
+                if hasattr(agent, "is_available") and not agent.is_available():
+                    logger.info("Fallback agent %s not available, skipping", agent_name)
+                    continue
+
+                logger.info(
+                    "Attempting fallback agent %s for ticket %s",
+                    agent_name, ticket.ticket_id,
+                )
+                agent.invoke(prompt, timeout=timeout)
+                ticket.metadata["fallback_agent_used"] = agent_name
+                logger.info(
+                    "Fallback agent %s succeeded for ticket %s",
+                    agent_name, ticket.ticket_id,
+                )
+                return True
+            except Exception:
+                logger.warning(
+                    "Fallback agent %s failed for ticket %s",
+                    agent_name, ticket.ticket_id,
+                    exc_info=True,
+                )
+                continue
+        return False
 
     def _eligible(self, ticket: SWETicket) -> bool:
         if not ticket.investigation_report:

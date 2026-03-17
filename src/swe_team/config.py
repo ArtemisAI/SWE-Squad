@@ -251,6 +251,67 @@ class CycleConfig:
 
 
 # ---------------------------------------------------------------------------
+# Multi-agent fallback settings
+# ---------------------------------------------------------------------------
+
+@dataclass
+class FallbackAgentConfig:
+    """Configuration for a fallback coding agent used when the primary is rate-limited.
+
+    Each entry defines a CLI agent that can be invoked as an alternative
+    to Claude Code when rate limits are hit.
+
+    Attributes:
+        name:       Human-readable agent name.
+        command:    Path to the CLI binary (e.g. ``/usr/bin/gemini``).
+        args_template: CLI arguments.  ``{prompt}`` and ``{model}`` are substituted.
+        default_model: Default model for this agent.
+        enabled:    Whether this fallback is active.
+        priority:   Selection priority (lower = preferred).
+        timeout:    Default timeout in seconds.
+        prompt_via_stdin: If True, send prompt via stdin rather than args.
+        skills:     List of skill IDs this agent can handle.
+    """
+
+    name: str = ""
+    command: str = ""
+    args_template: List[str] = field(default_factory=list)
+    default_model: str = ""
+    enabled: bool = False
+    priority: int = 100
+    timeout: int = 120
+    prompt_via_stdin: bool = False
+    skills: List[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "FallbackAgentConfig":
+        return cls(
+            name=data.get("name", ""),
+            command=data.get("command", ""),
+            args_template=data.get("args_template", []),
+            default_model=data.get("default_model", ""),
+            enabled=data.get("enabled", False),
+            priority=data.get("priority", 100),
+            timeout=data.get("timeout", 120),
+            prompt_via_stdin=data.get("prompt_via_stdin", False),
+            skills=data.get("skills", []),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "command": self.command,
+            "args_template": self.args_template,
+            "default_model": self.default_model,
+            "enabled": self.enabled,
+            "priority": self.priority,
+            "timeout": self.timeout,
+            "prompt_via_stdin": self.prompt_via_stdin,
+            "skills": self.skills,
+        }
+
+
+# ---------------------------------------------------------------------------
 # Semantic memory settings
 # ---------------------------------------------------------------------------
 
@@ -302,6 +363,7 @@ class SWETeamConfig:
     models: ModelConfig = field(default_factory=ModelConfig)
     rate_limits: RateLimitConfig = field(default_factory=RateLimitConfig)
     cycle: CycleConfig = field(default_factory=CycleConfig)
+    fallback_agents: List[FallbackAgentConfig] = field(default_factory=list)
     ticket_store_path: str = "data/swe_team/tickets.json"
     a2a_hub_url: str = "http://localhost:18790"
     enabled: bool = False
@@ -320,6 +382,10 @@ class SWETeamConfig:
         models = ModelConfig.from_dict(data.get("models", {}))
         rate_limits = RateLimitConfig.from_dict(data.get("rate_limits", {}))
         cycle = CycleConfig.from_dict(data.get("cycle", {}))
+        fallbacks = [
+            FallbackAgentConfig.from_dict(f)
+            for f in data.get("fallback_agents", [])
+        ]
         return cls(
             agents=agents,
             governance=gov,
@@ -328,6 +394,7 @@ class SWETeamConfig:
             models=models,
             rate_limits=rate_limits,
             cycle=cycle,
+            fallback_agents=fallbacks,
             ticket_store_path=data.get(
                 "ticket_store_path", "data/swe_team/tickets.json"
             ),
@@ -347,6 +414,7 @@ class SWETeamConfig:
             "models": self.models.to_dict(),
             "rate_limits": self.rate_limits.to_dict(),
             "cycle": self.cycle.to_dict(),
+            "fallback_agents": [f.to_dict() for f in self.fallback_agents],
             "ticket_store_path": self.ticket_store_path,
             "a2a_hub_url": self.a2a_hub_url,
             "enabled": self.enabled,

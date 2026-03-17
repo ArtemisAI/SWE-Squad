@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SWE Squad Dashboard</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --surface: #1e293b;
+    --surface-hover: #334155;
+    --text: #e2e8f0;
+    --text-muted: #94a3b8;
+    --border: #334155;
+    --critical: #ef4444;
+    --critical-bg: #450a0a;
+    --high: #f97316;
+    --high-bg: #431407;
+    --medium: #eab308;
+    --medium-bg: #422006;
+    --low: #94a3b8;
+    --low-bg: #1e293b;
+    --success: #22c55e;
+    --success-bg: #052e16;
+    --accent: #3b82f6;
+    --accent-bg: #172554;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 1.5rem;
+    min-height: 100vh;
+  }
+
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .header h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .header .meta {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+  }
+
+  .header .refresh-badge {
+    background: var(--accent-bg);
+    color: var(--accent);
+    padding: 0.25rem 0.75rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    padding: 1.25rem;
+    transition: border-color 0.15s;
+  }
+
+  .card:hover { border-color: var(--accent); }
+
+  .card .label {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.5rem;
+  }
+
+  .card .value {
+    font-size: 2rem;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+
+  .card .sub {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    margin-top: 0.25rem;
+  }
+
+  .severity-badge {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 9999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+  }
+
+  .sev-critical { background: var(--critical-bg); color: var(--critical); }
+  .sev-high     { background: var(--high-bg); color: var(--high); }
+  .sev-medium   { background: var(--medium-bg); color: var(--medium); }
+  .sev-low      { background: var(--low-bg); color: var(--low); }
+
+  .section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    padding: 1.25rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .section h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+  }
+
+  th {
+    text-align: left;
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  td {
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+  }
+
+  tr:last-child td { border-bottom: none; }
+
+  tr:hover td { background: var(--surface-hover); }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .stat-row:last-child { border-bottom: none; }
+
+  .stat-row .stat-label { color: var(--text-muted); }
+  .stat-row .stat-value { font-weight: 600; }
+
+  .gate-pass { color: var(--success); }
+  .gate-block { color: var(--critical); }
+  .gate-warn { color: var(--medium); }
+
+  .empty-state {
+    color: var(--text-muted);
+    text-align: center;
+    padding: 2rem;
+    font-style: italic;
+  }
+
+  .severity-cards {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-top: 0.75rem;
+  }
+
+  .severity-card {
+    flex: 1;
+    min-width: 100px;
+    text-align: center;
+    padding: 0.75rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--border);
+  }
+
+  .severity-card .sev-count {
+    font-size: 1.5rem;
+    font-weight: 700;
+  }
+
+  .severity-card .sev-label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    margin-top: 0.25rem;
+  }
+
+  .progress-bar {
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-top: 0.5rem;
+  }
+
+  .progress-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s;
+  }
+
+  @media (max-width: 640px) {
+    body { padding: 1rem; }
+    .grid { grid-template-columns: repeat(2, 1fr); }
+    .card .value { font-size: 1.5rem; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>SWE Squad Dashboard</h1>
+  <div style="display:flex;align-items:center;gap:1rem;">
+    <span class="refresh-badge" id="auto-refresh">Auto-refresh: 5m</span>
+    <span class="meta" id="generated-at"></span>
+  </div>
+</div>
+
+<!-- Summary cards -->
+<div class="grid" id="summary-cards"></div>
+
+<!-- Severity breakdown -->
+<div class="section" id="severity-section">
+  <h2>Open Tickets by Severity</h2>
+  <div class="severity-cards" id="severity-cards"></div>
+</div>
+
+<!-- Agent Performance -->
+<div class="section" id="performance-section">
+  <h2>Agent Performance (24h)</h2>
+  <div id="performance-stats"></div>
+</div>
+
+<!-- Last Cycle -->
+<div class="section" id="cycle-section">
+  <h2>Last Cycle</h2>
+  <div id="cycle-stats"></div>
+</div>
+
+<!-- Memory Stats -->
+<div class="section" id="memory-section">
+  <h2>Semantic Memory</h2>
+  <div id="memory-stats"></div>
+</div>
+
+<!-- Recent Activity -->
+<div class="section" id="activity-section">
+  <h2>Recent Activity</h2>
+  <div id="activity-table"></div>
+</div>
+
+<script>
+// Dashboard data is injected here by the Python renderer
+var DASHBOARD_DATA = __DASHBOARD_DATA__;
+
+function renderDashboard(data) {
+  var ts = data.ticket_summary || {};
+  var ap = data.agent_performance || {};
+  var ms = data.memory_stats || {};
+  var lc = data.last_cycle || null;
+  var ra = data.recent_activity || [];
+
+  // Generated timestamp
+  var genAt = document.getElementById("generated-at");
+  if (data.generated_at) {
+    var d = new Date(data.generated_at);
+    genAt.textContent = "Updated: " + d.toLocaleString();
+  }
+
+  // Summary cards
+  var cardsHtml = "";
+  var summaryItems = [
+    { label: "Total Tickets", value: ts.total || 0, sub: "" },
+    { label: "Open", value: ts.open || 0, sub: "" },
+    { label: "Resolved", value: ts.resolved || 0, sub: "" },
+    { label: "Investigating", value: ts.investigating || 0, sub: "" },
+    { label: "Fix Success Rate", value: ((ap.fix_success_rate || 0) * 100).toFixed(0) + "%", sub: ap.fixes_succeeded_24h + "/" + ap.fixes_attempted_24h + " (24h)" },
+    { label: "Rate Limit Events", value: data.rate_limit_events_24h || 0, sub: "Last 24h" }
+  ];
+
+  for (var i = 0; i < summaryItems.length; i++) {
+    var item = summaryItems[i];
+    cardsHtml += '<div class="card">' +
+      '<div class="label">' + item.label + '</div>' +
+      '<div class="value">' + item.value + '</div>' +
+      (item.sub ? '<div class="sub">' + item.sub + '</div>' : '') +
+      '</div>';
+  }
+  document.getElementById("summary-cards").innerHTML = cardsHtml;
+
+  // Severity cards
+  var bySev = ts.by_severity || {};
+  var sevOrder = ["critical", "high", "medium", "low"];
+  var sevHtml = "";
+  for (var s = 0; s < sevOrder.length; s++) {
+    var sev = sevOrder[s];
+    var count = bySev[sev] || 0;
+    sevHtml += '<div class="severity-card sev-' + sev + '">' +
+      '<div class="sev-count">' + count + '</div>' +
+      '<div class="sev-label">' + sev + '</div>' +
+      '</div>';
+  }
+  document.getElementById("severity-cards").innerHTML = sevHtml;
+
+  // Agent performance
+  var perfHtml = "";
+  var perfItems = [
+    ["Investigations (24h)", ap.investigations_24h || 0],
+    ["Fixes Attempted (24h)", ap.fixes_attempted_24h || 0],
+    ["Fixes Succeeded (24h)", ap.fixes_succeeded_24h || 0],
+    ["Success Rate", ((ap.fix_success_rate || 0) * 100).toFixed(0) + "%"]
+  ];
+  for (var p = 0; p < perfItems.length; p++) {
+    perfHtml += '<div class="stat-row">' +
+      '<span class="stat-label">' + perfItems[p][0] + '</span>' +
+      '<span class="stat-value">' + perfItems[p][1] + '</span>' +
+      '</div>';
+  }
+  // Progress bar for success rate
+  var rate = (ap.fix_success_rate || 0) * 100;
+  var barColor = rate >= 70 ? "var(--success)" : rate >= 40 ? "var(--medium)" : "var(--critical)";
+  perfHtml += '<div class="progress-bar"><div class="progress-fill" style="width:' +
+    rate + '%;background:' + barColor + '"></div></div>';
+  document.getElementById("performance-stats").innerHTML = perfHtml;
+
+  // Last cycle
+  var cycleEl = document.getElementById("cycle-section");
+  if (lc) {
+    var verdict = (lc.gate_verdict || "N/A").toLowerCase();
+    var verdictClass = verdict === "pass" ? "gate-pass" : verdict === "block" ? "gate-block" : "gate-warn";
+    var cycleHtml = '';
+    var cycleItems = [
+      ["Time", lc.time || "N/A"],
+      ["Gate Verdict", '<span class="' + verdictClass + '">' + (lc.gate_verdict || "N/A").toUpperCase() + '</span>'],
+      ["Open Tickets", lc.tickets_open != null ? lc.tickets_open : "N/A"],
+      ["Investigating", lc.tickets_investigating != null ? lc.tickets_investigating : "N/A"],
+      ["Next Cycle", lc.next_cycle || "N/A"]
+    ];
+    for (var c = 0; c < cycleItems.length; c++) {
+      cycleHtml += '<div class="stat-row">' +
+        '<span class="stat-label">' + cycleItems[c][0] + '</span>' +
+        '<span class="stat-value">' + cycleItems[c][1] + '</span>' +
+        '</div>';
+    }
+    document.getElementById("cycle-stats").innerHTML = cycleHtml;
+  } else {
+    document.getElementById("cycle-stats").innerHTML = '<div class="empty-state">No cycle data available</div>';
+  }
+
+  // Memory stats
+  var memEl = document.getElementById("memory-section");
+  if (ms.total_embeddings > 0) {
+    var memHtml = '';
+    var memItems = [
+      ["Total Embeddings", ms.total_embeddings || 0],
+      ["Memory Hits (24h)", ms.memory_hits_24h || 0],
+      ["Avg Confidence", (ms.avg_confidence || 0).toFixed(2)]
+    ];
+    for (var m = 0; m < memItems.length; m++) {
+      memHtml += '<div class="stat-row">' +
+        '<span class="stat-label">' + memItems[m][0] + '</span>' +
+        '<span class="stat-value">' + memItems[m][1] + '</span>' +
+        '</div>';
+    }
+    document.getElementById("memory-stats").innerHTML = memHtml;
+  } else {
+    memEl.style.display = "none";
+  }
+
+  // Recent activity table
+  if (ra.length === 0) {
+    document.getElementById("activity-table").innerHTML = '<div class="empty-state">No recent activity</div>';
+  } else {
+    var tbl = '<table><thead><tr>' +
+      '<th>Severity</th><th>Ticket</th><th>Title</th><th>Status</th><th>Updated</th><th>Link</th>' +
+      '</tr></thead><tbody>';
+    for (var r = 0; r < ra.length && r < 25; r++) {
+      var act = ra[r];
+      var sevClass = "sev-" + (act.severity || "medium");
+      var ts_str = act.timestamp ? new Date(act.timestamp).toLocaleString() : "";
+      var link = act.github_url ? '<a href="' + act.github_url + '" target="_blank">View</a>' : '';
+      tbl += '<tr>' +
+        '<td><span class="severity-badge ' + sevClass + '">' + (act.severity || "").toUpperCase() + '</span></td>' +
+        '<td><code>' + (act.ticket_id || "").substring(0, 12) + '</code></td>' +
+        '<td>' + escHtml(act.title || "") + '</td>' +
+        '<td>' + (act.action || "") + '</td>' +
+        '<td>' + ts_str + '</td>' +
+        '<td>' + link + '</td>' +
+        '</tr>';
+    }
+    tbl += '</tbody></table>';
+    document.getElementById("activity-table").innerHTML = tbl;
+  }
+}
+
+function escHtml(s) {
+  var d = document.createElement("div");
+  d.appendChild(document.createTextNode(s));
+  return d.innerHTML;
+}
+
+// Initial render
+renderDashboard(DASHBOARD_DATA);
+
+// Auto-refresh every 5 minutes (reloads the page)
+setInterval(function() { location.reload(); }, 5 * 60 * 1000);
+</script>
+</body>
+</html>

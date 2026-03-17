@@ -1,0 +1,272 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_SWE_SQUAD_SUPABASE",
+      "label": "SWE-Squad-Supabase",
+      "description": "Supabase PostgreSQL datasource",
+      "type": "datasource",
+      "pluginId": "postgres",
+      "pluginName": "PostgreSQL"
+    }
+  ],
+  "annotations": {
+    "list": []
+  },
+  "description": "SWE Squad observability — ticket flow, agent performance, and system health",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Ticket Summary",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "${DS_SWE_SQUAD_SUPABASE}" },
+      "targets": [
+        {
+          "rawSql": "SELECT count(*) AS \"Total Tickets\" FROM swe_tickets WHERE team_id = '$team_id'",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null, "color": "blue" },
+              { "value": 10, "color": "green" },
+              { "value": 50, "color": "yellow" },
+              { "value": 100, "color": "red" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Open Tickets",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "${DS_SWE_SQUAD_SUPABASE}" },
+      "targets": [
+        {
+          "rawSql": "SELECT count(*) AS \"Open\" FROM swe_tickets WHERE team_id = '$team_id' AND status NOT IN ('resolved', 'closed', 'acknowledged')",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null, "color": "green" },
+              { "value": 5, "color": "yellow" },
+              { "value": 15, "color": "orange" },
+              { "value": 30, "color": "red" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Critical Tickets",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "${DS_SWE_SQUAD_SUPABASE}" },
+      "targets": [
+        {
+          "rawSql": "SELECT count(*) AS \"Critical\" FROM swe_tickets WHERE team_id = '$team_id' AND severity = 'critical' AND status NOT IN ('resolved', 'closed', 'acknowledged')",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null, "color": "green" },
+              { "value": 1, "color": "orange" },
+              { "value": 3, "color": "red" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Resolved (24h)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "${DS_SWE_SQUAD_SUPABASE}" },
+      "targets": [
+        {
+          "rawSql": "SELECT count(*) AS \"Resolved 24h\" FROM swe_tickets WHERE team_id = '$team_id' AND status = 'resolved' AND updated_at >= NOW() - INTERVAL '24 hours'",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null, "color": "blue" },
+              { "value": 1, "color": "green" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Open Tickets by Severity",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "datasource": { "type": "postgres", "uid": "${DS_SWE_SQUAD_SUPABASE}" },
+      "targets": [
+        {
+          "rawSql": "SELECT severity, count(*) AS count FROM swe_tickets WHERE team_id = '$team_id' AND status NOT IN ('resolved', 'closed', 'acknowledged') GROUP BY severity ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 WHEN 'low' THEN 4 END",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "pieType": "donut",
+        "legend": { "displayMode": "table", "placement": "right" }
+      },
+      "fieldConfig": {
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "critical" }, "properties": [{ "id": "color", "value": { "fixedColor": "red" } }] },
+          { "matcher": { "id": "byName", "options": "high" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange" } }] },
+          { "matcher": { "id": "byName", "options": "medium" }, "properties": [{ "id": "color", "value": { "fixedColor": "yellow" } }] },
+          { "matcher": { "id": "byName", "options": "low" }, "properties": [{ "id": "color", "value": { "fixedColor": "blue" } }] }
+        ]
+      }
+    },
+    {
+      "title": "Tickets by Status",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "postgres", "uid": "${DS_SWE_SQUAD_SUPABASE}" },
+      "targets": [
+        {
+          "rawSql": "SELECT status, count(*) AS count FROM swe_tickets WHERE team_id = '$team_id' GROUP BY status ORDER BY count DESC",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "legend": { "displayMode": "hidden" }
+      }
+    },
+    {
+      "title": "Ticket Flow (7d)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
+      "datasource": { "type": "postgres", "uid": "${DS_SWE_SQUAD_SUPABASE}" },
+      "targets": [
+        {
+          "rawSql": "SELECT date_trunc('hour', created_at) AS time, count(*) AS \"Created\" FROM swe_tickets WHERE team_id = '$team_id' AND created_at >= NOW() - INTERVAL '7 days' GROUP BY 1 ORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        },
+        {
+          "rawSql": "SELECT date_trunc('hour', e.created_at) AS time, count(*) AS \"Resolved\" FROM swe_ticket_events e WHERE e.team_id = '$team_id' AND e.to_status = 'resolved' AND e.created_at >= NOW() - INTERVAL '7 days' GROUP BY 1 ORDER BY 1",
+          "format": "time_series",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "spanNulls": true,
+            "pointSize": 5
+          }
+        }
+      }
+    },
+    {
+      "title": "Status Transitions (24h)",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "datasource": { "type": "postgres", "uid": "${DS_SWE_SQUAD_SUPABASE}" },
+      "targets": [
+        {
+          "rawSql": "SELECT e.created_at AS \"Time\", e.ticket_id AS \"Ticket\", e.from_status AS \"From\", e.to_status AS \"To\", e.agent AS \"Agent\" FROM swe_ticket_events e WHERE e.team_id = '$team_id' AND e.created_at >= NOW() - INTERVAL '24 hours' ORDER BY e.created_at DESC LIMIT 50",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [{ "displayName": "Time", "desc": true }]
+      }
+    },
+    {
+      "title": "Investigations by Agent (7d)",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "datasource": { "type": "postgres", "uid": "${DS_SWE_SQUAD_SUPABASE}" },
+      "targets": [
+        {
+          "rawSql": "SELECT e.agent AS \"Agent\", count(*) AS \"Investigations\" FROM swe_ticket_events e WHERE e.team_id = '$team_id' AND e.to_status = 'investigating' AND e.created_at >= NOW() - INTERVAL '7 days' GROUP BY e.agent ORDER BY 2 DESC",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "legend": { "displayMode": "hidden" }
+      }
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["swe-squad", "observability", "tickets"],
+  "templating": {
+    "list": [
+      {
+        "name": "team_id",
+        "type": "textbox",
+        "label": "Team ID",
+        "current": { "value": "default" },
+        "options": [{ "value": "default", "selected": true }]
+      }
+    ]
+  },
+  "time": { "from": "now-7d", "to": "now" },
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "SWE Squad Observability",
+  "uid": "swe-squad-observability",
+  "version": 1
+}

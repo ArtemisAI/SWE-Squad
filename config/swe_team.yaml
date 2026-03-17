@@ -98,6 +98,33 @@ rate_limits:
   max_backoff_seconds: 300
 
 # ---------------------------------------------------------------------------
+# Multi-Agent Fallback Chain (A2A integration)
+# ---------------------------------------------------------------------------
+# When Claude Code is rate-limited, these agents are tried in priority order.
+# Each agent wraps a CLI tool as an A2A-compatible agent.
+# Priority: lower number = tried first.
+fallback_agents:
+  - name: "gemini-cli"
+    command: "/usr/bin/gemini"
+    args_template: ["-p", "{prompt}", "--model", "{model}"]
+    default_model: "gemini-2.5-flash"
+    enabled: false
+    priority: 50
+    timeout: 120
+    prompt_via_stdin: false
+    skills: ["investigate", "fix", "review"]
+
+  - name: "opencode"
+    command: "/usr/local/bin/opencode"
+    args_template: ["run", "-m", "{prompt}"]
+    default_model: ""
+    enabled: false
+    priority: 60
+    timeout: 180
+    prompt_via_stdin: false
+    skills: ["investigate", "fix", "refactor"]
+
+# ---------------------------------------------------------------------------
 # Semantic Memory (pgvector embeddings + similar ticket retrieval)
 # ---------------------------------------------------------------------------
 memory:

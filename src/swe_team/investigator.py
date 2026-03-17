@@ -13,7 +13,7 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Any, Iterable, List, Optional
 
 from src.swe_team.embeddings import embed_ticket
 from src.swe_team.github_integration import comment_on_issue
@@ -23,6 +23,9 @@ from src.swe_team.rate_limiter import ExponentialBackoff, RateLimitExhausted, Ra
 from src.swe_team.supabase_store import SupabaseTicketStore
 
 logger = logging.getLogger(__name__)
+
+# Type alias for fallback agent adapters (duck-typed — must have .invoke())
+_FallbackAgent = Any
 
 _DEFAULT_PROGRAM_PATH = Path("config/swe_team/programs/investigate.md")
 _ORCHESTRATE_PROGRAM_PATH = Path("config/swe_team/programs/orchestrate.md")
@@ -52,6 +55,7 @@ class InvestigatorAgent:
         model_config: Optional[object] = None,
         rate_limit_config: Optional[object] = None,
         rate_limit_tracker: Optional[RateLimitTracker] = None,
+        fallback_agents: Optional[List[_FallbackAgent]] = None,
     ) -> None:
         self._program_path = Path(program_path)
         self._claude_path = claude_path
@@ -62,6 +66,7 @@ class InvestigatorAgent:
         self._memory_similarity_floor = memory_similarity_floor
         self._program_cache: Optional[str] = None
         self._model_config = model_config
+        self._fallback_agents: List[_FallbackAgent] = fallback_agents or []
 
         # Rate limit backoff
         rl = rate_limit_config
@@ -127,6 +132,27 @@ class InvestigatorAgent:
                 context=model,
             )
         except RateLimitExhausted as exc:
+            # Try fallback agents before giving up
+            fallback_result = self._try_fallback_agents(prompt, ticket)
+            if fallback_result is not None:
+                stdout, stderr = fallback_result, ""
+                # Fall through to success handling below
+                duration_s = time.monotonic() - start
+                report = stdout.strip()
+                if report:
+                    ticket.investigation_report = report
+                    ticket.transition(TicketStatus.INVESTIGATION_COMPLETE)
+                    ticket.metadata["investigation"] = {
+                        "started_at": started_at,
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                        "duration_s": round(duration_s, 2),
+                        "cost_usd": None,
+                        "status": "complete",
+                        "fallback_agent": ticket.metadata.get("fallback_agent_used", "unknown"),
+                    }
+                    notify_investigation_summary(ticket)
+                    return True
+
             self._record_failure(ticket, started_at, str(exc))
             ticket.metadata["rate_limited"] = True
             ticket.metadata["rate_limited_at"] = datetime.now(timezone.utc).isoformat()
@@ -163,6 +189,46 @@ class InvestigatorAgent:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _try_fallback_agents(
+        self, prompt: str, ticket: SWETicket
+    ) -> Optional[str]:
+        """Attempt to use fallback agents when the primary agent is rate-limited.
+
+        Iterates through configured fallback agents and tries each one.
+        Returns the response text on success, or None if all fail.
+        """
+        if not self._fallback_agents:
+            return None
+
+        for agent in self._fallback_agents:
+            agent_name = getattr(agent, "_name", getattr(agent, "name", "unknown"))
+            try:
+                # Check availability if the method exists
+                if hasattr(agent, "is_available") and not agent.is_available():
+                    logger.info("Fallback agent %s not available, skipping", agent_name)
+                    continue
+
+                logger.info(
+                    "Attempting fallback agent %s for ticket %s",
+                    agent_name, ticket.ticket_id,
+                )
+                result = agent.invoke(prompt, timeout=self._timeout)
+                if result and result.strip():
+                    ticket.metadata["fallback_agent_used"] = agent_name
+                    logger.info(
+                        "Fallback agent %s succeeded for ticket %s",
+                        agent_name, ticket.ticket_id,
+                    )
+                    return result
+            except Exception:
+                logger.warning(
+                    "Fallback agent %s failed for ticket %s",
+                    agent_name, ticket.ticket_id,
+                    exc_info=True,
+                )
+                continue
+        return None
 
     def _eligible(self, ticket: SWETicket) -> bool:
         if ticket.severity not in (TicketSeverity.CRITICAL, TicketSeverity.HIGH):

@@ -7,8 +7,11 @@ from typing import Any, Dict, List, Optional
 class TaskState(str, Enum):
     SUBMITTED = "submitted"
     WORKING = "working"
+    INPUT_REQUIRED = "input_required"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELED = "canceled"
+    REJECTED = "rejected"
 
 @dataclass
 class TaskStatus:
