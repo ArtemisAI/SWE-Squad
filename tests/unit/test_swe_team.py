@@ -42,7 +42,7 @@ from src.swe_team.investigator import InvestigatorAgent, _parse_cost
 from src.swe_team.ralph_wiggum import RalphWiggumGate
 from src.swe_team.governance import DeploymentGovernor, DeploymentRecord, check_fix_complexity
 from src.swe_team.developer import DeveloperAgent
-from src.swe_team.embeddings import embed_ticket
+from src.swe_team.embeddings import _ticket_text, embed_ticket, extract_memory_facts
 from src.swe_team.supabase_store import SupabaseTicketStore
 from src.swe_team.ticket_store import TicketStore
 
@@ -914,6 +914,98 @@ class TestTicketStore:
 # ======================================================================
 
 class TestEmbeddings:
+    def test_extract_memory_facts_calls_base_llm(self):
+        ticket = SWETicket(
+            title="Timeout in scraper",
+            description="x",
+            source_module="scraper",
+            error_log="TimeoutError: request timed out",
+            investigation_report="Root cause was a missing retry around upstream transient failures.",
+            proposed_fix="Added bounded retries and exponential backoff.",
+        )
+        mock_client = type(
+            "Client",
+            (),
+            {
+                "chat": type(
+                    "Chat",
+                    (),
+                    {
+                        "completions": type(
+                            "Completions",
+                            (),
+                            {
+                                "create": lambda self, **_: type(
+                                    "Resp",
+                                    (),
+                                    {
+                                        "choices": [
+                                            type(
+                                                "Choice",
+                                                (),
+                                                {
+                                                    "message": type(
+                                                        "Message",
+                                                        (),
+                                                        {"content": "Root cause: upstream timeout"},
+                                                    )()
+                                                },
+                                            )()
+                                        ]
+                                    },
+                                )()
+                            },
+                        )()
+                    },
+                )()
+            },
+        )()
+        import types
+        fake_openai = types.ModuleType("openai")
+        fake_openai.OpenAI = None
+        with patch.dict("sys.modules", {"openai": fake_openai}):
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "BASE_LLM_API_URL": "http://api.ai-automate.me/v1/",
+                        "BASE_LLM_API_KEY": "k",
+                        "EXTRACTION_MODEL": "gemini-3-flash",
+                    },
+                ),
+                patch("openai.OpenAI", return_value=mock_client) as mock_openai,
+                patch("src.swe_team.embeddings.os.getenv", wraps=os.getenv) as wrapped_getenv,
+            ):
+                result = extract_memory_facts(ticket)
+        assert result == "Root cause: upstream timeout"
+        mock_openai.assert_called_once_with(
+            base_url="http://api.ai-automate.me/v1/",
+            api_key="k",
+        )
+        extraction_model_reads = [
+            call.args for call in wrapped_getenv.call_args_list if call.args and call.args[0] == "EXTRACTION_MODEL"
+        ]
+        assert extraction_model_reads
+
+    def test_extract_memory_facts_fallback_on_failure(self):
+        ticket = SWETicket(
+            title="Failure",
+            description="x",
+            source_module="worker",
+            error_log="Traceback...",
+            investigation_report="Investigated.",
+        )
+        import types
+        fake_openai = types.ModuleType("openai")
+        fake_openai.OpenAI = None
+        with patch.dict("sys.modules", {"openai": fake_openai}):
+            with (
+                patch.dict(os.environ, {"BASE_LLM_API_URL": "https://api.example", "BASE_LLM_API_KEY": "k"}),
+                patch("openai.OpenAI", side_effect=RuntimeError("boom")),
+            ):
+                result = extract_memory_facts(ticket)
+        assert result == _ticket_text(ticket)
+
     def test_embed_ticket_success(self):
         ticket = SWETicket(title="Embed me", description="x", error_log="Traceback")
         mock_client = type(
@@ -962,6 +1054,42 @@ class TestEmbeddings:
             result = embed_ticket(ticket)
         assert result is None
 
+    def test_embed_ticket_uses_extracted_facts_when_report_present(self):
+        ticket = SWETicket(
+            title="Embed report",
+            description="x",
+            investigation_report="Detailed root cause",
+        )
+        mock_client = type(
+            "C",
+            (),
+            {
+                "embeddings": type(
+                    "E",
+                    (),
+                    {
+                        "create": lambda self, **_: type(
+                            "Resp",
+                            (),
+                            {"data": [type("D", (), {"embedding": [0.1, 0.2]})()]},
+                        )()
+                    },
+                )()
+            },
+        )()
+        import types
+        fake_openai = types.ModuleType("openai")
+        fake_openai.OpenAI = None
+        with patch.dict("sys.modules", {"openai": fake_openai}):
+            with (
+                patch.dict(os.environ, {"BASE_LLM_API_URL": "https://api.example", "BASE_LLM_API_KEY": "k"}),
+                patch("openai.OpenAI", return_value=mock_client),
+                patch("src.swe_team.embeddings.extract_memory_facts", return_value="structured fact") as mock_extract,
+            ):
+                result = embed_ticket(ticket)
+        assert result == [0.1, 0.2]
+        mock_extract.assert_called_once_with(ticket)
+
 
 class TestSupabaseSemanticMemory:
     def test_store_embedding_uses_patch(self):
@@ -997,8 +1125,85 @@ class TestSupabaseSemanticMemory:
                 "team": "team-a",
                 "match_count": 3,
                 "similarity_floor": 0.8,
+                "max_age_days": 180,
             },
         )
+
+    def test_store_embedding_with_dedup_merges(self):
+        store = SupabaseTicketStore(
+            supabase_url="https://example.supabase.co",
+            supabase_key="test-key",
+            team_id="team-a",
+        )
+        ticket = SWETicket(
+            title="New incident",
+            description="x",
+            investigation_report="new report with more details",
+            proposed_fix="new fix",
+        )
+        existing = SWETicket(
+            title="Existing incident",
+            description="x",
+            investigation_report="short",
+            proposed_fix="old fix",
+        )
+        existing.ticket_id = "existing-ticket"
+
+        with (
+            patch.object(store, "find_similar", return_value=[{"ticket_id": "existing-ticket", "similarity": 0.95}]),
+            patch.object(store, "get", return_value=existing),
+            patch.object(store, "_request", return_value=None) as mock_request,
+        ):
+            result = store.store_embedding_with_dedup(ticket, [1.0, 2.0], dedup_threshold=0.92)
+
+        assert result == "merged"
+        mock_request.assert_called_once_with(
+            "PATCH",
+            "/swe_tickets",
+            params={"ticket_id": "eq.existing-ticket", "team_id": "eq.team-a"},
+            body={
+                "investigation_report": "new report with more details",
+                "proposed_fix": "new fix",
+                "embedding": "[1.0,2.0]",
+            },
+        )
+
+    def test_store_embedding_with_dedup_stores_new(self):
+        store = SupabaseTicketStore(
+            supabase_url="https://example.supabase.co",
+            supabase_key="test-key",
+            team_id="team-a",
+        )
+        ticket = SWETicket(title="Fresh incident", description="x", investigation_report="report")
+        with (
+            patch.object(store, "find_similar", return_value=[]),
+            patch.object(store, "store_embedding") as mock_store_embedding,
+        ):
+            result = store.store_embedding_with_dedup(ticket, [3.0, 4.0])
+        assert result == "stored"
+        mock_store_embedding.assert_called_once_with(ticket.ticket_id, [3.0, 4.0])
+
+    def test_record_memory_hit_calls_increment_rpc(self):
+        store = SupabaseTicketStore(
+            supabase_url="https://example.supabase.co",
+            supabase_key="test-key",
+            team_id="team-a",
+        )
+        with patch.object(store, "_request", return_value=None) as mock_request:
+            store.record_memory_hit("t1")
+        mock_request.assert_called_once_with(
+            "POST",
+            "/rpc/increment_memory_confidence",
+            body={"p_ticket_id": "t1", "p_team": "team-a"},
+        )
+
+    def test_match_similar_tickets_rpc_includes_confidence(self):
+        schema = Path("scripts/ops/supabase_schema.sql").read_text()
+        assert "memory_confidence FLOAT DEFAULT 1.0" in schema
+        assert "memory_accessed_at TIMESTAMPTZ" in schema
+        assert "increment_memory_confidence" in schema
+        assert "max_age_days     INT     DEFAULT 180" in schema
+        assert "COALESCE(t.memory_confidence, 1.0) AS memory_confidence" in schema
 
 
 # ======================================================================
@@ -1858,10 +2063,10 @@ class TestRunnerSemanticMemory:
         ticket = SWETicket(title="Bug", description="x", investigation_report="report")
         with (
             patch("scripts.ops.swe_team_runner.embed_ticket", return_value=[0.1, 0.2]),
-            patch.object(store, "store_embedding") as mock_store_embedding,
+            patch.object(store, "store_embedding_with_dedup") as mock_store_embedding,
         ):
             runner.store_ticket_embedding(store, ticket, enabled=True)
-        mock_store_embedding.assert_called_once_with(ticket.ticket_id, [0.1, 0.2])
+        mock_store_embedding.assert_called_once_with(ticket, [0.1, 0.2])
 
     def test_store_ticket_embedding_noops_without_report(self):
         import scripts.ops.swe_team_runner as runner
@@ -1872,7 +2077,7 @@ class TestRunnerSemanticMemory:
             team_id="team-a",
         )
         ticket = SWETicket(title="Bug", description="x")
-        with patch.object(store, "store_embedding") as mock_store_embedding:
+        with patch.object(store, "store_embedding_with_dedup") as mock_store_embedding:
             runner.store_ticket_embedding(store, ticket, enabled=True)
         mock_store_embedding.assert_not_called()
 

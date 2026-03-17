@@ -44,6 +44,10 @@ ALTER TABLE swe_tickets
     -- Keep this for existing deployments where table predates embeddings.
     ADD COLUMN IF NOT EXISTS embedding vector(1024);
 
+ALTER TABLE swe_tickets
+    ADD COLUMN IF NOT EXISTS memory_confidence FLOAT DEFAULT 1.0,
+    ADD COLUMN IF NOT EXISTS memory_accessed_at TIMESTAMPTZ;
+
 -- Indexes for common query patterns
 CREATE INDEX IF NOT EXISTS idx_tickets_team_status
     ON swe_tickets (team_id, status);
@@ -160,7 +164,8 @@ CREATE OR REPLACE FUNCTION match_similar_tickets(
     query_embedding  vector(1024),
     team             TEXT,
     match_count      INT     DEFAULT 5,
-    similarity_floor FLOAT   DEFAULT 0.75
+    similarity_floor FLOAT   DEFAULT 0.75,
+    max_age_days     INT     DEFAULT 180
 )
 RETURNS TABLE (
     ticket_id            TEXT,
@@ -169,7 +174,9 @@ RETURNS TABLE (
     error_log            TEXT,
     investigation_report TEXT,
     proposed_fix         TEXT,
-    similarity           FLOAT
+    similarity           FLOAT,
+    raw_similarity       FLOAT,
+    memory_confidence    FLOAT
 )
 LANGUAGE sql STABLE AS $$
     SELECT
@@ -179,12 +186,26 @@ LANGUAGE sql STABLE AS $$
         t.error_log,
         t.investigation_report,
         t.proposed_fix,
-        1 - (t.embedding <=> query_embedding) AS similarity
+        -- Final ranking score: semantic similarity weighted by confidence (1.0-2.0).
+        ((1 - (t.embedding <=> query_embedding)) * COALESCE(t.memory_confidence, 1.0)) AS similarity,
+        1 - (t.embedding <=> query_embedding) AS raw_similarity,
+        COALESCE(t.memory_confidence, 1.0) AS memory_confidence
     FROM swe_tickets t
     WHERE t.team_id = team
       AND t.status IN ('resolved', 'closed')
       AND t.embedding IS NOT NULL
-      AND 1 - (t.embedding <=> query_embedding) >= similarity_floor
-    ORDER BY t.embedding <=> query_embedding
+      AND COALESCE(t.memory_accessed_at, t.updated_at, t.created_at)
+          >= now() - make_interval(days => GREATEST(max_age_days, 1))
+      AND ((1 - (t.embedding <=> query_embedding)) * COALESCE(t.memory_confidence, 1.0)) >= similarity_floor
+    ORDER BY similarity DESC
     LIMIT match_count;
+$$;
+
+CREATE OR REPLACE FUNCTION increment_memory_confidence(p_ticket_id TEXT, p_team TEXT)
+RETURNS void LANGUAGE sql AS $$
+    -- Fixed increment/cap follows issue #6 memory lifecycle policy.
+    UPDATE swe_tickets
+    SET memory_confidence = LEAST(COALESCE(memory_confidence, 1.0) + 0.1, 2.0),
+        memory_accessed_at = now()
+    WHERE ticket_id = p_ticket_id AND team_id = p_team;
 $$;

@@ -81,8 +81,8 @@ def store_ticket_embedding(
     try:
         emb = embed_ticket(ticket)
         if emb:
-            store.store_embedding(ticket.ticket_id, emb)
-            logger.info("Stored embedding for ticket %s", ticket.ticket_id)
+            action = store.store_embedding_with_dedup(ticket, emb)
+            logger.info("Embedding memory action=%s for ticket %s", action, ticket.ticket_id)
     except Exception as exc:
         logger.warning("Embedding storage failed (non-fatal): %s", exc)
 

@@ -233,6 +233,16 @@ class InvestigatorAgent:
                 return ""
             lines = ["## Semantic Memory — Similar Resolved Tickets\n"]
             for hit in hits:
+                hit_ticket_id = hit.get("ticket_id")
+                if hit_ticket_id:
+                    try:
+                        self._store.record_memory_hit(str(hit_ticket_id))
+                    except Exception:
+                        logger.warning(
+                            "Failed to record memory hit for ticket %s",
+                            hit_ticket_id,
+                            exc_info=True,
+                        )
                 lines.append(
                     f"### [{hit.get('ticket_id', 'unknown')}] {hit.get('title', 'Untitled')} "
                     f"(similarity={float(hit.get('similarity', 0.0)):.2f})\n"

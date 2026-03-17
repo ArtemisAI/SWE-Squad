@@ -173,6 +173,7 @@ class SupabaseTicketStore:
         *,
         top_k: int = 5,
         similarity_floor: float = 0.75,
+        max_age_days: int = 180,
     ) -> List[Dict[str, Any]]:
         """Query the pgvector similarity RPC for resolved/closed matches."""
         payload = {
@@ -180,9 +181,67 @@ class SupabaseTicketStore:
             "team": self._team_id,
             "match_count": top_k,
             "similarity_floor": similarity_floor,
+            "max_age_days": max_age_days,
         }
         rows = self._request("POST", "/rpc/match_similar_tickets", body=payload)
         return rows or []
+
+    def store_embedding_with_dedup(
+        self,
+        ticket: SWETicket,
+        embedding: List[float],
+        *,
+        dedup_threshold: float = 0.92,
+    ) -> str:
+        """Store embedding with semantic deduplication and memory merge behavior."""
+        matches = self.find_similar(
+            embedding,
+            top_k=1,
+            similarity_floor=dedup_threshold,
+        )
+        if not matches:
+            self.store_embedding(ticket.ticket_id, embedding)
+            return "stored"
+
+        candidate_id = str(matches[0].get("ticket_id") or "")
+        if not candidate_id or candidate_id == ticket.ticket_id:
+            self.store_embedding(ticket.ticket_id, embedding)
+            return "stored"
+
+        existing = self.get(candidate_id)
+        if not existing:
+            self.store_embedding(ticket.ticket_id, embedding)
+            return "stored"
+
+        if self._memory_detail_score(existing) >= self._memory_detail_score(ticket):
+            return "skipped"
+
+        params = {
+            "ticket_id": f"eq.{candidate_id}",
+            "team_id": f"eq.{self._team_id}",
+        }
+        self._request(
+            "PATCH",
+            "/swe_tickets",
+            params=params,
+            body={
+                "investigation_report": ticket.investigation_report,
+                "proposed_fix": ticket.proposed_fix,
+                "embedding": self._vector_literal(embedding),
+            },
+        )
+        return "merged"
+
+    def record_memory_hit(self, ticket_id: str, team_id: Optional[str] = None) -> None:
+        """Increment confidence for a memory ticket that was used."""
+        self._request(
+            "POST",
+            "/rpc/increment_memory_confidence",
+            body={
+                "p_ticket_id": ticket_id,
+                "p_team": team_id or self._team_id,
+            },
+        )
 
     @property
     def known_fingerprints(self) -> Set[str]:
@@ -315,3 +374,11 @@ class SupabaseTicketStore:
     def _vector_literal(embedding: List[float]) -> str:
         """Convert a list of floats into pgvector text literal format."""
         return "[" + ",".join(str(float(v)) for v in embedding) + "]"
+
+    @staticmethod
+    def _memory_detail_score(ticket: SWETicket) -> tuple[int, int]:
+        """Rank memory richness by populated fields and text detail."""
+        report = (ticket.investigation_report or "").strip()
+        fix = (ticket.proposed_fix or "").strip()
+        populated = int(bool(report)) + int(bool(fix))
+        return populated, len(report) + len(fix)
