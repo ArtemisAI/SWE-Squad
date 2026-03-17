@@ -27,6 +27,7 @@ load_dotenv(PROJECT_ROOT / ".env", override=True)
 logging.logAsyncioTasks = False
 
 from src.swe_team.config import load_config
+from src.swe_team.gemini_cli_adapter import GeminiCLIAdapter
 from src.swe_team.investigator import InvestigatorAgent
 from src.swe_team.models import GovernanceVerdict, SWETicket, TicketSeverity, TicketStatus
 from src.swe_team.monitor_agent import MonitorAgent
@@ -833,6 +834,23 @@ def run_cycle(
                 "Rate limit cooldown active — reducing investigation batch to %d",
                 investigate_limit,
             )
+        # Build fallback agent chain from config (enabled entries, sorted by priority)
+        fallback_agents = []
+        for fa_cfg in sorted(
+            [fa for fa in config.fallback_agents if fa.enabled],
+            key=lambda x: x.priority,
+        ):
+            if fa_cfg.name == "gemini-cli":
+                adapter = GeminiCLIAdapter(
+                    command=fa_cfg.command or "/usr/bin/gemini",
+                    model=fa_cfg.default_model or "gemini-2.5-flash-thinking",
+                )
+                if adapter.is_available():
+                    fallback_agents.append(adapter)
+                    logger.info("Fallback agent registered: gemini-cli")
+                else:
+                    logger.warning("gemini-cli configured but not found — skipping")
+
         investigator = InvestigatorAgent(
             store=store,
             memory_top_k=config.memory.top_k,
@@ -840,6 +858,7 @@ def run_cycle(
             model_config=config.models,
             rate_limit_config=config.rate_limits,
             rate_limit_tracker=rate_limit_tracker,
+            fallback_agents=fallback_agents,
         )
         try:
             investigated = investigator.investigate_batch(

@@ -117,19 +117,21 @@ rate_limits:
 fallback_agents:
   - name: "gemini-cli"
     command: "/usr/bin/gemini"
-    args_template: ["-p", "{prompt}", "--model", "{model}"]
-    default_model: "gemini-2.5-flash"
-    enabled: false
+    args_template: ["-p", "{prompt}"]
+    default_model: "gemini-2.5-flash-thinking"   # proven working; 1M context window
+    enabled: true                                 # ACTIVE — installed at /usr/bin/gemini
     priority: 50
-    timeout: 120
+    timeout: 180          # Gemini can be slow on large prompts
     prompt_via_stdin: false
-    skills: ["investigate", "fix", "review"]
+    skills: ["investigate", "review"]             # not fix — no direct repo write access
+    # DATA RETENTION WARNING: Do not forward proprietary source code or PII.
+    # The GeminiCLIAdapter sanitises prompts before sending.
 
   - name: "opencode"
     command: "/usr/local/bin/opencode"
     args_template: ["run", "-m", "{prompt}"]
     default_model: ""
-    enabled: false
+    enabled: false        # not installed on this machine
     priority: 60
     timeout: 180
     prompt_via_stdin: false
