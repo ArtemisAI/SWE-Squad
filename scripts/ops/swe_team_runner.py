@@ -51,9 +51,88 @@ from src.swe_team.distiller import TrajectoryDistiller
 from src.swe_team.preflight import PreflightCheck
 from src.swe_team.model_probe import ModelProbe
 from src.swe_team.rate_limiter import RateLimitTracker
-from src.a2a.adapters.swe_team import dispatch_swe_events
+from src.a2a.adapters.swe_team import dispatch_swe_events, SWETeamAdapter
+from src.a2a.server import A2AServer
+from src.swe_team.agent_registry import AgentRegistry
 
 logger = logging.getLogger("swe_team")
+
+# Global A2A server reference for clean shutdown
+_a2a_server: Optional[A2AServer] = None
+
+
+def start_a2a_server(
+    config,
+    store,
+    *,
+    host: str = "0.0.0.0",
+    port: int = 18790,
+) -> A2AServer:
+    """Start the A2A server in a background thread.
+
+    Returns the running A2AServer instance.
+    """
+    global _a2a_server
+    adapter = SWETeamAdapter(
+        config=config,
+        store=store,
+        base_url=f"http://{host}:{port}",
+    )
+    server = A2AServer(adapter=adapter, host=host, port=port)
+    server.start()
+    _a2a_server = server
+    logger.info("A2A server started on %s:%d", host, port)
+    return server
+
+
+def setup_agent_registry(config) -> AgentRegistry:
+    """Set up the agent registry with locally-available agents.
+
+    Registers Gemini CLI and OpenCode adapters if their binaries are found.
+    Also runs A2A network discovery against configured endpoints.
+    """
+    from src.a2a.client import A2AClient
+
+    discovery_urls = []
+    hub_url = getattr(config, "a2a_hub_url", "")
+    if hub_url:
+        discovery_urls.append(hub_url)
+
+    client = A2AClient(timeout=10)
+    registry = AgentRegistry(
+        ttl_seconds=600,
+        discovery_urls=discovery_urls,
+        a2a_client=client,
+    )
+
+    # Register local adapters if available
+    try:
+        from src.a2a.adapters.gemini_adapter import GeminiCLIAdapter
+        gemini = GeminiCLIAdapter()
+        if gemini.is_available():
+            registry.register_local(gemini)
+            logger.info("Registered local Gemini CLI adapter")
+    except Exception:
+        logger.debug("Gemini CLI adapter not available", exc_info=True)
+
+    try:
+        from src.a2a.adapters.opencode_adapter import OpenCodeCLIAdapter
+        opencode = OpenCodeCLIAdapter()
+        if opencode.is_available():
+            registry.register_local(opencode)
+            logger.info("Registered local OpenCode adapter")
+    except Exception:
+        logger.debug("OpenCode adapter not available", exc_info=True)
+
+    # Network discovery (best-effort)
+    try:
+        discovered = registry.discover()
+        if discovered:
+            logger.info("Discovered %d remote agent(s) via A2A", len(discovered))
+    except Exception:
+        logger.debug("A2A network discovery failed (non-fatal)", exc_info=True)
+
+    return registry
 
 
 def comment_on_github_issue(issue_number: int, body: str) -> None:
@@ -1099,6 +1178,17 @@ def main() -> None:
         metavar="N",
         help="Stop daemon after N cycles (default: run forever). Useful for cron launchers.",
     )
+    parser.add_argument(
+        "--a2a",
+        action="store_true",
+        help="Start the A2A server alongside the cycle loop for agent-to-agent communication.",
+    )
+    parser.add_argument(
+        "--a2a-port",
+        type=int,
+        default=18790,
+        help="Port for the A2A server (default: 18790). Only used with --a2a.",
+    )
     args = parser.parse_args()
 
     setup_logging(args.verbose)
@@ -1190,21 +1280,48 @@ def main() -> None:
         )
         return
 
+    # A2A server — start alongside the cycle loop if requested
+    a2a_server = None
+    if args.a2a:
+        try:
+            a2a_server = start_a2a_server(config, store, port=args.a2a_port)
+            logger.info("A2A server running on port %d", args.a2a_port)
+        except Exception:
+            logger.exception("Failed to start A2A server — continuing without it")
+
+    # Agent registry — discover available agents
+    try:
+        registry = setup_agent_registry(config)
+        agents = registry.list_agents(status="online")
+        if agents:
+            logger.info("Agent registry: %d online agent(s): %s",
+                        len(agents), [a["name"] for a in agents])
+    except Exception:
+        logger.debug("Agent registry setup failed (non-fatal)", exc_info=True)
+
     if args.daemon:
         interval = args.interval
         if interval is None:
             interval = max(60, int(config.monitor.scan_interval_minutes * 60))
-        daemon_loop(
-            config,
-            store,
-            interval_seconds=interval,
-            dry_run=args.dry_run,
-            creative=args.creative,
-            max_cycles=args.max_cycles,
-        )
+        try:
+            daemon_loop(
+                config,
+                store,
+                interval_seconds=interval,
+                dry_run=args.dry_run,
+                creative=args.creative,
+                max_cycles=args.max_cycles,
+            )
+        finally:
+            if a2a_server:
+                a2a_server.stop()
         return
 
-    result = run_cycle(config, store, dry_run=args.dry_run, creative=args.creative)
+    try:
+        result = run_cycle(config, store, dry_run=args.dry_run, creative=args.creative)
+    finally:
+        if a2a_server:
+            a2a_server.stop()
 
     logger.info(
         "=== Cycle complete: %d new, %d open, gate=%s ===",
