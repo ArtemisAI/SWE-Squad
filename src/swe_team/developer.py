@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -463,7 +464,7 @@ class DeveloperAgent:
         venv_python = self._repo_root / ".venv" / "bin" / "python3"
         if venv_python.exists():
             return [str(venv_python), "-m", "pytest", "tests/unit/", "-x", "-q"]
-        return ["python", "-m", "pytest", "tests/unit/", "-x", "-q"]
+        return [sys.executable, "-m", "pytest", "tests/unit/", "-x", "-q"]
 
     @staticmethod
     def _send_rate_limit_alert(ticket: SWETicket, exc: Exception) -> None:
