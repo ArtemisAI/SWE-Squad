@@ -10,7 +10,7 @@ import subprocess
 import sys
 import threading
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from pathlib import Path
 
 # ── Project bootstrap ─────────────────────────────────────────────────────────
@@ -579,6 +579,35 @@ def run_cycle(
         return {"new_tickets": 0, "triaged": 0, "investigated": 0, "gate_verdict": "N/A"}
 
     logger.info("Detected %d new issue(s)", len(new_tickets))
+
+    # 1a. Severity filter — drop tickets below configured threshold
+    _SEV_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+    sev_floor = _SEV_RANK.get(config.cycle.severity_filter.lower(), 2)
+    before_filter = len(new_tickets)
+    new_tickets = [
+        t for t in new_tickets
+        if _SEV_RANK.get(t.severity.value, 0) >= sev_floor
+    ]
+    if len(new_tickets) < before_filter:
+        logger.info(
+            "Severity filter (%s+): dropped %d ticket(s), %d remaining",
+            config.cycle.severity_filter, before_filter - len(new_tickets), len(new_tickets),
+        )
+
+    # 1b. Per-cycle cap — process highest-severity tickets first
+    if len(new_tickets) > config.cycle.max_new_tickets_per_cycle:
+        new_tickets.sort(key=lambda t: _SEV_RANK.get(t.severity.value, 0), reverse=True)
+        skipped = len(new_tickets) - config.cycle.max_new_tickets_per_cycle
+        new_tickets = new_tickets[: config.cycle.max_new_tickets_per_cycle]
+        logger.info(
+            "Per-cycle cap (%d): deferred %d ticket(s) to next cycle",
+            config.cycle.max_new_tickets_per_cycle, skipped,
+        )
+
+    if not new_tickets:
+        logger.info("All new tickets filtered out — nothing to process this cycle")
+        return {"new_tickets": 0, "triaged": 0, "investigated": 0, "gate_verdict": "N/A"}
+
     if not dry_run:
         for ticket in new_tickets:
             swe_events.append(
@@ -654,13 +683,31 @@ def run_cycle(
                 except Exception:
                     logger.exception("Failed to persist automation for %s", ticket.ticket_id)
 
-    # 5. Investigation (HIGH/CRITICAL only, max 5 per cycle)
+    # 5. Investigation (severity-filtered, capped by cycle config)
     investigated: List[SWETicket] = []
     automated_ids = {t.ticket_id for t in automated}
-    # Build the filtered list once for investigation.
     pending_investigation = [
         ticket for ticket in triaged if ticket.ticket_id not in automated_ids
     ]
+    # Enforce max_open_investigating — don't pile on if already at the cap
+    if pending_investigation and not dry_run:
+        currently_investigating = sum(
+            1 for t in store.list_all()
+            if t.status == TicketStatus.INVESTIGATING
+        )
+        slots_free = config.cycle.max_open_investigating - currently_investigating
+        if slots_free <= 0:
+            logger.info(
+                "max_open_investigating cap (%d) reached — skipping investigation this cycle",
+                config.cycle.max_open_investigating,
+            )
+            pending_investigation = []
+        elif slots_free < len(pending_investigation):
+            logger.info(
+                "max_open_investigating: %d slot(s) free, capping investigation batch",
+                slots_free,
+            )
+            pending_investigation = pending_investigation[:slots_free]
     if pending_investigation and not dry_run:
         investigator = InvestigatorAgent(
             store=store,
@@ -669,7 +716,10 @@ def run_cycle(
             model_config=config.models,
         )
         try:
-            investigated = investigator.investigate_batch(pending_investigation, limit=5)
+            investigated = investigator.investigate_batch(
+                pending_investigation,
+                limit=config.cycle.max_investigations_per_cycle,
+            )
             for ticket in investigated:
                 try:
                     store.add(ticket)
@@ -903,8 +953,14 @@ def daemon_loop(
     dry_run: bool = False,
     creative: bool = False,
     status_path: str = "data/swe_team/status.json",
+    max_cycles: Optional[int] = None,
 ) -> None:
-    """Run monitor/triage cycles continuously until signaled to stop."""
+    """Run monitor/triage cycles continuously until signaled to stop.
+
+    Args:
+        max_cycles: Stop after this many cycles (None = run forever).
+                    Useful for cron-launched daemons that should self-terminate.
+    """
     shutdown = threading.Event()
 
     def _signal_handler(signum, _frame):
@@ -914,7 +970,9 @@ def daemon_loop(
     prev_sigterm = signal.signal(signal.SIGTERM, _signal_handler)
     prev_sigint = signal.signal(signal.SIGINT, _signal_handler)
 
-    logger.info("SWE Team daemon starting (interval=%ds)", interval_seconds)
+    cycles_run = 0
+    limit_msg = f", max_cycles={max_cycles}" if max_cycles else ""
+    logger.info("SWE Team daemon starting (interval=%ds%s)", interval_seconds, limit_msg)
     try:
         while not shutdown.is_set():
             try:
@@ -922,6 +980,8 @@ def daemon_loop(
             except Exception:
                 logger.exception("Unhandled error in SWE team cycle")
                 result = {"gate_verdict": "error"}
+
+            cycles_run += 1
 
             try:
                 write_status(
@@ -933,12 +993,16 @@ def daemon_loop(
             except Exception:
                 logger.exception("Failed to write status file")
 
+            if max_cycles and cycles_run >= max_cycles:
+                logger.info("Reached max_cycles=%d — stopping daemon", max_cycles)
+                break
+
             if shutdown.wait(timeout=interval_seconds):
                 break
     finally:
         signal.signal(signal.SIGTERM, prev_sigterm)
         signal.signal(signal.SIGINT, prev_sigint)
-    logger.info("SWE Team daemon stopped")
+    logger.info("SWE Team daemon stopped after %d cycle(s)", cycles_run)
 
 
 def main() -> None:
@@ -969,6 +1033,13 @@ def main() -> None:
         "--keep-alive",
         action="store_true",
         help="Run Supabase keep-alive check and exit. Useful as a standalone cron job.",
+    )
+    parser.add_argument(
+        "--max-cycles",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Stop daemon after N cycles (default: run forever). Useful for cron launchers.",
     )
     args = parser.parse_args()
 
@@ -1071,6 +1142,7 @@ def main() -> None:
             interval_seconds=interval,
             dry_run=args.dry_run,
             creative=args.creative,
+            max_cycles=args.max_cycles,
         )
         return
 

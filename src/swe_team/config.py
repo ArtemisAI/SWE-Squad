@@ -165,6 +165,61 @@ class ModelConfig:
 
 
 # ---------------------------------------------------------------------------
+# Per-cycle throttle settings
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CycleConfig:
+    """Throttle knobs that control how much work each cycle does.
+
+    These prevent the squad from flooding the LLM API or overwhelming a
+    repo with simultaneous PRs when a large backlog is present.
+
+    Attributes:
+        max_new_tickets_per_cycle:  Cap on newly-triaged tickets per cycle.
+                                    Oldest/highest-severity tickets are
+                                    processed first; the rest wait for the
+                                    next cycle.
+        max_investigations_per_cycle: Max tickets sent to InvestigatorAgent
+                                    per cycle (Claude CLI calls — expensive).
+        max_developments_per_cycle: Max tickets sent to DeveloperAgent per
+                                    cycle.
+        max_open_investigating:     Hard cap on tickets allowed to be in
+                                    INVESTIGATING state simultaneously.
+                                    New investigations are skipped when this
+                                    limit is reached.
+        severity_filter:            Only triage/investigate tickets at or
+                                    above this severity.
+                                    Values: "low"|"medium"|"high"|"critical"
+    """
+
+    max_new_tickets_per_cycle: int = 20
+    max_investigations_per_cycle: int = 5
+    max_developments_per_cycle: int = 2
+    max_open_investigating: int = 3
+    severity_filter: str = "high"   # Ignore tickets below this severity
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CycleConfig":
+        return cls(
+            max_new_tickets_per_cycle=data.get("max_new_tickets_per_cycle", 20),
+            max_investigations_per_cycle=data.get("max_investigations_per_cycle", 5),
+            max_developments_per_cycle=data.get("max_developments_per_cycle", 2),
+            max_open_investigating=data.get("max_open_investigating", 3),
+            severity_filter=data.get("severity_filter", "high"),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "max_new_tickets_per_cycle": self.max_new_tickets_per_cycle,
+            "max_investigations_per_cycle": self.max_investigations_per_cycle,
+            "max_developments_per_cycle": self.max_developments_per_cycle,
+            "max_open_investigating": self.max_open_investigating,
+            "severity_filter": self.severity_filter,
+        }
+
+
+# ---------------------------------------------------------------------------
 # Semantic memory settings
 # ---------------------------------------------------------------------------
 
@@ -214,6 +269,7 @@ class SWETeamConfig:
     monitor: MonitorConfig = field(default_factory=MonitorConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     models: ModelConfig = field(default_factory=ModelConfig)
+    cycle: CycleConfig = field(default_factory=CycleConfig)
     ticket_store_path: str = "data/swe_team/tickets.json"
     a2a_hub_url: str = "http://localhost:18790"
     enabled: bool = False
@@ -230,12 +286,14 @@ class SWETeamConfig:
         mon = MonitorConfig.from_dict(data.get("monitor", {}))
         memory = MemoryConfig.from_dict(data.get("memory", {}))
         models = ModelConfig.from_dict(data.get("models", {}))
+        cycle = CycleConfig.from_dict(data.get("cycle", {}))
         return cls(
             agents=agents,
             governance=gov,
             monitor=mon,
             memory=memory,
             models=models,
+            cycle=cycle,
             ticket_store_path=data.get(
                 "ticket_store_path", "data/swe_team/tickets.json"
             ),
@@ -253,6 +311,7 @@ class SWETeamConfig:
             "monitor": self.monitor.to_dict(),
             "memory": self.memory.to_dict(),
             "models": self.models.to_dict(),
+            "cycle": self.cycle.to_dict(),
             "ticket_store_path": self.ticket_store_path,
             "a2a_hub_url": self.a2a_hub_url,
             "enabled": self.enabled,

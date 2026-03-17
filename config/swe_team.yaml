@@ -55,6 +55,30 @@ monitor:
     - "swe_team_runner"
 
 # ---------------------------------------------------------------------------
+# Per-Cycle Throttle
+# ---------------------------------------------------------------------------
+# Controls how aggressively the squad processes the backlog each cycle.
+# Tune these to balance cost vs throughput.
+cycle:
+  # Only pick up tickets at this severity or higher each cycle.
+  # Values: low | medium | high | critical
+  severity_filter: "high"
+
+  # Max new tickets to triage in a single cycle (highest severity first).
+  # Remaining tickets are deferred to the next cycle.
+  max_new_tickets_per_cycle: 10
+
+  # Max tickets to investigate per cycle (each = 1 Claude CLI call).
+  max_investigations_per_cycle: 3
+
+  # Max tickets to attempt a fix on per cycle (each = 1+ Claude CLI calls).
+  max_developments_per_cycle: 2
+
+  # Hard cap on concurrent INVESTIGATING tickets across all cycles.
+  # New investigations are skipped when this limit is in use.
+  max_open_investigating: 3
+
+# ---------------------------------------------------------------------------
 # Model Cost Tiers
 # ---------------------------------------------------------------------------
 # Route tasks to the right model tier for cost efficiency.
