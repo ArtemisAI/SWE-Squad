@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
@@ -71,6 +72,23 @@ class TicketStore:
             TicketStatus.ACKNOWLEDGED,
         }
         return [t for t in self._tickets.values() if t.status not in closed]
+
+    def list_recently_resolved(self, hours: int = 24) -> List[SWETicket]:
+        """Return tickets resolved within the last *hours* hours."""
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        result: List[SWETicket] = []
+        for t in self._tickets.values():
+            if t.status != TicketStatus.RESOLVED:
+                continue
+            try:
+                updated = datetime.fromisoformat(t.updated_at)
+                if updated.tzinfo is None:
+                    updated = updated.replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                continue
+            if updated >= cutoff:
+                result.append(t)
+        return sorted(result, key=lambda t: t.updated_at, reverse=True)
 
     @property
     def known_fingerprints(self) -> Set[str]:
