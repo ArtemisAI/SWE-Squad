@@ -642,3 +642,571 @@ class TestRegressionHitlNotification:
         assert "HITL ESCALATION" in msg
         assert "fp123" in msg
         assert "parent-001" in msg
+
+
+# ======================================================================
+# TTS — text_to_speech
+# ======================================================================
+
+
+class TestTextToSpeech:
+    """Test text_to_speech with mocked urllib."""
+
+    _BASE_ENV = {
+        "BASE_LLM_API_URL": "https://api.example.com/v1",
+        "BASE_LLM_API_KEY": "test-key-123",
+    }
+
+    def test_tts_success(self):
+        """Successful TTS returns mp3 bytes."""
+        from src.swe_team.telegram import text_to_speech
+
+        fake_response = MagicMock()
+        fake_response.read.return_value = b"\xff\xfb\x90\x00fake-mp3-data"
+        fake_response.__enter__ = MagicMock(return_value=fake_response)
+        fake_response.__exit__ = MagicMock(return_value=False)
+
+        with patch.dict(os.environ, self._BASE_ENV, clear=False):
+            with patch("src.swe_team.telegram.urllib.request.urlopen", return_value=fake_response) as mock_urlopen:
+                result = text_to_speech("Hello world")
+
+        assert result == b"\xff\xfb\x90\x00fake-mp3-data"
+        mock_urlopen.assert_called_once()
+        req = mock_urlopen.call_args[0][0]
+        assert "/audio/speech" in req.full_url
+        body = json.loads(req.data.decode("utf-8"))
+        assert body["input"] == "Hello world"
+        assert body["model"] == "kokoro"  # default model
+
+    def test_tts_custom_model(self):
+        """Custom model is used when passed."""
+        from src.swe_team.telegram import text_to_speech
+
+        fake_response = MagicMock()
+        fake_response.read.return_value = b"audio-data"
+        fake_response.__enter__ = MagicMock(return_value=fake_response)
+        fake_response.__exit__ = MagicMock(return_value=False)
+
+        with patch.dict(os.environ, self._BASE_ENV, clear=False):
+            with patch("src.swe_team.telegram.urllib.request.urlopen", return_value=fake_response) as mock_urlopen:
+                result = text_to_speech("Hi", model="tts-1-hd")
+
+        assert result is not None
+        body = json.loads(mock_urlopen.call_args[0][0].data.decode("utf-8"))
+        assert body["model"] == "tts-1-hd"
+
+    def test_tts_uses_env_model(self):
+        """TTS_MODEL env var overrides the default."""
+        from src.swe_team.telegram import text_to_speech
+
+        fake_response = MagicMock()
+        fake_response.read.return_value = b"audio-data"
+        fake_response.__enter__ = MagicMock(return_value=fake_response)
+        fake_response.__exit__ = MagicMock(return_value=False)
+
+        env = {**self._BASE_ENV, "TTS_MODEL": "kani-tts-2"}
+        with patch.dict(os.environ, env, clear=False):
+            with patch("src.swe_team.telegram.urllib.request.urlopen", return_value=fake_response) as mock_urlopen:
+                text_to_speech("Hi")
+
+        body = json.loads(mock_urlopen.call_args[0][0].data.decode("utf-8"))
+        assert body["model"] == "kani-tts-2"
+
+    def test_tts_uses_dedicated_url(self):
+        """TTS_API_URL takes priority over BASE_LLM_API_URL."""
+        from src.swe_team.telegram import text_to_speech
+
+        fake_response = MagicMock()
+        fake_response.read.return_value = b"audio-data"
+        fake_response.__enter__ = MagicMock(return_value=fake_response)
+        fake_response.__exit__ = MagicMock(return_value=False)
+
+        env = {
+            **self._BASE_ENV,
+            "TTS_API_URL": "https://tts.special.com/v1",
+            "TTS_API_KEY": "tts-key",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with patch("src.swe_team.telegram.urllib.request.urlopen", return_value=fake_response) as mock_urlopen:
+                text_to_speech("Hi")
+
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == "https://tts.special.com/v1/audio/speech"
+        assert req.get_header("Authorization") == "Bearer tts-key"
+
+    def test_tts_missing_api_url_returns_none(self):
+        """Missing API URL returns None."""
+        from src.swe_team.telegram import text_to_speech
+
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("TTS_API_URL", "BASE_LLM_API_URL", "TTS_API_KEY", "BASE_LLM_API_KEY")}
+        with patch.dict(os.environ, env, clear=True):
+            result = text_to_speech("Hello")
+
+        assert result is None
+
+    def test_tts_empty_response_returns_none(self):
+        """Empty audio response returns None."""
+        from src.swe_team.telegram import text_to_speech
+
+        fake_response = MagicMock()
+        fake_response.read.return_value = b""
+        fake_response.__enter__ = MagicMock(return_value=fake_response)
+        fake_response.__exit__ = MagicMock(return_value=False)
+
+        with patch.dict(os.environ, self._BASE_ENV, clear=False):
+            with patch("src.swe_team.telegram.urllib.request.urlopen", return_value=fake_response):
+                result = text_to_speech("Hello")
+
+        assert result is None
+
+    def test_tts_http_error_returns_none(self):
+        """HTTP error returns None, does not raise."""
+        import urllib.error
+        from src.swe_team.telegram import text_to_speech
+
+        with patch.dict(os.environ, self._BASE_ENV, clear=False):
+            with patch(
+                "src.swe_team.telegram.urllib.request.urlopen",
+                side_effect=urllib.error.HTTPError(
+                    url="http://x", code=500, msg="Internal",
+                    hdrs=None, fp=MagicMock(read=MagicMock(return_value=b"error")),
+                ),
+            ):
+                result = text_to_speech("Hello")
+
+        assert result is None
+
+    def test_tts_connection_error_returns_none(self):
+        """URLError returns None, does not raise."""
+        import urllib.error
+        from src.swe_team.telegram import text_to_speech
+
+        with patch.dict(os.environ, self._BASE_ENV, clear=False):
+            with patch(
+                "src.swe_team.telegram.urllib.request.urlopen",
+                side_effect=urllib.error.URLError("Connection refused"),
+            ):
+                result = text_to_speech("Hello")
+
+        assert result is None
+
+    def test_tts_timeout_returns_none(self):
+        """Timeout returns None, does not raise."""
+        from src.swe_team.telegram import text_to_speech
+
+        with patch.dict(os.environ, self._BASE_ENV, clear=False):
+            with patch(
+                "src.swe_team.telegram.urllib.request.urlopen",
+                side_effect=TimeoutError("timed out"),
+            ):
+                result = text_to_speech("Hello")
+
+        assert result is None
+
+    def test_tts_strips_trailing_slash_from_url(self):
+        """Trailing slash in API URL does not produce double-slash."""
+        from src.swe_team.telegram import text_to_speech
+
+        fake_response = MagicMock()
+        fake_response.read.return_value = b"audio"
+        fake_response.__enter__ = MagicMock(return_value=fake_response)
+        fake_response.__exit__ = MagicMock(return_value=False)
+
+        env = {**self._BASE_ENV, "TTS_API_URL": "https://api.example.com/v1/"}
+        with patch.dict(os.environ, env, clear=False):
+            with patch("src.swe_team.telegram.urllib.request.urlopen", return_value=fake_response) as mock_urlopen:
+                text_to_speech("Hi")
+
+        req = mock_urlopen.call_args[0][0]
+        assert "/v1//audio" not in req.full_url
+        assert "/v1/audio/speech" in req.full_url
+
+
+# ======================================================================
+# STT — speech_to_text
+# ======================================================================
+
+
+class TestSpeechToText:
+    """Test speech_to_text with mocked urllib."""
+
+    _BASE_ENV = {
+        "BASE_LLM_API_URL": "https://api.example.com/v1",
+        "BASE_LLM_API_KEY": "test-key-123",
+    }
+
+    def test_stt_success(self):
+        """Successful STT returns transcribed text."""
+        from src.swe_team.telegram import speech_to_text
+
+        fake_response = MagicMock()
+        fake_response.read.return_value = json.dumps({"text": "Hello world"}).encode("utf-8")
+        fake_response.__enter__ = MagicMock(return_value=fake_response)
+        fake_response.__exit__ = MagicMock(return_value=False)
+
+        with patch.dict(os.environ, self._BASE_ENV, clear=False):
+            with patch("src.swe_team.telegram.urllib.request.urlopen", return_value=fake_response) as mock_urlopen:
+                result = speech_to_text(b"fake-audio-data")
+
+        assert result == "Hello world"
+        mock_urlopen.assert_called_once()
+        req = mock_urlopen.call_args[0][0]
+        assert "/audio/transcriptions" in req.full_url
+        assert "Bearer test-key-123" in req.get_header("Authorization")
+        # Verify multipart body contains model and file
+        assert b"whisper-1" in req.data  # default model
+        assert b"fake-audio-data" in req.data
+
+    def test_stt_custom_model(self):
+        """Custom model is used when passed."""
+        from src.swe_team.telegram import speech_to_text
+
+        fake_response = MagicMock()
+        fake_response.read.return_value = json.dumps({"text": "Hi"}).encode("utf-8")
+        fake_response.__enter__ = MagicMock(return_value=fake_response)
+        fake_response.__exit__ = MagicMock(return_value=False)
+
+        with patch.dict(os.environ, self._BASE_ENV, clear=False):
+            with patch("src.swe_team.telegram.urllib.request.urlopen", return_value=fake_response) as mock_urlopen:
+                result = speech_to_text(b"audio", model="whisper-large")
+
+        assert result == "Hi"
+        assert b"whisper-large" in mock_urlopen.call_args[0][0].data
+
+    def test_stt_uses_env_model(self):
+        """STT_MODEL env var overrides the default."""
+        from src.swe_team.telegram import speech_to_text
+
+        fake_response = MagicMock()
+        fake_response.read.return_value = json.dumps({"text": "ok"}).encode("utf-8")
+        fake_response.__enter__ = MagicMock(return_value=fake_response)
+        fake_response.__exit__ = MagicMock(return_value=False)
+
+        env = {**self._BASE_ENV, "STT_MODEL": "whisper-large"}
+        with patch.dict(os.environ, env, clear=False):
+            with patch("src.swe_team.telegram.urllib.request.urlopen", return_value=fake_response) as mock_urlopen:
+                speech_to_text(b"audio")
+
+        assert b"whisper-large" in mock_urlopen.call_args[0][0].data
+
+    def test_stt_uses_dedicated_url(self):
+        """STT_API_URL takes priority over BASE_LLM_API_URL."""
+        from src.swe_team.telegram import speech_to_text
+
+        fake_response = MagicMock()
+        fake_response.read.return_value = json.dumps({"text": "ok"}).encode("utf-8")
+        fake_response.__enter__ = MagicMock(return_value=fake_response)
+        fake_response.__exit__ = MagicMock(return_value=False)
+
+        env = {
+            **self._BASE_ENV,
+            "STT_API_URL": "https://stt.special.com/v1",
+            "STT_API_KEY": "stt-key",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with patch("src.swe_team.telegram.urllib.request.urlopen", return_value=fake_response) as mock_urlopen:
+                speech_to_text(b"audio")
+
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == "https://stt.special.com/v1/audio/transcriptions"
+        assert req.get_header("Authorization") == "Bearer stt-key"
+
+    def test_stt_empty_audio_returns_none(self):
+        """Empty audio bytes returns None without making API call."""
+        from src.swe_team.telegram import speech_to_text
+
+        with patch.dict(os.environ, self._BASE_ENV, clear=False):
+            with patch("src.swe_team.telegram.urllib.request.urlopen") as mock_urlopen:
+                result = speech_to_text(b"")
+
+        assert result is None
+        mock_urlopen.assert_not_called()
+
+    def test_stt_missing_api_url_returns_none(self):
+        """Missing API URL returns None."""
+        from src.swe_team.telegram import speech_to_text
+
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("STT_API_URL", "BASE_LLM_API_URL", "STT_API_KEY", "BASE_LLM_API_KEY")}
+        with patch.dict(os.environ, env, clear=True):
+            result = speech_to_text(b"audio")
+
+        assert result is None
+
+    def test_stt_empty_text_returns_none(self):
+        """Empty transcription text returns None."""
+        from src.swe_team.telegram import speech_to_text
+
+        fake_response = MagicMock()
+        fake_response.read.return_value = json.dumps({"text": ""}).encode("utf-8")
+        fake_response.__enter__ = MagicMock(return_value=fake_response)
+        fake_response.__exit__ = MagicMock(return_value=False)
+
+        with patch.dict(os.environ, self._BASE_ENV, clear=False):
+            with patch("src.swe_team.telegram.urllib.request.urlopen", return_value=fake_response):
+                result = speech_to_text(b"audio")
+
+        assert result is None
+
+    def test_stt_http_error_returns_none(self):
+        """HTTP error returns None, does not raise."""
+        import urllib.error
+        from src.swe_team.telegram import speech_to_text
+
+        with patch.dict(os.environ, self._BASE_ENV, clear=False):
+            with patch(
+                "src.swe_team.telegram.urllib.request.urlopen",
+                side_effect=urllib.error.HTTPError(
+                    url="http://x", code=500, msg="Internal",
+                    hdrs=None, fp=MagicMock(read=MagicMock(return_value=b"error")),
+                ),
+            ):
+                result = speech_to_text(b"audio")
+
+        assert result is None
+
+    def test_stt_timeout_returns_none(self):
+        """Timeout returns None, does not raise."""
+        from src.swe_team.telegram import speech_to_text
+
+        with patch.dict(os.environ, self._BASE_ENV, clear=False):
+            with patch(
+                "src.swe_team.telegram.urllib.request.urlopen",
+                side_effect=TimeoutError("timed out"),
+            ):
+                result = speech_to_text(b"audio")
+
+        assert result is None
+
+
+# ======================================================================
+# Multipart body builder
+# ======================================================================
+
+
+class TestBuildMultipartBody:
+    """Test _build_multipart_body helper."""
+
+    def test_body_contains_model_and_file(self):
+        from src.swe_team.telegram import _build_multipart_body
+
+        body, content_type = _build_multipart_body(b"raw-audio", "whisper-1")
+
+        assert b"whisper-1" in body
+        assert b"raw-audio" in body
+        assert b'name="model"' in body
+        assert b'name="file"' in body
+        assert "multipart/form-data; boundary=" in content_type
+
+    def test_body_custom_filename(self):
+        from src.swe_team.telegram import _build_multipart_body
+
+        body, _ = _build_multipart_body(b"data", "model", filename="recording.wav")
+        assert b"recording.wav" in body
+
+
+# ======================================================================
+# send_voice_message — TTS + Telegram sendVoice
+# ======================================================================
+
+
+class TestSendVoiceMessage:
+    """Test send_voice_message end-to-end (mocked)."""
+
+    _TG_ENV = {
+        "TELEGRAM_BOT_TOKEN": "123:ABC",
+        "TELEGRAM_CHAT_ID": "456",
+        "BASE_LLM_API_URL": "https://api.example.com/v1",
+        "BASE_LLM_API_KEY": "test-key",
+    }
+
+    def test_send_voice_success(self):
+        """Full happy path: TTS produces audio, Telegram accepts it."""
+        from src.swe_team.telegram import send_voice_message
+
+        # Mock TTS response
+        tts_response = MagicMock()
+        tts_response.read.return_value = b"fake-mp3-bytes"
+        tts_response.__enter__ = MagicMock(return_value=tts_response)
+        tts_response.__exit__ = MagicMock(return_value=False)
+
+        # Mock Telegram sendVoice response
+        tg_response = MagicMock()
+        tg_response.read.return_value = json.dumps({"ok": True}).encode("utf-8")
+        tg_response.__enter__ = MagicMock(return_value=tg_response)
+        tg_response.__exit__ = MagicMock(return_value=False)
+
+        def urlopen_side_effect(req, **kwargs):
+            if "/audio/speech" in req.full_url:
+                return tts_response
+            if "/sendVoice" in req.full_url:
+                return tg_response
+            raise ValueError(f"Unexpected URL: {req.full_url}")
+
+        with patch.dict(os.environ, self._TG_ENV, clear=False):
+            with patch("src.swe_team.telegram.urllib.request.urlopen", side_effect=urlopen_side_effect) as mock_urlopen:
+                result = send_voice_message(text="Hello from SWE Squad")
+
+        assert result is True
+        # Should have made 2 calls: TTS + sendVoice
+        assert mock_urlopen.call_count == 2
+
+    def test_send_voice_empty_text(self):
+        """Empty text returns False without any API calls."""
+        from src.swe_team.telegram import send_voice_message
+
+        with patch.dict(os.environ, self._TG_ENV, clear=False):
+            with patch("src.swe_team.telegram.urllib.request.urlopen") as mock_urlopen:
+                result = send_voice_message(text="")
+
+        assert result is False
+        mock_urlopen.assert_not_called()
+
+    def test_send_voice_missing_telegram_creds(self):
+        """Missing Telegram credentials returns False."""
+        from src.swe_team.telegram import send_voice_message
+
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")}
+        with patch.dict(os.environ, env, clear=True):
+            result = send_voice_message(text="Hello")
+
+        assert result is False
+
+    def test_send_voice_tts_fails(self):
+        """When TTS fails, returns False (no Telegram call)."""
+        from src.swe_team.telegram import send_voice_message
+
+        with patch.dict(os.environ, self._TG_ENV, clear=False):
+            with patch("src.swe_team.telegram.text_to_speech", return_value=None):
+                result = send_voice_message(text="Hello")
+
+        assert result is False
+
+    def test_send_voice_telegram_error(self):
+        """When Telegram sendVoice fails, returns False."""
+        import urllib.error
+        from src.swe_team.telegram import send_voice_message
+
+        with patch.dict(os.environ, self._TG_ENV, clear=False):
+            with patch("src.swe_team.telegram.text_to_speech", return_value=b"audio"):
+                with patch(
+                    "src.swe_team.telegram.urllib.request.urlopen",
+                    side_effect=urllib.error.HTTPError(
+                        url="http://x", code=400, msg="Bad Request",
+                        hdrs=None, fp=MagicMock(read=MagicMock(return_value=b"bad")),
+                    ),
+                ):
+                    result = send_voice_message(text="Hello")
+
+        assert result is False
+
+    def test_send_voice_custom_chat_id(self):
+        """Custom chat_id is used instead of env var."""
+        from src.swe_team.telegram import send_voice_message
+
+        tts_audio = b"mp3-audio"
+
+        tg_response = MagicMock()
+        tg_response.read.return_value = json.dumps({"ok": True}).encode("utf-8")
+        tg_response.__enter__ = MagicMock(return_value=tg_response)
+        tg_response.__exit__ = MagicMock(return_value=False)
+
+        with patch.dict(os.environ, self._TG_ENV, clear=False):
+            with patch("src.swe_team.telegram.text_to_speech", return_value=tts_audio):
+                with patch("src.swe_team.telegram.urllib.request.urlopen", return_value=tg_response) as mock_urlopen:
+                    result = send_voice_message(chat_id="999", text="Hello")
+
+        assert result is True
+        req = mock_urlopen.call_args[0][0]
+        assert b"999" in req.data
+
+    def test_send_voice_telegram_returns_not_ok(self):
+        """Telegram API returning ok=false returns False."""
+        from src.swe_team.telegram import send_voice_message
+
+        tg_response = MagicMock()
+        tg_response.read.return_value = json.dumps({"ok": False, "description": "bad"}).encode("utf-8")
+        tg_response.__enter__ = MagicMock(return_value=tg_response)
+        tg_response.__exit__ = MagicMock(return_value=False)
+
+        with patch.dict(os.environ, self._TG_ENV, clear=False):
+            with patch("src.swe_team.telegram.text_to_speech", return_value=b"audio"):
+                with patch("src.swe_team.telegram.urllib.request.urlopen", return_value=tg_response):
+                    result = send_voice_message(text="Hello")
+
+        assert result is False
+
+
+# ======================================================================
+# Config helpers — _get_tts_config, _get_stt_config
+# ======================================================================
+
+
+class TestAudioConfigHelpers:
+    """Test _get_tts_config and _get_stt_config env var resolution."""
+
+    def test_tts_config_fallback_to_base(self):
+        from src.swe_team.telegram import _get_tts_config
+
+        env = {"BASE_LLM_API_URL": "https://base.com/v1", "BASE_LLM_API_KEY": "bk"}
+        clean = {k: v for k, v in os.environ.items()
+                 if k not in ("TTS_API_URL", "TTS_API_KEY", "TTS_MODEL",
+                              "BASE_LLM_API_URL", "BASE_LLM_API_KEY")}
+        clean.update(env)
+        with patch.dict(os.environ, clean, clear=True):
+            url, key, model = _get_tts_config()
+
+        assert url == "https://base.com/v1"
+        assert key == "bk"
+        assert model == "kokoro"
+
+    def test_tts_config_dedicated_overrides_base(self):
+        from src.swe_team.telegram import _get_tts_config
+
+        env = {
+            "BASE_LLM_API_URL": "https://base.com/v1",
+            "BASE_LLM_API_KEY": "bk",
+            "TTS_API_URL": "https://tts.com/v1",
+            "TTS_API_KEY": "tk",
+            "TTS_MODEL": "tts-1",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            url, key, model = _get_tts_config()
+
+        assert url == "https://tts.com/v1"
+        assert key == "tk"
+        assert model == "tts-1"
+
+    def test_stt_config_fallback_to_base(self):
+        from src.swe_team.telegram import _get_stt_config
+
+        env = {"BASE_LLM_API_URL": "https://base.com/v1", "BASE_LLM_API_KEY": "bk"}
+        clean = {k: v for k, v in os.environ.items()
+                 if k not in ("STT_API_URL", "STT_API_KEY", "STT_MODEL",
+                              "BASE_LLM_API_URL", "BASE_LLM_API_KEY")}
+        clean.update(env)
+        with patch.dict(os.environ, clean, clear=True):
+            url, key, model = _get_stt_config()
+
+        assert url == "https://base.com/v1"
+        assert key == "bk"
+        assert model == "whisper-1"
+
+    def test_stt_config_dedicated_overrides_base(self):
+        from src.swe_team.telegram import _get_stt_config
+
+        env = {
+            "BASE_LLM_API_URL": "https://base.com/v1",
+            "BASE_LLM_API_KEY": "bk",
+            "STT_API_URL": "https://stt.com/v1",
+            "STT_API_KEY": "sk",
+            "STT_MODEL": "whisper-large",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            url, key, model = _get_stt_config()
+
+        assert url == "https://stt.com/v1"
+        assert key == "sk"
+        assert model == "whisper-large"
