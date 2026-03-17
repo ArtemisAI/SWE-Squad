@@ -28,7 +28,7 @@ team_id: "default"
 github_account: ""        # Dedicated GitHub bot account for this team
 
 # A2A hub for inter-agent communication
-a2a_hub_url: "http://localhost:18790"
+a2a_hub_url: "http://100.110.176.73:18790"
 
 # Persistent ticket storage (JSON file, lightweight default).
 # Set SUPABASE_URL + SUPABASE_ANON_KEY in .env to use Supabase instead.
