@@ -47,6 +47,7 @@ Unlike single-agent coding tools, SWE Squad operates as a **coordinated team** w
 - **A2A Protocol** — JSON-RPC 2.0 inter-agent communication; hub at `100.110.176.73:18790` (openclaw, gemini, llm_proxy)
 - **MCP Servers** — DeepWiki (library docs), Playwright (browser automation), GitHub, Supabase — available in all agent subprocesses
 - **CLI Tools** — `swe-cli` for status, tickets, issues, and daily reports from terminal or cron
+- **CLI Framework Evaluation** — see `CLI_FRAMEWORK_EVALUATION.md` for framework comparison and recommendation
 - **Model Card** — `config/swe_team/model_card.md` documents all 43+ models, agents, routing rules, and cost estimates
 
 ---
