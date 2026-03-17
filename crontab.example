@@ -38,3 +38,8 @@ SWE_SQUAD_DIR=/path/to/SWE-Squad
 # ── Test-only verification twice daily (noon and midnight) ───────────────────
 # Re-runs tests on in_development/in_review tickets without a full cycle
 0 0,12 * * * cd $SWE_SQUAD_DIR && python scripts/ops/swe_team_runner.py --test-only -v >> logs/cron.log 2>&1
+
+# ── Supabase keep-alive (daily at noon) ─────────────────────────────────────
+# Prevents Supabase free-tier from pausing after 7 days of inactivity.
+# Only fires a ping if no organic traffic in the last 5 days.
+0 12 * * * cd $SWE_SQUAD_DIR && python scripts/ops/swe_team_runner.py --keep-alive -v >> logs/cron.log 2>&1

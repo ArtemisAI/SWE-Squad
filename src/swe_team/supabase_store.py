@@ -69,6 +69,9 @@ class SupabaseTicketStore:
         }
         # Fingerprint cache — loaded lazily on first access
         self._fingerprint_cache: Optional[Set[str]] = None
+        # Track last successful API activity for keep-alive logic.
+        # Supabase free tier pauses after 7 days of inactivity.
+        self._last_activity: datetime = datetime.now(timezone.utc)
 
     # ------------------------------------------------------------------
     # Public interface (mirrors TicketStore)
@@ -251,6 +254,49 @@ class SupabaseTicketStore:
         return set(self._fingerprint_cache)
 
     # ------------------------------------------------------------------
+    # Keep-alive (prevents Supabase free-tier pause after 7 days)
+    # ------------------------------------------------------------------
+
+    def keep_alive(self, threshold_days: int = 5) -> bool:
+        """Ping Supabase if no organic activity within *threshold_days*.
+
+        Supabase free-tier pauses the database after 7 consecutive days
+        of inactivity.  This method checks the internal activity tracker
+        and, only when needed, issues a lightweight ``SELECT`` to count
+        as activity.
+
+        Returns ``True`` if a keep-alive ping was sent, ``False`` if
+        organic traffic was recent enough to skip it.
+        """
+        age = datetime.now(timezone.utc) - self._last_activity
+        if age < timedelta(days=threshold_days):
+            logger.info(
+                "Supabase keep-alive: skipped (last activity %s ago)",
+                age,
+            )
+            return False
+
+        logger.info(
+            "Supabase keep-alive: pinging (last activity %s ago, "
+            "threshold=%d days)",
+            age,
+            threshold_days,
+        )
+        try:
+            self._request(
+                "GET",
+                "/swe_tickets",
+                params={"select": "ticket_id", "limit": "1"},
+            )
+            logger.info("Supabase keep-alive: ping successful")
+            return True
+        except Exception:
+            logger.warning(
+                "Supabase keep-alive: ping failed", exc_info=True,
+            )
+            return False
+
+    # ------------------------------------------------------------------
     # Audit trail
     # ------------------------------------------------------------------
 
@@ -307,6 +353,7 @@ class SupabaseTicketStore:
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 raw = resp.read().decode()
+                self._last_activity = datetime.now(timezone.utc)
                 if raw:
                     return json.loads(raw)
                 return None

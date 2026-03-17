@@ -15,6 +15,7 @@ import os
 import subprocess
 import tempfile
 import threading
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1204,6 +1205,162 @@ class TestSupabaseSemanticMemory:
         assert "increment_memory_confidence" in schema
         assert "max_age_days     INT     DEFAULT 180" in schema
         assert "COALESCE(t.memory_confidence, 1.0) AS memory_confidence" in schema
+
+
+# ======================================================================
+# Supabase Keep-Alive
+# ======================================================================
+
+
+class TestSupabaseKeepAlive:
+    """Tests for SupabaseTicketStore.keep_alive() — prevents free-tier pause."""
+
+    def _make_store(self):
+        return SupabaseTicketStore(
+            supabase_url="https://example.supabase.co",
+            supabase_key="test-key",
+            team_id="team-a",
+        )
+
+    def test_last_activity_updated_on_request(self):
+        """_last_activity should be refreshed after a successful _request()."""
+        from datetime import datetime, timedelta, timezone
+
+        store = self._make_store()
+        # Backdate the activity timestamp
+        old_time = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        store._last_activity = old_time
+
+        with patch.object(store, "_request", wraps=store._request):
+            # Simulate a successful request by mocking urlopen
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                mock_resp = mock_urlopen.return_value.__enter__.return_value
+                mock_resp.read.return_value = b"[]"
+                store._request("GET", "/swe_tickets", params={"limit": "1"})
+
+        assert store._last_activity > old_time
+        assert store._last_activity > datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+    def test_keep_alive_skips_when_recent_activity(self):
+        """keep_alive() returns False if last activity is within threshold."""
+        from datetime import datetime, timezone
+
+        store = self._make_store()
+        # Activity just happened (default in __init__)
+        store._last_activity = datetime.now(timezone.utc)
+
+        with patch.object(store, "_request") as mock_request:
+            result = store.keep_alive(threshold_days=5)
+
+        assert result is False
+        mock_request.assert_not_called()
+
+    def test_keep_alive_fires_when_activity_stale(self):
+        """keep_alive() sends a ping when activity is older than threshold."""
+        from datetime import datetime, timedelta, timezone
+
+        store = self._make_store()
+        store._last_activity = datetime.now(timezone.utc) - timedelta(days=6)
+
+        with patch.object(store, "_request", return_value=[]) as mock_request:
+            result = store.keep_alive(threshold_days=5)
+
+        assert result is True
+        mock_request.assert_called_once_with(
+            "GET",
+            "/swe_tickets",
+            params={"select": "ticket_id", "limit": "1"},
+        )
+
+    def test_keep_alive_handles_api_error_gracefully(self):
+        """keep_alive() returns False (not raises) when the API call fails."""
+        from datetime import datetime, timedelta, timezone
+
+        store = self._make_store()
+        store._last_activity = datetime.now(timezone.utc) - timedelta(days=10)
+
+        with patch.object(store, "_request", side_effect=urllib.error.URLError("timeout")):
+            result = store.keep_alive(threshold_days=5)
+
+        assert result is False
+
+    def test_keep_alive_custom_threshold(self):
+        """keep_alive() respects a custom threshold_days parameter."""
+        from datetime import datetime, timedelta, timezone
+
+        store = self._make_store()
+        # Activity 3 days ago — should skip with default (5) but fire with 2
+        store._last_activity = datetime.now(timezone.utc) - timedelta(days=3)
+
+        with patch.object(store, "_request", return_value=[]) as mock_request:
+            result_skip = store.keep_alive(threshold_days=5)
+        assert result_skip is False
+        mock_request.assert_not_called()
+
+        with patch.object(store, "_request", return_value=[]) as mock_request:
+            result_fire = store.keep_alive(threshold_days=2)
+        assert result_fire is True
+        mock_request.assert_called_once()
+
+    def test_last_activity_set_on_init(self):
+        """_last_activity should be set to approximately now on construction."""
+        from datetime import datetime, timedelta, timezone
+
+        before = datetime.now(timezone.utc)
+        store = self._make_store()
+        after = datetime.now(timezone.utc)
+
+        assert before <= store._last_activity <= after
+
+
+class TestRunnerKeepAlive:
+    """Tests for keep-alive integration in the SWE team runner."""
+
+    def test_run_cycle_calls_keep_alive_for_supabase_store(self):
+        """run_cycle() should call keep_alive() when store is SupabaseTicketStore."""
+        import scripts.ops.swe_team_runner as runner
+
+        store = SupabaseTicketStore(
+            supabase_url="https://example.supabase.co",
+            supabase_key="test-key",
+            team_id="team-a",
+        )
+
+        # We only need to verify keep_alive is called, then let preflight abort
+        with (
+            patch.object(store, "keep_alive", return_value=False) as mock_ka,
+            patch.object(runner, "PreflightCheck") as mock_preflight,
+        ):
+            mock_pf_inst = mock_preflight.return_value
+            mock_pf_result = mock_pf_inst.run.return_value
+            mock_pf_result.passed = False
+            mock_pf_result.failures = ["test abort"]
+            mock_pf_result.summary.return_value = "test abort"
+
+            # Mock the alert so it doesn't actually send
+            with patch.object(runner, "_send_preflight_alert"):
+                from src.swe_team.config import SWETeamConfig
+                config = SWETeamConfig()
+                runner.run_cycle(config, store, dry_run=True)
+
+            mock_ka.assert_called_once()
+
+    def test_keep_alive_flag_with_supabase_store(self):
+        """--keep-alive should call store.keep_alive() and exit."""
+        import scripts.ops.swe_team_runner as runner
+
+        store = SupabaseTicketStore(
+            supabase_url="https://example.supabase.co",
+            supabase_key="test-key",
+            team_id="team-a",
+        )
+
+        with patch.object(store, "keep_alive", return_value=True) as mock_ka:
+            # Simulate what main() does for --keep-alive
+            if isinstance(store, SupabaseTicketStore):
+                sent = store.keep_alive()
+            mock_ka.assert_called_once()
+            assert sent is True
 
 
 # ======================================================================

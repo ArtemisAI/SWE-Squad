@@ -481,6 +481,15 @@ def run_cycle(
     creative: bool = False,
 ) -> Dict[str, Any]:
     """Run one monitor -> triage -> gate cycle."""
+    # 0. Supabase keep-alive — prevent free-tier pause from inactivity
+    if isinstance(store, SupabaseTicketStore):
+        try:
+            sent = store.keep_alive()
+            if sent:
+                logger.info("Supabase keep-alive ping sent at cycle start")
+        except Exception:
+            logger.warning("Supabase keep-alive check failed (non-fatal)", exc_info=True)
+
     # 0. Preflight validation — abort if running in wrong context
     preflight = PreflightCheck(
         expected_git_name=os.environ.get("SWE_EXPECTED_GIT_NAME"),
@@ -944,6 +953,11 @@ def main() -> None:
         choices=["daily", "cycle", "status"],
         help="Send a Telegram report and exit (daily|cycle|status). Designed for cron.",
     )
+    parser.add_argument(
+        "--keep-alive",
+        action="store_true",
+        help="Run Supabase keep-alive check and exit. Useful as a standalone cron job.",
+    )
     args = parser.parse_args()
 
     setup_logging(args.verbose)
@@ -962,6 +976,18 @@ def main() -> None:
     else:
         store = TicketStore(config.ticket_store_path)
         logger.info("Using JSON ticket store (%s)", config.ticket_store_path)
+
+    # --keep-alive mode — ping Supabase and exit (cron-friendly)
+    if args.keep_alive:
+        if isinstance(store, SupabaseTicketStore):
+            sent = store.keep_alive()
+            logger.info(
+                "=== Keep-alive: %s ===",
+                "ping sent" if sent else "skipped (recent activity)",
+            )
+        else:
+            logger.info("=== Keep-alive: not using Supabase — nothing to do ===")
+        return
 
     # --report mode — send a Telegram report and exit (cron-friendly)
     if args.report:
