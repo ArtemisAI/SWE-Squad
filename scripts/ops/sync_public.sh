@@ -160,7 +160,8 @@ rsync -a --delete \
 
 # Scan for secrets before committing
 echo "  Scanning for secrets..."
-SECRETS_CHECK=$(cd "$PUBLIC_DIR" && git ls-files 2>/dev/null | xargs grep -l -iE 'github_pat_|ghp_[a-zA-Z0-9]{30}|sk-[a-zA-Z0-9]{20,}|BOT_TOKEN=[0-9]{8,}' 2>/dev/null || true)
+# Scan for real secrets (not template placeholders like "your_xxx_here")
+SECRETS_CHECK=$(cd "$PUBLIC_DIR" && git ls-files 2>/dev/null | xargs grep -l -PE 'github_pat_[A-Za-z0-9]{30,}|ghp_[A-Za-z0-9]{36}|sk-[A-Za-z0-9]{32,}|BOT_TOKEN=[0-9]{8,}:[A-Za-z]' 2>/dev/null || true)
 if [[ -n "$SECRETS_CHECK" ]]; then
     echo -e "${RED}ABORT: Potential secrets detected:${NC}"
     echo "$SECRETS_CHECK"
