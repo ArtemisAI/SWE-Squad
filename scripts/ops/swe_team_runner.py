@@ -35,7 +35,7 @@ from src.swe_team.ralph_wiggum import RalphWiggumGate
 from src.swe_team.ticket_store import TicketStore
 from src.swe_team.embeddings import embed_ticket
 from src.swe_team.supabase_store import SupabaseTicketStore
-from src.swe_team.notifier import notify_new_tickets, notify_stability_gate, notify_daily_summary
+from src.swe_team.notifier import notify_new_tickets, notify_stability_gate, notify_daily_summary, notify_regression_hitl
 from src.swe_team.github_integration import create_github_issue, find_existing_issue
 from src.swe_team.events import SWEEvent
 from src.swe_team.creative_agent import CreativeAgent
@@ -77,6 +77,135 @@ def store_ticket_embedding(
             logger.info("Stored embedding for ticket %s", ticket.ticket_id)
     except Exception as exc:
         logger.warning("Embedding storage failed (non-fatal): %s", exc)
+
+
+_SEVERITY_ESCALATION = {
+    TicketSeverity.LOW: TicketSeverity.MEDIUM,
+    TicketSeverity.MEDIUM: TicketSeverity.HIGH,
+    TicketSeverity.HIGH: TicketSeverity.CRITICAL,
+    TicketSeverity.CRITICAL: TicketSeverity.CRITICAL,
+}
+
+
+def escalate_severity(severity: TicketSeverity) -> TicketSeverity:
+    """Escalate severity by one level (MEDIUM->HIGH, HIGH->CRITICAL, etc.)."""
+    return _SEVERITY_ESCALATION.get(severity, severity)
+
+
+def compute_fix_confidence(attempts: int, regressions: int) -> float:
+    """Compute fix confidence as ``1 - (regressions / max(attempts, 1))``."""
+    return 1.0 - (regressions / max(attempts, 1))
+
+
+def check_regressions(
+    config,
+    store,
+    monitor: "MonitorAgent",
+) -> List[SWETicket]:
+    """Check recently-resolved tickets for regressions.
+
+    For each ticket resolved within ``config.regression_window_hours``,
+    look up its fingerprint in recent logs.  If the same fingerprint
+    reappears, create a new regression ticket that inherits the parent's
+    context with escalated severity.
+
+    Returns the list of newly created regression tickets.
+    """
+    window = getattr(config, "regression_window_hours", 24)
+    recently_resolved = store.list_recently_resolved(hours=window)
+
+    if not recently_resolved:
+        logger.debug("No recently resolved tickets to check for regressions")
+        return []
+
+    regression_tickets: List[SWETicket] = []
+
+    for parent in recently_resolved:
+        fingerprint = parent.metadata.get("fingerprint")
+        if not fingerprint:
+            continue
+
+        # Check if this fingerprint appears in recent logs
+        if fingerprint not in monitor._known and not _fingerprint_in_recent_logs(fingerprint, monitor):
+            continue
+
+        # Regression detected — build new ticket
+        logger.warning(
+            "Regression detected for ticket %s (fingerprint=%s)",
+            parent.ticket_id,
+            fingerprint,
+        )
+
+        # Compute fix confidence tracking
+        parent_confidence = parent.metadata.get("fix_confidence", {})
+        prev_attempts = parent_confidence.get("attempts", 1)
+        prev_regressions = parent_confidence.get("regressions", 0)
+        new_regressions = prev_regressions + 1
+        new_attempts = prev_attempts + 1
+        confidence = compute_fix_confidence(new_attempts, new_regressions)
+
+        new_severity = escalate_severity(parent.severity)
+
+        description_parts = [
+            f"Regression of ticket {parent.ticket_id}.",
+        ]
+        if parent.investigation_report:
+            description_parts.append(
+                f"\n## Previous Investigation\n{parent.investigation_report[:1000]}"
+            )
+        if parent.proposed_fix:
+            description_parts.append(
+                f"\n## Previous Fix\n{parent.proposed_fix[:500]}"
+            )
+
+        regression_ticket = SWETicket(
+            title=f"[REGRESSION] {parent.title[:100]}",
+            description="\n".join(description_parts),
+            severity=new_severity,
+            source_module=parent.source_module,
+            labels=["regression", "auto-detected"],
+            metadata={
+                "fingerprint": fingerprint,
+                "regression_of": parent.ticket_id,
+                "is_regression": True,
+                "fix_confidence": {
+                    "attempts": new_attempts,
+                    "regressions": new_regressions,
+                    "confidence": confidence,
+                },
+            },
+        )
+
+        regression_tickets.append(regression_ticket)
+
+        # HITL escalation after 3+ regressions
+        if new_regressions >= 3:
+            try:
+                notify_regression_hitl(regression_ticket)
+            except Exception:
+                logger.exception(
+                    "HITL notification failed for regression ticket %s",
+                    regression_ticket.ticket_id,
+                )
+
+    return regression_tickets
+
+
+def _fingerprint_in_recent_logs(fingerprint: str, monitor: "MonitorAgent") -> bool:
+    """Check if *fingerprint* appears in a fresh log scan.
+
+    Performs a lightweight scan and checks whether the given fingerprint
+    is produced by any current log lines.
+    """
+    # Run a scan with an empty known set so it picks up everything
+    from src.swe_team.monitor_agent import MonitorAgent as _MA
+
+    fresh_monitor = _MA(monitor._config, known_fingerprints=set())
+    fresh_tickets = fresh_monitor.scan()
+    fresh_fps = {
+        t.metadata.get("fingerprint") for t in fresh_tickets if t.metadata.get("fingerprint")
+    }
+    return fingerprint in fresh_fps
 
 
 def fetch_github_tickets(store, github_account: str = "") -> List[SWETicket]:
@@ -315,6 +444,16 @@ def run_cycle(
     # 1. Monitor: scan logs for new errors
     monitor = MonitorAgent(config.monitor, known_fingerprints=store.known_fingerprints)
     new_tickets = monitor.scan()
+
+    # 1a. Post-fix regression check on recently resolved tickets
+    if not dry_run:
+        try:
+            regression_tickets = check_regressions(config, store, monitor)
+            if regression_tickets:
+                logger.info("Detected %d regression(s)", len(regression_tickets))
+                new_tickets.extend(regression_tickets)
+        except Exception:
+            logger.exception("Regression check failed — continuing with normal cycle")
 
     # Merge GitHub-sourced tickets with log-sourced tickets
     if gh_tickets:

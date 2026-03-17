@@ -1870,3 +1870,342 @@ class TestRunnerSemanticMemory:
         with patch.object(store, "store_embedding") as mock_store_embedding:
             runner.store_ticket_embedding(store, ticket, enabled=True)
         mock_store_embedding.assert_not_called()
+
+
+# ======================================================================
+# Regression Detection & Fix Confidence
+# ======================================================================
+
+class TestListRecentlyResolved:
+    """Tests for TicketStore.list_recently_resolved()."""
+
+    def test_returns_resolved_within_window(self, tmp_path):
+        store = TicketStore(str(tmp_path / "tickets.json"))
+        from datetime import datetime, timezone
+
+        t1 = SWETicket(title="Bug A", description="x")
+        t1.transition(TicketStatus.RESOLVED)
+        store.add(t1)
+
+        t2 = SWETicket(title="Bug B", description="y")
+        t2.transition(TicketStatus.RESOLVED)
+        store.add(t2)
+
+        # An open ticket should NOT appear
+        t3 = SWETicket(title="Bug C", description="z")
+        store.add(t3)
+
+        result = store.list_recently_resolved(hours=24)
+        ids = {t.ticket_id for t in result}
+        assert t1.ticket_id in ids
+        assert t2.ticket_id in ids
+        assert t3.ticket_id not in ids
+
+    def test_excludes_old_resolved(self, tmp_path):
+        store = TicketStore(str(tmp_path / "tickets.json"))
+        from datetime import datetime, timedelta, timezone
+
+        t = SWETicket(title="Old bug", description="x")
+        t.transition(TicketStatus.RESOLVED)
+        # Backdate updated_at to 48 hours ago
+        t.updated_at = (
+            datetime.now(timezone.utc) - timedelta(hours=48)
+        ).isoformat()
+        store.add(t)
+
+        result = store.list_recently_resolved(hours=24)
+        assert len(result) == 0
+
+    def test_empty_store_returns_empty(self, tmp_path):
+        store = TicketStore(str(tmp_path / "tickets.json"))
+        result = store.list_recently_resolved(hours=24)
+        assert result == []
+
+
+class TestSeverityEscalation:
+    """Tests for severity escalation logic."""
+
+    def test_escalation_medium_to_high(self):
+        import scripts.ops.swe_team_runner as runner
+        assert runner.escalate_severity(TicketSeverity.MEDIUM) == TicketSeverity.HIGH
+
+    def test_escalation_high_to_critical(self):
+        import scripts.ops.swe_team_runner as runner
+        assert runner.escalate_severity(TicketSeverity.HIGH) == TicketSeverity.CRITICAL
+
+    def test_escalation_critical_stays_critical(self):
+        import scripts.ops.swe_team_runner as runner
+        assert runner.escalate_severity(TicketSeverity.CRITICAL) == TicketSeverity.CRITICAL
+
+    def test_escalation_low_to_medium(self):
+        import scripts.ops.swe_team_runner as runner
+        assert runner.escalate_severity(TicketSeverity.LOW) == TicketSeverity.MEDIUM
+
+
+class TestFixConfidence:
+    """Tests for compute_fix_confidence()."""
+
+    def test_no_regressions(self):
+        import scripts.ops.swe_team_runner as runner
+        assert runner.compute_fix_confidence(attempts=3, regressions=0) == 1.0
+
+    def test_all_regressions(self):
+        import scripts.ops.swe_team_runner as runner
+        assert runner.compute_fix_confidence(attempts=3, regressions=3) == 0.0
+
+    def test_partial_regressions(self):
+        import scripts.ops.swe_team_runner as runner
+        result = runner.compute_fix_confidence(attempts=4, regressions=2)
+        assert result == pytest.approx(0.5)
+
+    def test_zero_attempts_uses_one(self):
+        import scripts.ops.swe_team_runner as runner
+        # When attempts=0, max(0,1)=1 → 1 - (1/1) = 0.0
+        assert runner.compute_fix_confidence(attempts=0, regressions=1) == 0.0
+
+
+class TestCheckRegressions:
+    """Tests for the check_regressions() function."""
+
+    def test_regression_detected_creates_ticket(self, tmp_path):
+        import scripts.ops.swe_team_runner as runner
+
+        store = TicketStore(str(tmp_path / "tickets.json"))
+
+        # Create a resolved parent ticket with a fingerprint
+        parent = SWETicket(
+            title="Original bug",
+            description="Something broke",
+            severity=TicketSeverity.MEDIUM,
+            source_module="scraping",
+            investigation_report="Root cause: config error",
+            proposed_fix="Fix the config",
+            metadata={"fingerprint": "abc123"},
+        )
+        parent.transition(TicketStatus.RESOLVED)
+        store.add(parent)
+
+        # Mock a monitor that finds the same fingerprint in fresh scan
+        config = SWETeamConfig(regression_window_hours=24)
+        mock_monitor = type("MockMonitor", (), {"_known": set(), "_config": MonitorConfig(enabled=True)})()
+
+        with patch(
+            "scripts.ops.swe_team_runner._fingerprint_in_recent_logs",
+            return_value=True,
+        ):
+            regressions = runner.check_regressions(config, store, mock_monitor)
+
+        assert len(regressions) == 1
+        reg = regressions[0]
+        assert reg.metadata["is_regression"] is True
+        assert reg.metadata["regression_of"] == parent.ticket_id
+        assert reg.severity == TicketSeverity.HIGH  # escalated from MEDIUM
+        assert "REGRESSION" in reg.title
+        assert reg.metadata["fix_confidence"]["regressions"] == 1
+        assert reg.metadata["fix_confidence"]["attempts"] == 2
+        assert reg.metadata["fix_confidence"]["confidence"] == pytest.approx(0.5)
+        assert reg.source_module == "scraping"
+        assert "Root cause: config error" in reg.description
+
+    def test_no_regression_when_fingerprint_not_in_logs(self, tmp_path):
+        import scripts.ops.swe_team_runner as runner
+
+        store = TicketStore(str(tmp_path / "tickets.json"))
+        parent = SWETicket(
+            title="Fixed bug",
+            description="Was broken",
+            severity=TicketSeverity.HIGH,
+            metadata={"fingerprint": "def456"},
+        )
+        parent.transition(TicketStatus.RESOLVED)
+        store.add(parent)
+
+        config = SWETeamConfig(regression_window_hours=24)
+        mock_monitor = type("MockMonitor", (), {"_known": set(), "_config": MonitorConfig(enabled=True)})()
+
+        with patch(
+            "scripts.ops.swe_team_runner._fingerprint_in_recent_logs",
+            return_value=False,
+        ):
+            regressions = runner.check_regressions(config, store, mock_monitor)
+
+        assert len(regressions) == 0
+
+    def test_regression_inherits_parent_context(self, tmp_path):
+        import scripts.ops.swe_team_runner as runner
+
+        store = TicketStore(str(tmp_path / "tickets.json"))
+        parent = SWETicket(
+            title="Database timeout",
+            description="DB pool exhaustion",
+            severity=TicketSeverity.HIGH,
+            source_module="database",
+            investigation_report="Connection leak in worker pool",
+            proposed_fix="Add connection timeout and pool recycling",
+            metadata={"fingerprint": "db-fp-001"},
+        )
+        parent.transition(TicketStatus.RESOLVED)
+        store.add(parent)
+
+        config = SWETeamConfig(regression_window_hours=24)
+        mock_monitor = type("MockMonitor", (), {"_known": set(), "_config": MonitorConfig(enabled=True)})()
+
+        with patch(
+            "scripts.ops.swe_team_runner._fingerprint_in_recent_logs",
+            return_value=True,
+        ):
+            regressions = runner.check_regressions(config, store, mock_monitor)
+
+        assert len(regressions) == 1
+        reg = regressions[0]
+        assert "Connection leak in worker pool" in reg.description
+        assert "Add connection timeout and pool recycling" in reg.description
+        assert reg.severity == TicketSeverity.CRITICAL  # HIGH -> CRITICAL
+
+    def test_hitl_fires_at_three_regressions(self, tmp_path):
+        import scripts.ops.swe_team_runner as runner
+
+        store = TicketStore(str(tmp_path / "tickets.json"))
+        parent = SWETicket(
+            title="Stubborn bug",
+            description="Keeps coming back",
+            severity=TicketSeverity.HIGH,
+            metadata={
+                "fingerprint": "stubborn-fp",
+                "fix_confidence": {
+                    "attempts": 3,
+                    "regressions": 2,  # Will become 3 → triggers HITL
+                    "confidence": 0.33,
+                },
+            },
+        )
+        parent.transition(TicketStatus.RESOLVED)
+        store.add(parent)
+
+        config = SWETeamConfig(regression_window_hours=24)
+        mock_monitor = type("MockMonitor", (), {"_known": set(), "_config": MonitorConfig(enabled=True)})()
+
+        with (
+            patch(
+                "scripts.ops.swe_team_runner._fingerprint_in_recent_logs",
+                return_value=True,
+            ),
+            patch(
+                "scripts.ops.swe_team_runner.notify_regression_hitl",
+            ) as mock_hitl,
+        ):
+            regressions = runner.check_regressions(config, store, mock_monitor)
+
+        assert len(regressions) == 1
+        reg = regressions[0]
+        assert reg.metadata["fix_confidence"]["regressions"] == 3
+        mock_hitl.assert_called_once_with(reg)
+
+    def test_hitl_not_fired_below_three_regressions(self, tmp_path):
+        import scripts.ops.swe_team_runner as runner
+
+        store = TicketStore(str(tmp_path / "tickets.json"))
+        parent = SWETicket(
+            title="Bug",
+            description="x",
+            severity=TicketSeverity.MEDIUM,
+            metadata={"fingerprint": "fp-below-3"},
+        )
+        parent.transition(TicketStatus.RESOLVED)
+        store.add(parent)
+
+        config = SWETeamConfig(regression_window_hours=24)
+        mock_monitor = type("MockMonitor", (), {"_known": set(), "_config": MonitorConfig(enabled=True)})()
+
+        with (
+            patch(
+                "scripts.ops.swe_team_runner._fingerprint_in_recent_logs",
+                return_value=True,
+            ),
+            patch(
+                "scripts.ops.swe_team_runner.notify_regression_hitl",
+            ) as mock_hitl,
+        ):
+            regressions = runner.check_regressions(config, store, mock_monitor)
+
+        assert len(regressions) == 1
+        assert regressions[0].metadata["fix_confidence"]["regressions"] == 1
+        mock_hitl.assert_not_called()
+
+    def test_empty_resolved_returns_empty(self, tmp_path):
+        import scripts.ops.swe_team_runner as runner
+
+        store = TicketStore(str(tmp_path / "tickets.json"))
+        config = SWETeamConfig(regression_window_hours=24)
+        mock_monitor = type("MockMonitor", (), {"_known": set(), "_config": MonitorConfig(enabled=True)})()
+
+        regressions = runner.check_regressions(config, store, mock_monitor)
+        assert regressions == []
+
+
+class TestRegressionRouting:
+    """Tests for regression ticket routing to Opus."""
+
+    def test_regression_routes_to_opus(self):
+        """Regression tickets with is_regression=True should use Opus."""
+        investigator = InvestigatorAgent(timeout_seconds=5)
+        ticket = SWETicket(
+            title="[REGRESSION] Something broke",
+            description="Regressed",
+            severity=TicketSeverity.MEDIUM,
+            metadata={"is_regression": True},
+        )
+        model = investigator._select_model(ticket)
+        assert model == "opus"
+
+    def test_non_regression_medium_uses_sonnet(self):
+        """Normal MEDIUM tickets use sonnet."""
+        investigator = InvestigatorAgent(timeout_seconds=5)
+        ticket = SWETicket(
+            title="Normal bug",
+            description="x",
+            severity=TicketSeverity.MEDIUM,
+        )
+        model = investigator._select_model(ticket)
+        assert model == "sonnet"
+
+    def test_regression_context_in_prompt(self):
+        """Regression tickets include regression context in the prompt."""
+        ticket = SWETicket(
+            title="[REGRESSION] DB timeout",
+            description="Regressed",
+            severity=TicketSeverity.HIGH,
+            metadata={
+                "is_regression": True,
+                "regression_of": "parent-123",
+                "fix_confidence": {
+                    "attempts": 3,
+                    "regressions": 2,
+                    "confidence": 0.33,
+                },
+            },
+        )
+        context = InvestigatorAgent._build_regression_context(ticket)
+        assert "REGRESSION ALERT" in context
+        assert "parent-123" in context
+        assert "Fix attempts so far: 3" in context
+        assert "Times regressed: 2" in context
+
+
+class TestRegressionWindowConfig:
+    """Tests for regression_window_hours config."""
+
+    def test_default_regression_window(self):
+        config = SWETeamConfig()
+        assert config.regression_window_hours == 24
+
+    def test_custom_regression_window(self):
+        config = SWETeamConfig.from_dict({"regression_window_hours": 48})
+        assert config.regression_window_hours == 48
+
+    def test_regression_window_roundtrip(self):
+        config = SWETeamConfig(regression_window_hours=12)
+        d = config.to_dict()
+        assert d["regression_window_hours"] == 12
+        config2 = SWETeamConfig.from_dict(d)
+        assert config2.regression_window_hours == 12

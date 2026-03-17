@@ -219,6 +219,7 @@ class SWETeamConfig:
     enabled: bool = False
     team_id: str = "default"
     github_account: str = ""
+    regression_window_hours: int = 24
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SWETeamConfig":
@@ -242,6 +243,7 @@ class SWETeamConfig:
             enabled=data.get("enabled", False),
             team_id=data.get("team_id", "default"),
             github_account=data.get("github_account", ""),
+            regression_window_hours=data.get("regression_window_hours", 24),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -256,6 +258,7 @@ class SWETeamConfig:
             "enabled": self.enabled,
             "team_id": self.team_id,
             "github_account": self.github_account,
+            "regression_window_hours": self.regression_window_hours,
         }
 
     def get_agents_by_role(self, role: AgentRole) -> List[SWEAgentConfig]:

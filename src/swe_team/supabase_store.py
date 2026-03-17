@@ -17,6 +17,7 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set
 
 from src.swe_team.models import SWETicket, TicketStatus
@@ -135,6 +136,20 @@ class SupabaseTicketStore:
             "team_id": f"eq.{self._team_id}",
             "status": "not.in.(resolved,closed,acknowledged)",
             "order": "created_at.desc",
+        }
+        rows = self._request("GET", "/swe_tickets", params=params)
+        return [self._row_to_ticket(r) for r in (rows or [])]
+
+    def list_recently_resolved(self, hours: int = 24) -> List[SWETicket]:
+        """Return tickets resolved within the last *hours* hours."""
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=hours)
+        ).isoformat()
+        params = {
+            "team_id": f"eq.{self._team_id}",
+            "status": "eq.resolved",
+            "updated_at": f"gte.{cutoff}",
+            "order": "updated_at.desc",
         }
         rows = self._request("GET", "/swe_tickets", params=params)
         return [self._row_to_ticket(r) for r in (rows or [])]

@@ -163,6 +163,32 @@ def notify_investigation_summary(ticket: SWETicket) -> None:
     _send(message)
 
 
+def notify_regression_hitl(ticket: SWETicket) -> None:
+    """HITL escalation for a fingerprint that has regressed 3+ times.
+
+    Sends an urgent Telegram alert requesting human intervention.
+    """
+    fp = ticket.metadata.get("fingerprint", "unknown")
+    regressions = ticket.metadata.get("fix_confidence", {}).get("regressions", 0)
+    parent_id = ticket.metadata.get("regression_of", "unknown")
+    module = ticket.source_module or "unknown"
+
+    lines = [
+        "<b>\U0001f6a8\U0001f6a8 HITL ESCALATION — Repeated Regression</b>",
+        "",
+        f"<b>Fingerprint:</b> <code>{_esc(fp)}</code>",
+        f"<b>Regressions:</b> {regressions}",
+        f"<b>Parent ticket:</b> <code>{_esc(parent_id)}</code>",
+        f"<b>Module:</b> {_esc(module)}",
+        f"<b>Title:</b> {_esc(ticket.title[:100])}",
+        "",
+        "This fingerprint has regressed 3+ times. Automated fixes are not holding. "
+        "Human review is required.",
+    ]
+    message = "\n".join(lines)
+    _send(message)
+
+
 def _esc(text: str) -> str:
     """Escape HTML for Telegram."""
     return (

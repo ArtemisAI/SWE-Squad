@@ -163,12 +163,37 @@ class InvestigatorAgent:
         similar_context = self._semantic_memory_context(ticket)
         if similar_context:
             error_log = f"{error_log}\n\n{similar_context}"
+        # Enhance prompt for regression tickets
+        if ticket.metadata.get("is_regression"):
+            regression_ctx = self._build_regression_context(ticket)
+            error_log = f"{error_log}\n\n{regression_ctx}"
         module = ticket.source_module or "unknown"
         try:
             return template.format(error_log=error_log, source_module=module)
         except (KeyError, ValueError) as exc:
             logger.warning("Invalid investigate.md template: %s", exc)
             return None
+
+    @staticmethod
+    def _build_regression_context(ticket: SWETicket) -> str:
+        """Build additional context for a regression ticket."""
+        parent_id = ticket.metadata.get("regression_of", "unknown")
+        regressions = ticket.metadata.get("fix_confidence", {}).get("regressions", 0)
+        attempts = ticket.metadata.get("fix_confidence", {}).get("attempts", 0)
+        lines = [
+            "## REGRESSION ALERT",
+            "",
+            f"This is a REGRESSION of ticket {parent_id}.",
+            f"Fix attempts so far: {attempts}",
+            f"Times regressed: {regressions}",
+            "",
+            "The previous fix did not hold. You MUST:",
+            "1. Identify why the previous fix failed",
+            "2. Check if the fix was reverted or if a new code path reintroduced the bug",
+            "3. Propose a more robust fix that addresses the root cause",
+        ]
+        # Include parent investigation/fix if available in the description
+        return "\n".join(lines)
 
     def _build_orchestration_prompt(self, ticket: SWETicket) -> Optional[str]:
         """Build the full orchestration prompt for Opus."""
@@ -232,10 +257,13 @@ class InvestigatorAgent:
         return text
 
     def _select_model(self, ticket: SWETicket) -> str:
-        """Select model from config tiers: t1_heavy for CRITICAL, t2_standard otherwise."""
+        """Select model from config tiers: t1_heavy for CRITICAL/regressions, t2_standard otherwise."""
         heavy = self._model_config.t1_heavy if self._model_config else "opus"
         standard = self._model_config.t2_standard if self._model_config else "sonnet"
         if ticket.severity == TicketSeverity.CRITICAL:
+            return heavy
+        # Regressions always route to heavy tier
+        if ticket.metadata.get("is_regression"):
             return heavy
         # Escalate to heavy tier if a previous investigation failed
         inv = ticket.metadata.get("investigation", {})
