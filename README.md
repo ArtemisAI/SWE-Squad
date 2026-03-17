@@ -35,13 +35,19 @@ Unlike single-agent coding tools, SWE Squad operates as a **coordinated team** w
 
 - **Automated Error Detection** — Scans logs for errors with fingerprint-based deduplication
 - **Smart Model Routing** — Haiku for cheap tasks, Sonnet for routine fixes, Opus for critical orchestration only
-- **Keep/Discard Fix Loop** — Every fix lives on a git branch; tests fail = auto-revert
-- **Ralph Wiggum Gate** — Stability-first governance: bugs must be fixed before features ship
-- **Deterministic Replay** — Caches successful fixes by error fingerprint for zero-cost replay
+- **Divide-and-Conquer** — Opus orchestrates parallel sub-agents; never implements directly; context window stays clean
+- **Multi-Agent Fallback Chain** — Claude Code → exponential backoff → Gemini CLI → Telegram HITL; wheels keep turning even under rate limits
+- **Live Model Probing** — tests each BASE_LLM candidate with a real API call before selecting it; auto-heals broken model configs
+- **Keep/Discard Fix Loop** — every fix lives on a git branch; tests fail = auto-revert
+- **Ralph Wiggum Gate** — stability-first governance: bugs must be fixed before features ship
+- **Deterministic Replay** — caches successful fixes by error fingerprint for zero-cost replay
 - **Semantic Memory** — pgvector embeddings surface similar past fixes at investigation time; mem0-style fact extraction; confidence-weighted retrieval with TTL
-- **Multi-Team Support** — Multiple squads share a Supabase backend without overlap
-- **A2A Protocol** — Inter-agent communication for cross-team coordination
+- **Multi-Repo Support** — each ticket carries a `repo` field; agents run in the correct local clone automatically
+- **Multi-Team Support** — multiple squads share a Supabase backend without overlap
+- **A2A Protocol** — JSON-RPC 2.0 inter-agent communication; hub at `100.110.176.73:18790` (openclaw, gemini, llm_proxy)
+- **MCP Servers** — DeepWiki (library docs), Playwright (browser automation), GitHub, Supabase — available in all agent subprocesses
 - **CLI Tools** — `swe-cli` for status, tickets, issues, and daily reports from terminal or cron
+- **Model Card** — `config/swe_team/model_card.md` documents all 43+ models, agents, routing rules, and cost estimates
 
 ---
 
