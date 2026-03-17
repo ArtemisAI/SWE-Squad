@@ -692,12 +692,36 @@ def run_cycle(
                 except Exception:
                     logger.exception("Failed to persist automation for %s", ticket.ticket_id)
 
+    # 4b. Backlog pickup — pull existing OPEN/TRIAGED tickets from the store
+    # so previous cycles' imported backlog is worked on, not just new detections.
+    triaged_ids = {t.ticket_id for t in triaged}
+    automated_ids = {t.ticket_id for t in automated}
+    try:
+        stored_open = [
+            t for t in store.list_all()
+            if t.status in (TicketStatus.OPEN, TicketStatus.TRIAGED)
+            and t.ticket_id not in triaged_ids
+            and t.ticket_id not in automated_ids
+            and _SEV_RANK.get(t.severity.value, 0) >= sev_floor
+        ]
+        # Sort highest severity first
+        stored_open.sort(key=lambda t: _SEV_RANK.get(t.severity.value, 0), reverse=True)
+        if stored_open:
+            logger.info(
+                "Backlog pickup: %d existing OPEN/TRIAGED ticket(s) eligible for investigation",
+                len(stored_open),
+            )
+    except Exception:
+        logger.warning("Backlog pickup failed (non-fatal)", exc_info=True)
+        stored_open = []
+
     # 5. Investigation (severity-filtered, capped by cycle config)
     investigated: List[SWETicket] = []
-    automated_ids = {t.ticket_id for t in automated}
-    pending_investigation = [
-        ticket for ticket in triaged if ticket.ticket_id not in automated_ids
-    ]
+    # Merge this cycle's triaged with backlog — new tickets get priority
+    pending_investigation = (
+        [t for t in triaged if t.ticket_id not in automated_ids]
+        + stored_open
+    )
     # Enforce max_open_investigating — don't pile on if already at the cap
     if pending_investigation and not dry_run:
         currently_investigating = sum(
