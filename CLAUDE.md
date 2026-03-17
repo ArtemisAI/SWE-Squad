@@ -84,7 +84,7 @@ There are two separate LLM systems. **Never confuse them.**
 ```
 BASE_LLM proxy (BASE_LLM_API_URL)       Claude Code CLI (/usr/bin/claude)
 ────────────────────────────────────    ────────────────────────────────────
-http://api.ai-automate.me/v1/           subprocess.run(["claude", "--print"...])
+http://your-llm-proxy.example.com/v1/           subprocess.run(["claude", "--print"...])
 OpenAI-compatible HTTP API              Used only by InvestigatorAgent / DeveloperAgent
 43 models — gemini-3-flash, bge-m3      Models: haiku / sonnet / opus
 T1 cheap tasks: gemini-3-flash          T3 orchestration: opus (never implementer)

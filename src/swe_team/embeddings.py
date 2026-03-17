@@ -67,7 +67,7 @@ def embed_ticket(ticket: SWETicket) -> Optional[list[float]]:
 # Memory extraction (mem0-style) — see issue #6
 # ---------------------------------------------------------------------------
 # NOTE on model selection:
-#   BASE_LLM_API_URL  = external OpenAI-compatible proxy (api.ai-automate.me)
+#   BASE_LLM_API_URL  = external OpenAI-compatible proxy (your-llm-proxy.example.com)
 #                       Use this for cheap text extraction calls.
 #                       Available T1 models: gemini-3-flash, qwen3:8b
 #   Claude Code CLI   = used by SWE Squad AGENTS (investigator, developer)
