@@ -583,11 +583,9 @@ def run_cycle(
 
     swe_events: List[SWEEvent] = []
 
+    # Check backlog even when no new tickets detected this cycle
     if not new_tickets:
-        logger.info("No new issues detected")
-        return {"new_tickets": 0, "triaged": 0, "investigated": 0, "gate_verdict": "N/A"}
-
-    logger.info("Detected %d new issue(s)", len(new_tickets))
+        logger.info("No new issues detected this cycle — checking stored backlog")
 
     # 1a. Severity filter — drop tickets below configured threshold
     _SEV_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
@@ -612,10 +610,6 @@ def run_cycle(
             "Per-cycle cap (%d): deferred %d ticket(s) to next cycle",
             config.cycle.max_new_tickets_per_cycle, skipped,
         )
-
-    if not new_tickets:
-        logger.info("All new tickets filtered out — nothing to process this cycle")
-        return {"new_tickets": 0, "triaged": 0, "investigated": 0, "gate_verdict": "N/A"}
 
     if not dry_run:
         for ticket in new_tickets:
@@ -718,10 +712,15 @@ def run_cycle(
     # 5. Investigation (severity-filtered, capped by cycle config)
     investigated: List[SWETicket] = []
     # Merge this cycle's triaged with backlog — new tickets get priority
+    this_cycle_ids = {t.ticket_id for t in triaged if t.ticket_id not in automated_ids}
     pending_investigation = (
         [t for t in triaged if t.ticket_id not in automated_ids]
-        + stored_open
+        + [t for t in stored_open if t.ticket_id not in this_cycle_ids]
     )
+
+    if not pending_investigation and not triaged and not new_tickets:
+        logger.info("Nothing to do this cycle (no new tickets, no backlog)")
+        return {"new_tickets": 0, "triaged": 0, "investigated": 0, "gate_verdict": "N/A"}
     # Enforce max_open_investigating — don't pile on if already at the cap
     if pending_investigation and not dry_run:
         currently_investigating = sum(
