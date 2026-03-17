@@ -218,8 +218,17 @@ def check_regressions(
         if not fingerprint:
             continue
 
-        # Check if this fingerprint appears in recent logs
-        if fingerprint not in monitor._known and not _fingerprint_in_recent_logs(fingerprint, monitor):
+        # GitHub-sourced tickets (gh-issue-N) can't regress via log scanning —
+        # their fingerprints are never produced by MonitorAgent.scan().
+        if fingerprint.startswith("gh-issue-"):
+            continue
+
+        # Only regress if the error fingerprint actually reappears in fresh logs.
+        # BUG NOTE: do NOT use `fingerprint not in monitor._known` here —
+        # known_fingerprints contains ALL tickets (including resolved), so that
+        # check is always False and short-circuits the fresh-log test, causing
+        # every resolved ticket to be flagged as a regression every cycle.
+        if not _fingerprint_in_recent_logs(fingerprint, monitor):
             continue
 
         # Regression detected — build new ticket
