@@ -1,4 +1,4 @@
-You are investigating a production error in the LinkedAi system.
+You are investigating a production error.
 You have read-only access. Do NOT modify any files.
 
 ## Error

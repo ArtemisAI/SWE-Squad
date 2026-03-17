@@ -133,12 +133,12 @@ class SWETeamAdapter(AgentAdapter):
             ),
         ]
         return AgentCard(
-            name="SWE-Team-LinkedAI",
+            name="SWE-Squad",
             description="Autonomous SWE team workflows (monitor, triage, investigate)",
             url=self._base_url,
             version="0.2.0",
             skills=skills,
-            provider={"organization": "ArtemisAI", "url": "https://artemis-ai.ca"},
+            provider={},
         )
 
     def handle_action(self, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:

@@ -6,11 +6,26 @@ from typing import List
 
 logger = logging.getLogger(__name__)
 
-# Worker nodes to collect logs from
-REMOTE_NODES = [
-    {"name": "browser-1", "ssh": "agent@100.86.74.85", "log_dir": "~/Projects/LinkedAi/logs"},
-    {"name": "bot-2", "ssh": "agent@100.74.77.79", "log_dir": "~/Projects/LinkedAi/logs"},
-]
+# Worker nodes to collect logs from.
+# Override via environment variable SWE_REMOTE_NODES (JSON array) or
+# configure in swe_team.yaml under monitor.remote_nodes.
+#
+# Example:
+#   [{"name": "worker-1", "ssh": "agent@10.0.0.1", "log_dir": "~/project/logs"}]
+
+def _load_remote_nodes():
+    """Load remote node config from env var or return empty default."""
+    import json
+    import os
+    raw = os.environ.get("SWE_REMOTE_NODES", "")
+    if raw:
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return []
+
+REMOTE_NODES = _load_remote_nodes()
 
 
 def collect_remote_logs(local_dir: str = "logs/remote", timeout: int = 30) -> List[str]:

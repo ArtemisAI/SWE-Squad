@@ -7,6 +7,7 @@ Analyzes resolved ticket patterns and proposes low-severity improvements.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from collections import Counter
 from typing import Iterable, List, Optional
@@ -15,7 +16,7 @@ from src.swe_team.models import SWETicket, TicketSeverity, TicketStatus
 
 logger = logging.getLogger(__name__)
 
-_REPO = "ArtemisAI/LinkedAi"
+_REPO = os.environ.get("SWE_GITHUB_REPO", "")
 _TITLE_PREFIX = "[SWE-CREATIVE]"
 
 

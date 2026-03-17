@@ -2,22 +2,24 @@
 
 Self-healing, self-diagnosing development agents that monitor production systems, detect errors, investigate root causes, implement fixes, and learn from successes.
 
-## Architecture
+Built on [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and the [A2A protocol](https://github.com/google/A2A) for inter-agent coordination.
+
+## How It Works
 
 ```
-Every 30 min (cron):
+Every 30 min:
 │
-├─ COLLECT — rsync logs from remote worker machines via SSH
-├─ FETCH — pick up GitHub issues assigned to @Agent-Smith-AI
-├─ MONITOR — scan all logs for ERROR, CRITICAL, Traceback patterns
-├─ TRIAGE — route by severity and module, assign to specialists
-├─ NOTIFY — Telegram alerts for HIGH/CRITICAL, GitHub issue creation
-├─ DISTILL — check for cached deterministic fixes (zero LLM cost)
-├─ INVESTIGATE — Claude Code CLI diagnosis (Sonnet or Opus)
-├─ FIX — keep/discard loop with git branches, auto-revert on failure
-├─ GATE — Ralph Wiggum stability gate (bugs before features)
-├─ CREATIVE — weekly improvement proposals from ticket patterns
-└─ DISPATCH — A2A events for cross-agent coordination
+├─ COLLECT ─── rsync logs from remote workers via SSH
+├─ FETCH ───── pick up GitHub issues assigned to the team's bot account
+├─ MONITOR ─── scan logs for ERROR, CRITICAL, Traceback patterns
+├─ TRIAGE ──── route by severity and module to specialist agents
+├─ NOTIFY ──── Telegram alerts for HIGH/CRITICAL issues
+├─ DISTILL ─── check for cached deterministic fixes (zero LLM cost)
+├─ INVESTIGATE  Claude Code CLI diagnosis (Sonnet or Opus)
+├─ FIX ─────── keep/discard loop with git branches, auto-revert on failure
+├─ GATE ────── Ralph Wiggum stability gate (bugs before features)
+├─ CREATIVE ── weekly improvement proposals from ticket patterns
+└─ DISPATCH ── A2A events for cross-agent coordination
 ```
 
 ## Model Routing
@@ -27,21 +29,8 @@ Every 30 min (cron):
 | Routine HIGH bugs | **Sonnet** | Fast, cost-efficient |
 | CRITICAL bugs | **Opus** | Orchestrates sub-agents |
 | After 2 failed Sonnet attempts | **Opus** | Automatic escalation |
-| Documentation, issue scanning | **Haiku** | Cheap, fast |
+| Issue scanning, docs | **Haiku** | Cheap, fast |
 | Deterministic replay | **None** | Cached fix, zero LLM cost |
-
-## Opus Orchestration
-
-When Opus handles a CRITICAL bug, it delegates ALL work to sub-agents:
-
-1. **Investigation** (Sonnet) — read code, find root cause
-2. **Issue scan** (Haiku) — find related issues, link duplicates
-3. **Planning** (Opus decides) — how many agents, what files
-4. **Implementation** (Sonnet × N) — one agent per concern
-5. **Verification** (Sonnet) — full test suite
-6. **Documentation** (Haiku) — comment on GitHub issues
-
-Opus keeps its context clean and never writes code itself.
 
 ## Ralph Wiggum Loop
 
@@ -55,13 +44,25 @@ Attempt 3 (Opus):   escalate, orchestrate sub-agents → tests pass → KEEP
 
 If all 3 attempts fail → HITL escalation via Telegram.
 
-## GitHub Integration
+## Multi-Team Support
 
-The squad comments on every issue it touches:
-- **Pickup:** "SWE Squad picked up this issue"
-- **Investigation:** Full diagnostic report
-- **Fix success:** Branch name, files changed, test results
-- **Fix failure:** Attempt count, errors, HITL escalation
+Each SWE Squad instance is scoped by `team_id` and a dedicated GitHub account. Multiple teams can share the same Supabase backend without overlap.
+
+Configure in `.env`:
+```bash
+SWE_TEAM_ID=my-team
+SWE_GITHUB_ACCOUNT=my-bot-account
+SWE_GITHUB_REPO=owner/repo
+```
+
+## Ticket Store
+
+Two backends available:
+
+- **JSON** (default) — file-backed, zero dependencies, good for single-machine setups
+- **Supabase** — PostgreSQL-backed, multi-agent, real-time capable, audit trail
+
+Set `SUPABASE_URL` and `SUPABASE_ANON_KEY` in `.env` to activate Supabase. Run `scripts/ops/supabase_schema.sql` to create tables.
 
 ## Components
 
@@ -75,30 +76,37 @@ The squad comments on every issue it touches:
 | `src/swe_team/governance.py` | Deployment governor, complexity gate |
 | `src/swe_team/creative_agent.py` | Proactive improvement proposals |
 | `src/swe_team/distiller.py` | Trajectory distillation — cache successful fixes |
-| `src/swe_team/notifier.py` | Telegram alerts and summaries |
-| `src/swe_team/github_integration.py` | GitHub issue creation and commenting |
-| `src/swe_team/remote_logs.py` | SSH log collection from remote workers |
-| `src/swe_team/ticket_store.py` | JSON persistence with fingerprint dedup |
+| `src/swe_team/supabase_store.py` | Supabase ticket store (zero-dep, stdlib urllib) |
+| `src/swe_team/ticket_store.py` | JSON ticket store with fingerprint dedup |
 | `src/a2a/adapters/swe_team.py` | A2A protocol adapter |
 | `scripts/ops/swe_team_runner.py` | Entry point — cron, daemon, bootstrap modes |
+| `scripts/ops/supabase_schema.sql` | Supabase schema migration |
 | `config/swe_team/programs/` | Markdown agent programs (investigate, fix, orchestrate) |
 
 ## Quick Start
 
 ```bash
+# Clone
+git clone https://github.com/ArtemisAI/SWE-Squad.git
+cd SWE-Squad
+
 # Install dependencies
-pip install python-dotenv pyyaml httpx aiohttp
+pip install python-dotenv pyyaml
+
+# Configure
+cp .env.example .env
+# Edit .env with your GitHub token, Telegram bot, etc.
 
 # Bootstrap (first run — acknowledge existing errors)
 SWE_TEAM_ENABLED=true python scripts/ops/swe_team_runner.py --bootstrap -v
 
-# Run a scan cycle
+# Run a single scan cycle
 SWE_TEAM_ENABLED=true python scripts/ops/swe_team_runner.py -v
 
-# Daemon mode (persistent loop)
+# Daemon mode (persistent loop, 30-minute cycles)
 SWE_TEAM_ENABLED=true python scripts/ops/swe_team_runner.py --daemon -v
 
-# Daily summary
+# Daily summary via Telegram
 SWE_TEAM_ENABLED=true python scripts/ops/swe_team_runner.py --summary
 
 # Run tests
@@ -108,11 +116,11 @@ python -m pytest tests/unit/test_swe_team.py -v
 ## Requirements
 
 - Python 3.10+
-- Claude Code CLI (`claude`)
-- `gh` CLI (authenticated)
-- SSH access to worker machines (for remote log collection)
-- Telegram bot token (for notifications)
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`)
+- [`gh` CLI](https://cli.github.com/) (authenticated)
+- SSH access to worker machines (optional, for remote log collection)
+- Telegram bot token (optional, for notifications)
 
 ## License
 
-Private — preparing for open source release.
+MIT

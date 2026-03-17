@@ -163,7 +163,7 @@ class SWEAgentConfig:
     name: str
     role: AgentRole
     description: str = ""
-    model: str = "kimi-k2.5:cloud"          # LLM model override
+    model: str = "sonnet"          # LLM model override
     tools: List[str] = field(default_factory=list)
     max_concurrent_tasks: int = 1
     enabled: bool = False
@@ -187,7 +187,7 @@ class SWEAgentConfig:
             name=data["name"],
             role=AgentRole(data["role"]),
             description=data.get("description", ""),
-            model=data.get("model", "kimi-k2.5:cloud"),
+            model=data.get("model", "sonnet"),
             tools=data.get("tools", []),
             max_concurrent_tasks=data.get("max_concurrent_tasks", 1),
             enabled=data.get("enabled", False),

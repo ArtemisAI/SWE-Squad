@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 from typing import Optional
 
@@ -16,7 +17,7 @@ from src.swe_team.models import SWETicket, TicketSeverity
 
 logger = logging.getLogger(__name__)
 
-_REPO = "ArtemisAI/LinkedAi"
+_REPO = os.environ.get("SWE_GITHUB_REPO", "")
 _TITLE_PREFIX = "[SWE-AUTO]"
 
 
@@ -79,7 +80,7 @@ def create_github_issue(ticket: SWETicket) -> Optional[int]:
             return None
 
         # Parse issue number from output like
-        # "https://github.com/ArtemisAI/LinkedAi/issues/123"
+        # "https://github.com/owner/repo/issues/123"
         output = result.stdout.strip()
         if "/issues/" in output:
             issue_num = int(output.rsplit("/issues/", 1)[1])

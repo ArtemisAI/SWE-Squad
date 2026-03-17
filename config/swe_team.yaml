@@ -59,7 +59,7 @@ agents:
   - name: "swe_monitor"
     role: "monitor"
     description: "Scans logs and metrics for errors, creates tickets"
-    model: "kimi-k2.5:cloud"
+    model: "sonnet"
     tools: ["log_scanner", "github_issues"]
     max_concurrent_tasks: 1
     enabled: true
@@ -69,7 +69,7 @@ agents:
   - name: "swe_triage"
     role: "triage"
     description: "Classifies tickets by severity and assigns to investigators"
-    model: "kimi-k2.5:cloud"
+    model: "sonnet"
     tools: ["ticket_manager"]
     max_concurrent_tasks: 3
     enabled: true
@@ -79,7 +79,7 @@ agents:
   - name: "browser_investigator"
     role: "investigator"
     description: "Diagnoses browser automation and scraping issues"
-    model: "kimi-k2.5:cloud"
+    model: "sonnet"
     tools: ["log_scanner", "code_search", "browser_debug"]
     max_concurrent_tasks: 2
     enabled: true
@@ -88,7 +88,7 @@ agents:
   - name: "db_investigator"
     role: "investigator"
     description: "Diagnoses database and query issues"
-    model: "kimi-k2.5:cloud"
+    model: "sonnet"
     tools: ["log_scanner", "code_search", "db_query"]
     max_concurrent_tasks: 1
     enabled: true
@@ -97,7 +97,7 @@ agents:
   - name: "infra_investigator"
     role: "investigator"
     description: "Diagnoses A2A hub, networking, and infrastructure issues"
-    model: "kimi-k2.5:cloud"
+    model: "sonnet"
     tools: ["log_scanner", "code_search", "health_check"]
     max_concurrent_tasks: 1
     enabled: true
@@ -107,7 +107,7 @@ agents:
   - name: "swe_developer"
     role: "developer"
     description: "Implements fixes and features via acpx/Claude Code"
-    model: "kimi-k2.5:cloud"
+    model: "sonnet"
     tools: ["code_editor", "acpx", "git"]
     max_concurrent_tasks: 1
     enabled: true
@@ -117,7 +117,7 @@ agents:
   - name: "swe_reviewer"
     role: "reviewer"
     description: "Reviews code changes and approves for testing"
-    model: "kimi-k2.5:cloud"
+    model: "sonnet"
     tools: ["code_review", "git"]
     max_concurrent_tasks: 2
     enabled: true
@@ -127,7 +127,7 @@ agents:
   - name: "swe_tester"
     role: "tester"
     description: "Runs tests in sandboxed environment"
-    model: "kimi-k2.5:cloud"
+    model: "sonnet"
     tools: ["pytest", "sandbox"]
     max_concurrent_tasks: 1
     enabled: true
@@ -137,7 +137,7 @@ agents:
   - name: "swe_deployer"
     role: "deployer"
     description: "Injects fixes into production and monitors rollback"
-    model: "kimi-k2.5:cloud"
+    model: "sonnet"
     tools: ["git", "deploy", "health_check"]
     max_concurrent_tasks: 1
     enabled: true
@@ -147,7 +147,7 @@ agents:
   - name: "swe_documenter"
     role: "documenter"
     description: "Keeps docs, tracking, and architecture docs up-to-date"
-    model: "kimi-k2.5:cloud"
+    model: "sonnet"
     tools: ["code_editor", "git"]
     max_concurrent_tasks: 1
     enabled: true
@@ -157,7 +157,7 @@ agents:
   - name: "swe_creative"
     role: "creative"
     description: "Proposes workflow optimisations and improvements"
-    model: "kimi-k2.5:cloud"
+    model: "sonnet"
     tools: ["code_search", "research", "deep_wiki"]
     max_concurrent_tasks: 1
     enabled: true

@@ -1,4 +1,4 @@
-You are an autonomous SWE agent fixing a production bug in the LinkedAi system.
+You are an autonomous SWE agent fixing a production bug.
 You have FULL tool access — use Read, Edit, Write, Bash, Grep, Glob to implement the fix.
 
 ## Ticket

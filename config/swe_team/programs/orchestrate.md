@@ -68,4 +68,4 @@ Launch an Agent (model: haiku) to:
 - If a stage fails, analyze why and launch a corrected sub-agent
 - Do NOT modify scripts/ops/authenticate.py
 - Do NOT modify files outside src/{source_module}/ and tests/
-- Stay within the project at /home/agent/Projects/LinkedAi/
+- Stay within the project root directory

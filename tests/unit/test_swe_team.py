@@ -953,7 +953,7 @@ class TestGitHubIntegration:
         )
         mock_result = type("R", (), {
             "returncode": 0,
-            "stdout": "https://github.com/ArtemisAI/LinkedAi/issues/42\n",
+            "stdout": "https://github.com/example-org/example-repo/issues/42\n",
             "stderr": "",
         })()
         with patch("src.swe_team.github_integration.subprocess.run", return_value=mock_result) as mock_run:
@@ -1221,7 +1221,7 @@ class TestCreativeAgent:
         ticket = SWETicket(title="Proposal", description="x", severity=TicketSeverity.LOW)
         mock_result = type("R", (), {
             "returncode": 0,
-            "stdout": "https://github.com/ArtemisAI/LinkedAi/issues/7",
+            "stdout": "https://github.com/example-org/example-repo/issues/7",
             "stderr": "",
         })()
         with patch("src.swe_team.creative_agent.subprocess.run", return_value=mock_result):
@@ -1356,19 +1356,24 @@ class TestGuessModuleContent:
 # ======================================================================
 
 class TestRemoteLogs:
+    TEST_NODES = [
+        {"name": "worker-1", "ssh": "agent@10.0.0.1", "log_dir": "~/project/logs"},
+        {"name": "worker-2", "ssh": "agent@10.0.0.2", "log_dir": "~/project/logs"},
+    ]
+
     def test_collect_remote_logs_success(self, tmp_path):
         from src.swe_team.remote_logs import collect_remote_logs
 
         local_dir = str(tmp_path / "remote")
         mock_result = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
-        with patch("src.swe_team.remote_logs.subprocess.run", return_value=mock_result):
-            result = collect_remote_logs(local_dir=local_dir)
+        with patch("src.swe_team.remote_logs.REMOTE_NODES", self.TEST_NODES):
+            with patch("src.swe_team.remote_logs.subprocess.run", return_value=mock_result):
+                result = collect_remote_logs(local_dir=local_dir)
 
-        # Both nodes should succeed
         assert len(result) == 2
-        assert "browser-1" in result[0]
-        assert "bot-2" in result[1]
+        assert "worker-1" in result[0]
+        assert "worker-2" in result[1]
 
     def test_collect_remote_logs_rsync_failure(self, tmp_path):
         from src.swe_team.remote_logs import collect_remote_logs
@@ -1376,8 +1381,9 @@ class TestRemoteLogs:
         local_dir = str(tmp_path / "remote")
         mock_result = type("R", (), {"returncode": 1, "stdout": "", "stderr": "connection refused"})()
 
-        with patch("src.swe_team.remote_logs.subprocess.run", return_value=mock_result):
-            result = collect_remote_logs(local_dir=local_dir)
+        with patch("src.swe_team.remote_logs.REMOTE_NODES", self.TEST_NODES):
+            with patch("src.swe_team.remote_logs.subprocess.run", return_value=mock_result):
+                result = collect_remote_logs(local_dir=local_dir)
 
         assert result == []
 
@@ -1386,8 +1392,9 @@ class TestRemoteLogs:
 
         local_dir = str(tmp_path / "remote")
 
-        with patch("src.swe_team.remote_logs.subprocess.run", side_effect=subprocess.TimeoutExpired("rsync", 30)):
-            result = collect_remote_logs(local_dir=local_dir)
+        with patch("src.swe_team.remote_logs.REMOTE_NODES", self.TEST_NODES):
+            with patch("src.swe_team.remote_logs.subprocess.run", side_effect=subprocess.TimeoutExpired("rsync", 30)):
+                result = collect_remote_logs(local_dir=local_dir)
 
         assert result == []
 
@@ -1400,13 +1407,12 @@ class TestRemoteLogs:
         def side_effect(*args, **kwargs):
             call_count["n"] += 1
             if call_count["n"] % 2 == 1:
-                # First call is rsync — not found
                 raise FileNotFoundError("rsync not found")
-            # Second call is SSH fallback
             return type("R", (), {"returncode": 0, "stdout": "log content here", "stderr": ""})()
 
-        with patch("src.swe_team.remote_logs.subprocess.run", side_effect=side_effect):
-            result = collect_remote_logs(local_dir=local_dir)
+        with patch("src.swe_team.remote_logs.REMOTE_NODES", self.TEST_NODES):
+            with patch("src.swe_team.remote_logs.subprocess.run", side_effect=side_effect):
+                result = collect_remote_logs(local_dir=local_dir)
 
         assert len(result) == 2
 
@@ -1416,11 +1422,12 @@ class TestRemoteLogs:
         local_dir = str(tmp_path / "deep" / "nested" / "remote")
         mock_result = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
-        with patch("src.swe_team.remote_logs.subprocess.run", return_value=mock_result):
-            collect_remote_logs(local_dir=local_dir)
+        with patch("src.swe_team.remote_logs.REMOTE_NODES", self.TEST_NODES):
+            with patch("src.swe_team.remote_logs.subprocess.run", return_value=mock_result):
+                collect_remote_logs(local_dir=local_dir)
 
-        assert Path(local_dir, "browser-1").is_dir()
-        assert Path(local_dir, "bot-2").is_dir()
+        assert Path(local_dir, "worker-1").is_dir()
+        assert Path(local_dir, "worker-2").is_dir()
 
 
 # ======================================================================

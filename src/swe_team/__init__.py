@@ -2,7 +2,7 @@
 Autonomous SWE Team — Agent-to-Agent development governance.
 
 Provides the foundational module for an autonomous software engineering
-team that monitors the LinkedAI platform, triages issues, coordinates
+team that monitors production systems, triages issues, coordinates
 investigation and development, enforces stability gates, and manages
 deployments — all via the A2A protocol.
 
