@@ -136,13 +136,23 @@ def setup_agent_registry(config) -> AgentRegistry:
     return registry
 
 
-def comment_on_github_issue(issue_number: int, body: str) -> None:
-    """Post a status update comment on a GitHub issue."""
+def comment_on_github_issue(issue_number: int, body: str, repo: str = "") -> None:
+    """Post a status update comment on a GitHub issue.
+
+    ``repo`` should be the full slug (e.g. ``ArtemisAI/LinkedAi``).  If omitted
+    the ``gh`` CLI uses whatever repo the current working directory points to.
+    """
     try:
-        subprocess.run(
-            ["gh", "issue", "comment", str(issue_number), "--body", body],
-            capture_output=True, text=True, timeout=15,
-        )
+        cmd = ["gh", "issue", "comment", str(issue_number), "--body", body]
+        if repo:
+            cmd += ["--repo", repo]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if result.returncode != 0:
+            logger.warning(
+                "gh issue comment failed (rc=%d): %s",
+                result.returncode,
+                (result.stderr or "").strip()[:200],
+            )
     except Exception:
         logger.exception("Failed to comment on issue #%d", issue_number)
 
