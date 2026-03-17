@@ -34,12 +34,14 @@ Unlike single-agent coding tools, SWE Squad operates as a **coordinated team** w
 ### Key Features
 
 - **Automated Error Detection** — Scans logs for errors with fingerprint-based deduplication
-- **Smart Model Routing** — Uses Haiku for cheap tasks, Sonnet for routine fixes, Opus only for critical orchestration
+- **Smart Model Routing** — Haiku for cheap tasks, Sonnet for routine fixes, Opus for critical orchestration only
 - **Keep/Discard Fix Loop** — Every fix lives on a git branch; tests fail = auto-revert
 - **Ralph Wiggum Gate** — Stability-first governance: bugs must be fixed before features ship
 - **Deterministic Replay** — Caches successful fixes by error fingerprint for zero-cost replay
+- **Semantic Memory** — pgvector embeddings surface similar past fixes at investigation time; mem0-style fact extraction; confidence-weighted retrieval with TTL
 - **Multi-Team Support** — Multiple squads share a Supabase backend without overlap
 - **A2A Protocol** — Inter-agent communication for cross-team coordination
+- **CLI Tools** — `swe-cli` for status, tickets, issues, and daily reports from terminal or cron
 
 ---
 
@@ -206,10 +208,15 @@ python -m pytest tests/unit/test_swe_team.py -v
 | `TELEGRAM_CHAT_ID` | No | Telegram chat ID for alerts |
 | `SUPABASE_URL` | No | Enables Supabase ticket store |
 | `SUPABASE_ANON_KEY` | No | Supabase authentication key |
-| `EMBEDDING_MODEL` | No | Embedding model for semantic memory (default: `bge-m3`) |
-| `EMBEDDING_DIMENSIONS` | No | Embedding dimensions (default: `1024`) |
+| `BASE_LLM_API_URL` | No | External OpenAI-compatible proxy for embeddings and fact extraction |
+| `BASE_LLM_API_KEY` | No | API key for BASE_LLM proxy |
+| `EMBEDDING_MODEL` | No | Embedding model (default: `bge-m3`, 1024-dim) |
 | `EMBEDDING_API_URL` | No | Embeddings endpoint (defaults to `BASE_LLM_API_URL`) |
 | `EMBEDDING_API_KEY` | No | Embeddings key (defaults to `BASE_LLM_API_KEY`) |
+| `EXTRACTION_MODEL` | No | Fact-extraction model via BASE_LLM (default: `gemini-3-flash`) |
+| `SWE_MODEL_T1` | No | Override T1 model tier (default: `haiku`) |
+| `SWE_MODEL_T2` | No | Override T2 model tier (default: `sonnet`) |
+| `SWE_MODEL_T3` | No | Override T3 model tier (default: `opus`) |
 | `SWE_REMOTE_NODES` | No | JSON array of SSH worker nodes for log collection |
 
 ### YAML Config (`config/swe_team.yaml`)
@@ -234,9 +241,30 @@ psql $DATABASE_URL -f scripts/ops/supabase_schema.sql
 ```
 
 Creates:
-- `swe_tickets` — main work queue with team scoping
+- `swe_tickets` — main work queue with team scoping, embedding column, memory lifecycle fields
 - `swe_ticket_events` — immutable audit trail
 - Views: `v_backlog`, `v_queue_critical`, `v_queue_by_agent`, `v_stability`
+- RPCs: `match_similar_tickets`, `increment_memory_confidence`
+
+---
+
+## Semantic Memory
+
+SWE Squad learns from resolved tickets. When an investigator starts on a new ticket, it searches for the most similar resolved tickets and injects them as context — reducing time to diagnosis and preventing repeated investigations of the same class of bug.
+
+### How it works
+
+1. **Fact extraction** — when a ticket is resolved, `gemini-3-flash` (via BASE_LLM proxy) distils the investigation report into a compact structured fact: root cause, fix applied, affected module, and error/fix tags
+2. **Embedding** — the structured fact is embedded with `bge-m3` (1024-dim) and stored in Supabase pgvector
+3. **Deduplication** — before storing, a 0.92-threshold cosine check prevents near-duplicate memories; richer content wins on merge
+4. **Retrieval** — at investigation time, the top-5 most similar memories (≥0.75 cosine, ≤180 days old) are injected into the investigation prompt
+5. **Confidence** — each time a memory is used, its `memory_confidence` score increases (+0.1, max 2.0); confidence-weighted ranking surfaces proven memories over stale ones
+
+### Requirements
+
+- Supabase with pgvector extension (`CREATE EXTENSION IF NOT EXISTS vector`)
+- BASE_LLM proxy with `bge-m3` for embeddings and `gemini-3-flash` for extraction
+- Run `scripts/ops/supabase_schema.sql` to create the schema
 
 ---
 
@@ -265,21 +293,26 @@ Each squad:
 |------|---------|
 | `src/swe_team/monitor_agent.py` | Log scanning, error detection, fingerprint dedup |
 | `src/swe_team/triage_agent.py` | Severity routing, specialist assignment |
-| `src/swe_team/investigator.py` | Claude Code CLI diagnosis with model routing |
-| `src/swe_team/developer.py` | Keep/discard fix loop with git branches |
+| `src/swe_team/investigator.py` | Claude Code CLI diagnosis; semantic memory context injection; model routing |
+| `src/swe_team/developer.py` | Keep/discard fix loop with git branches; preflight validation |
 | `src/swe_team/ralph_wiggum.py` | Stability gate — bugs before features |
 | `src/swe_team/governance.py` | Deployment governor, complexity limits |
-| `src/swe_team/creative_agent.py` | Proactive improvement proposals |
-| `src/swe_team/distiller.py` | Trajectory distillation — cache successful fixes |
-| `src/swe_team/supabase_store.py` | Supabase ticket store (zero-dep, stdlib only) |
-| `src/swe_team/ticket_store.py` | JSON ticket store with fingerprint dedup |
-| `src/swe_team/notifier.py` | Telegram alerts and daily summaries |
-| `src/swe_team/github_integration.py` | GitHub issue creation and commenting |
+| `src/swe_team/creative_agent.py` | Proactive improvement proposals (only when stable) |
+| `src/swe_team/distiller.py` | Trajectory distillation — cache successful fixes for zero-cost replay |
+| `src/swe_team/embeddings.py` | bge-m3 embeddings + mem0-style fact extraction via BASE_LLM proxy |
+| `src/swe_team/supabase_store.py` | Supabase ticket store; semantic dedup; memory confidence lifecycle |
+| `src/swe_team/ticket_store.py` | JSON ticket store — zero-dependency default |
+| `src/swe_team/telegram.py` | Standalone Telegram Bot API client (stdlib only) |
+| `src/swe_team/notifier.py` | Telegram alerts, HITL escalation, daily summaries |
+| `src/swe_team/preflight.py` | PreflightCheck — validates environment before agent commits |
+| `src/swe_team/github_integration.py` | GitHub issue creation and commenting (repo-aware) |
 | `src/swe_team/remote_logs.py` | SSH/rsync log collection from workers |
-| `src/a2a/adapters/swe_team.py` | A2A protocol adapter |
-| `scripts/ops/swe_team_runner.py` | Entry point — cron, daemon, bootstrap modes |
-| `scripts/ops/supabase_schema.sql` | Database schema for Supabase backend |
-| `config/swe_team/programs/` | Markdown prompt programs (investigate, fix, orchestrate) |
+| `src/a2a/adapters/swe_team.py` | A2A protocol adapter for inter-agent events |
+| `scripts/ops/swe_team_runner.py` | Main entry point — cron, daemon, bootstrap, report modes |
+| `scripts/ops/swe_cli.py` | CLI tool — status, tickets, issues, repos, summary, report |
+| `scripts/ops/supabase_schema.sql` | Full Supabase DDL: tables, indexes, RLS, pgvector RPCs |
+| `config/swe_team/programs/` | Prompt programs: `investigate.md`, `fix.md`, `orchestrate.md` |
+| `crontab.example` | Recommended cron schedules for continuous monitoring and reports |
 
 ---
 
@@ -324,9 +357,15 @@ python -m pytest tests/unit/test_swe_team.py -v
 
 - [x] Core agent loop (monitor → triage → investigate → fix)
 - [x] Ralph Wiggum stability gate
-- [x] Trajectory distillation (cached fixes)
-- [x] Supabase ticket store with multi-team support
+- [x] Trajectory distillation (cached fixes, zero-cost replay)
+- [x] Supabase ticket store with multi-team support and audit trail
 - [x] A2A protocol adapter
+- [x] Semantic memory — pgvector embeddings + mem0-style extraction + confidence lifecycle
+- [x] Monitor self-scan recursion prevention
+- [x] Preflight validation gate
+- [x] Closed-loop regression detection and re-investigation
+- [x] CLI tools (`swe-cli`) for status, tickets, and reports
+- [x] Cron integration
 - [ ] Web dashboard for ticket monitoring
 - [ ] GitHub Actions integration
 - [ ] Slack/Discord notifications
