@@ -12,7 +12,7 @@ import enum
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -146,8 +146,68 @@ class SWETicket:
             rollback_reason=data.get("rollback_reason"),
         )
 
+    # Resolution bypass reasons that satisfy the audit gate without a full report.
+    # Any ticket resolved with one of these notes is considered legitimately closed.
+    RESOLUTION_BYPASS_REASONS: ClassVar[set] = {
+        "false_regression",
+        "duplicate",
+        "already_fixed_externally",
+        "not_reproducible",
+        "wont_fix_approved",
+        "manual_override",
+    }
+
+    def resolution_audit(self) -> tuple[bool, str]:
+        """Check whether this ticket may legitimately be closed as RESOLVED.
+
+        Returns (ok, reason).  ``ok=False`` means the transition should be
+        blocked; ``reason`` is a human-readable explanation.
+
+        Rules
+        -----
+        1. A recognised bypass note in ``metadata['resolution_note']`` always
+           permits closure regardless of report or attempts.
+        2. Otherwise the ticket must have an investigation report of at least
+           200 characters.
+        3. HIGH / CRITICAL tickets additionally need at least one fix attempt
+           OR an explicit bypass note.
+        """
+        note = str(self.metadata.get("resolution_note", "")).lower()
+        if any(r in note for r in self.RESOLUTION_BYPASS_REASONS):
+            return True, f"bypass: {note[:80]}"
+
+        report = self.investigation_report or ""
+        if len(report) < 200:
+            return False, (
+                f"investigation_report too short ({len(report)} chars, need ≥200). "
+                "Investigate first or set metadata['resolution_note'] to a bypass reason: "
+                + ", ".join(sorted(self.RESOLUTION_BYPASS_REASONS))
+            )
+
+        if self.severity in (TicketSeverity.HIGH, TicketSeverity.CRITICAL):
+            attempts = self.metadata.get("attempts", [])
+            if not attempts:
+                return False, (
+                    f"{self.severity.value.upper()} ticket requires ≥1 fix attempt before RESOLVED. "
+                    "Attempts list is empty. Run developer agent or set resolution_note bypass."
+                )
+
+        return True, "audit passed"
+
     def transition(self, new_status: TicketStatus) -> None:
-        """Move the ticket to *new_status* and touch the timestamp."""
+        """Move the ticket to *new_status* and touch the timestamp.
+
+        Raises ``ValueError`` if transitioning to RESOLVED without passing
+        the resolution audit.  To force-close, set
+        ``ticket.metadata['resolution_note']`` to a bypass reason first.
+        """
+        if new_status == TicketStatus.RESOLVED:
+            ok, reason = self.resolution_audit()
+            if not ok:
+                raise ValueError(
+                    f"Resolution blocked for {self.ticket_id} ({self.severity.value} / "
+                    f"{self.status.value}): {reason}"
+                )
         self.status = new_status
         self.updated_at = datetime.now(timezone.utc).isoformat()
 

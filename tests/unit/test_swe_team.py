@@ -687,7 +687,7 @@ class TestRalphWiggumGate:
             title="resolved", description="x",
             severity=TicketSeverity.CRITICAL,
         )
-        ticket.transition(TicketStatus.RESOLVED)
+        ticket.status = TicketStatus.RESOLVED
         report = gate.evaluate([ticket], ci_green=True, failing_tests=0)
         assert report.verdict == GovernanceVerdict.PASS
 
@@ -860,7 +860,7 @@ class TestTicketStore:
             store = TicketStore(path)
             t1 = SWETicket(title="open", description="x")
             t2 = SWETicket(title="resolved", description="y")
-            t2.transition(TicketStatus.RESOLVED)
+            t2.status = TicketStatus.RESOLVED
             store.add(t1)
             store.add(t2)
             assert len(store.list_open()) == 1
@@ -1894,11 +1894,11 @@ class TestCreativeAgent:
 
         store = TicketStore(str(tmp_path / "tickets.json"))
         t1 = SWETicket(title="A", description="x", source_module="scraping")
-        t1.transition(TicketStatus.RESOLVED)
+        t1.status = TicketStatus.RESOLVED
         t2 = SWETicket(title="B", description="x", source_module="scraping")
-        t2.transition(TicketStatus.RESOLVED)
+        t2.status = TicketStatus.RESOLVED
         t3 = SWETicket(title="C", description="x", source_module="auth")
-        t3.transition(TicketStatus.RESOLVED)
+        t3.status = TicketStatus.RESOLVED
         store.add(t1)
         store.add(t2)
         store.add(t3)
@@ -2251,11 +2251,11 @@ class TestListRecentlyResolved:
         from datetime import datetime, timezone
 
         t1 = SWETicket(title="Bug A", description="x")
-        t1.transition(TicketStatus.RESOLVED)
+        t1.status = TicketStatus.RESOLVED
         store.add(t1)
 
         t2 = SWETicket(title="Bug B", description="y")
-        t2.transition(TicketStatus.RESOLVED)
+        t2.status = TicketStatus.RESOLVED
         store.add(t2)
 
         # An open ticket should NOT appear
@@ -2273,7 +2273,7 @@ class TestListRecentlyResolved:
         from datetime import datetime, timedelta, timezone
 
         t = SWETicket(title="Old bug", description="x")
-        t.transition(TicketStatus.RESOLVED)
+        t.status = TicketStatus.RESOLVED
         # Backdate updated_at to 48 hours ago
         t.updated_at = (
             datetime.now(timezone.utc) - timedelta(hours=48)
@@ -2349,7 +2349,7 @@ class TestCheckRegressions:
             proposed_fix="Fix the config",
             metadata={"fingerprint": "abc123"},
         )
-        parent.transition(TicketStatus.RESOLVED)
+        parent.status = TicketStatus.RESOLVED
         store.add(parent)
 
         # Mock a monitor that finds the same fingerprint in fresh scan
@@ -2384,7 +2384,7 @@ class TestCheckRegressions:
             severity=TicketSeverity.HIGH,
             metadata={"fingerprint": "def456"},
         )
-        parent.transition(TicketStatus.RESOLVED)
+        parent.status = TicketStatus.RESOLVED
         store.add(parent)
 
         config = SWETeamConfig(regression_window_hours=24)
@@ -2411,7 +2411,7 @@ class TestCheckRegressions:
             proposed_fix="Add connection timeout and pool recycling",
             metadata={"fingerprint": "db-fp-001"},
         )
-        parent.transition(TicketStatus.RESOLVED)
+        parent.status = TicketStatus.RESOLVED
         store.add(parent)
 
         config = SWETeamConfig(regression_window_hours=24)
@@ -2446,7 +2446,7 @@ class TestCheckRegressions:
                 },
             },
         )
-        parent.transition(TicketStatus.RESOLVED)
+        parent.status = TicketStatus.RESOLVED
         store.add(parent)
 
         config = SWETeamConfig(regression_window_hours=24)
@@ -2478,7 +2478,7 @@ class TestCheckRegressions:
             severity=TicketSeverity.MEDIUM,
             metadata={"fingerprint": "fp-below-3"},
         )
-        parent.transition(TicketStatus.RESOLVED)
+        parent.status = TicketStatus.RESOLVED
         store.add(parent)
 
         config = SWETeamConfig(regression_window_hours=24)
