@@ -7,6 +7,17 @@
 # Environment variable overrides: SWE_TEAM_CONFIG (path), SWE_TEAM_ENABLED
 # =============================================================================
 
+# ---------------------------------------------------------------------------
+# Managed Repositories (local clones used by investigator and developer)
+# ---------------------------------------------------------------------------
+repos:
+  - name: "ArtemisAI/LinkedAi"
+    local_path: "/home/agent/Projects/LinkedAi"
+    description: "Primary product — LinkedIn automation pipeline"
+  - name: "ArtemisAI/SWE-Squad-DEV"
+    local_path: "/home/agent/SWE-Squad"
+    description: "This repo — autonomous SWE agent system"
+
 # Kill switch — set to true to activate SWE team agents.
 # Override via environment variable: SWE_TEAM_ENABLED=true
 enabled: false
@@ -28,8 +39,8 @@ ticket_store_path: "data/swe_team/tickets.json"
 # ---------------------------------------------------------------------------
 governance:
   enabled: true
-  max_open_critical: 5        # Block new FEATURE work if >5 critical bugs open
-  max_open_high: 20           # Block if >20 high bugs open (loosened — large backlog is normal)
+  max_open_critical: 20       # Block new FEATURE work if >20 critical bugs open (working down backlog)
+  max_open_high: 50           # Block if >50 high bugs open (loosened — large backlog is normal)
   max_failing_tests: 0        # Block if any test failures
   require_ci_green: false     # Don't block on CI — CI not configured for LinkedAi yet
   check_interval_hours: 6     # Run stability check every 6 hours

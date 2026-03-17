@@ -124,11 +124,15 @@ class InvestigatorAgent:
             self._record_failure(ticket, started_at, "Prompt template missing")
             return False
 
-        logger.info("Investigating ticket %s via Claude CLI (model=%s)", ticket.ticket_id, model)
+        cwd = self._repo_cwd(ticket)
+        logger.info(
+            "Investigating ticket %s via Claude CLI (model=%s, cwd=%s)",
+            ticket.ticket_id, model, cwd or "SWE-Squad",
+        )
         start = time.monotonic()
         try:
             stdout, stderr = self._backoff.execute(
-                lambda: self._run_claude(prompt, model=model, timeout=timeout),
+                lambda: self._run_claude(prompt, model=model, timeout=timeout, cwd=cwd),
                 context=model,
             )
         except RateLimitExhausted as exc:
@@ -176,6 +180,9 @@ class InvestigatorAgent:
             "completed_at": datetime.now(timezone.utc).isoformat(),
             "duration_s": round(duration_s, 2),
             "cost_usd": cost,
+            "model": model,
+            "repo_cwd": str(cwd) if cwd else "SWE-Squad",
+            "report_chars": len(report),
             "status": "complete",
         }
 
@@ -369,8 +376,26 @@ class InvestigatorAgent:
             return heavy
         return standard
 
+    # Mapping of GitHub repo slug → local clone path
+    _REPO_PATHS: dict[str, Path] = {
+        "ArtemisAI/LinkedAi": Path("/home/agent/Projects/LinkedAi"),
+        "ArtemisAI/SWE-Squad-DEV": Path("/home/agent/SWE-Squad"),
+    }
+
+    def _repo_cwd(self, ticket: "SWETicket") -> Optional[Path]:
+        """Return the local clone path for the ticket's repo, or None."""
+        repo = ticket.metadata.get("repo") or ticket.metadata.get("github_repo")
+        if not repo:
+            return None
+        path = self._REPO_PATHS.get(repo)
+        if path and path.is_dir():
+            return path
+        logger.warning("investigator: repo '%s' not cloned locally — running in SWE-Squad root", repo)
+        return None
+
     def _run_claude(
-        self, prompt: str, *, model: str = "sonnet", timeout: Optional[int] = None
+        self, prompt: str, *, model: str = "sonnet", timeout: Optional[int] = None,
+        cwd: Optional[Path] = None,
     ) -> tuple[str, str]:
         effective_timeout = timeout or self._timeout
         result = subprocess.run(
@@ -384,6 +409,7 @@ class InvestigatorAgent:
             text=True,
             capture_output=True,
             timeout=effective_timeout,
+            cwd=str(cwd) if cwd else None,
         )
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or "Claude CLI failed")
