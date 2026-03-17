@@ -52,6 +52,16 @@ monitor:
     - "TimeoutError"
 
 # ---------------------------------------------------------------------------
+# Semantic Memory (pgvector embeddings + similar ticket retrieval)
+# ---------------------------------------------------------------------------
+memory:
+  embedding_model: "bge-m3"
+  embedding_dimensions: 1024
+  top_k: 5
+  similarity_floor: 0.75
+  store_on_investigation_complete: true
+
+# ---------------------------------------------------------------------------
 # Agent Definitions
 # ---------------------------------------------------------------------------
 agents:

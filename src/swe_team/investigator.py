@@ -15,9 +15,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, List, Optional
 
+from src.swe_team.embeddings import embed_ticket
 from src.swe_team.github_integration import comment_on_issue
 from src.swe_team.models import SWETicket, TicketSeverity, TicketStatus
 from src.swe_team.notifier import notify_investigation_summary
+from src.swe_team.supabase_store import SupabaseTicketStore
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,8 @@ _DEFAULT_CLAUDE_PATH = "/usr/bin/claude"
 _DEFAULT_TIMEOUT = 120
 _OPUS_TIMEOUT = 600  # Opus gets 10 min — it orchestrates multiple sub-agents
 _DEFAULT_MAX_PER_CYCLE = 5
+_SEMANTIC_INVESTIGATION_CHARS = 400
+_SEMANTIC_FIX_CHARS = 200
 
 
 class InvestigatorAgent:
@@ -41,11 +45,17 @@ class InvestigatorAgent:
         claude_path: str = _DEFAULT_CLAUDE_PATH,
         timeout_seconds: int = _DEFAULT_TIMEOUT,
         max_per_cycle: int = _DEFAULT_MAX_PER_CYCLE,
+        store: Optional[object] = None,
+        memory_top_k: int = 5,
+        memory_similarity_floor: float = 0.75,
     ) -> None:
         self._program_path = Path(program_path)
         self._claude_path = claude_path
         self._timeout = timeout_seconds
         self._max_per_cycle = max_per_cycle
+        self._store = store
+        self._memory_top_k = memory_top_k
+        self._memory_similarity_floor = memory_similarity_floor
         self._program_cache: Optional[str] = None
 
     def investigate_batch(
@@ -147,6 +157,9 @@ class InvestigatorAgent:
         if not template:
             return None
         error_log = ticket.error_log or "No error log provided."
+        similar_context = self._semantic_memory_context(ticket)
+        if similar_context:
+            error_log = f"{error_log}\n\n{similar_context}"
         module = ticket.source_module or "unknown"
         try:
             return template.format(error_log=error_log, source_module=module)
@@ -160,17 +173,49 @@ class InvestigatorAgent:
         if not template:
             # Fall back to investigation-only program
             return self._build_prompt(ticket)
+        description = ticket.description or ""
+        similar_context = self._semantic_memory_context(ticket)
+        if similar_context:
+            description = f"{description}\n\n{similar_context}"
         try:
             return template.format(
                 title=ticket.title,
                 severity=ticket.severity.value,
                 source_module=ticket.source_module or "unknown",
-                description=ticket.description or "",
+                description=description,
                 investigation_report=ticket.investigation_report or "No prior investigation.",
             )
         except (KeyError, ValueError) as exc:
             logger.warning("Invalid orchestrate.md template: %s", exc)
             return self._build_prompt(ticket)
+
+    def _semantic_memory_context(self, ticket: SWETicket) -> str:
+        if not isinstance(self._store, SupabaseTicketStore):
+            return ""
+        try:
+            emb = embed_ticket(ticket)
+            if not emb:
+                return ""
+            hits = self._store.find_similar(
+                emb,
+                top_k=self._memory_top_k,
+                similarity_floor=self._memory_similarity_floor,
+            )
+            if not hits:
+                return ""
+            lines = ["## Semantic Memory — Similar Resolved Tickets\n"]
+            for hit in hits:
+                lines.append(
+                    f"### [{hit.get('ticket_id', 'unknown')}] {hit.get('title', 'Untitled')} "
+                    f"(similarity={float(hit.get('similarity', 0.0)):.2f})\n"
+                    f"**Module**: {hit.get('source_module') or 'unknown'}\n"
+                    f"**Investigation**: {(hit.get('investigation_report') or '')[:_SEMANTIC_INVESTIGATION_CHARS]}\n"
+                    f"**Fix applied**: {(hit.get('proposed_fix') or 'N/A')[:_SEMANTIC_FIX_CHARS]}\n"
+                )
+            return "\n".join(lines)
+        except Exception as exc:
+            logger.warning("Semantic memory lookup failed (non-fatal): %s", exc)
+            return ""
 
     def _load_program(self, path: Path) -> Optional[str]:
         if path == self._program_path and self._program_cache is not None:

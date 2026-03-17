@@ -110,6 +110,43 @@ class MonitorConfig:
 
 
 # ---------------------------------------------------------------------------
+# Semantic memory settings
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MemoryConfig:
+    """Settings for semantic ticket memory (pgvector embeddings)."""
+
+    embedding_model: str = "bge-m3"
+    embedding_dimensions: int = 1024
+    top_k: int = 5
+    similarity_floor: float = 0.75
+    store_on_investigation_complete: bool = True
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MemoryConfig":
+        return cls(
+            embedding_model=data.get("embedding_model", "bge-m3"),
+            embedding_dimensions=data.get("embedding_dimensions", 1024),
+            top_k=data.get("top_k", 5),
+            similarity_floor=data.get("similarity_floor", 0.75),
+            store_on_investigation_complete=data.get(
+                "store_on_investigation_complete",
+                True,
+            ),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "embedding_model": self.embedding_model,
+            "embedding_dimensions": self.embedding_dimensions,
+            "top_k": self.top_k,
+            "similarity_floor": self.similarity_floor,
+            "store_on_investigation_complete": self.store_on_investigation_complete,
+        }
+
+
+# ---------------------------------------------------------------------------
 # Top-level SWE team configuration
 # ---------------------------------------------------------------------------
 
@@ -120,6 +157,7 @@ class SWETeamConfig:
     agents: List[SWEAgentConfig] = field(default_factory=list)
     governance: GovernanceConfig = field(default_factory=GovernanceConfig)
     monitor: MonitorConfig = field(default_factory=MonitorConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
     ticket_store_path: str = "data/swe_team/tickets.json"
     a2a_hub_url: str = "http://localhost:18790"
     enabled: bool = False
@@ -133,10 +171,12 @@ class SWETeamConfig:
         ]
         gov = GovernanceConfig.from_dict(data.get("governance", {}))
         mon = MonitorConfig.from_dict(data.get("monitor", {}))
+        memory = MemoryConfig.from_dict(data.get("memory", {}))
         return cls(
             agents=agents,
             governance=gov,
             monitor=mon,
+            memory=memory,
             ticket_store_path=data.get(
                 "ticket_store_path", "data/swe_team/tickets.json"
             ),
@@ -151,6 +191,7 @@ class SWETeamConfig:
             "agents": [a.to_dict() for a in self.agents],
             "governance": self.governance.to_dict(),
             "monitor": self.monitor.to_dict(),
+            "memory": self.memory.to_dict(),
             "ticket_store_path": self.ticket_store_path,
             "a2a_hub_url": self.a2a_hub_url,
             "enabled": self.enabled,

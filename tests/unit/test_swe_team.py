@@ -41,6 +41,8 @@ from src.swe_team.investigator import InvestigatorAgent, _parse_cost
 from src.swe_team.ralph_wiggum import RalphWiggumGate
 from src.swe_team.governance import DeploymentGovernor, DeploymentRecord, check_fix_complexity
 from src.swe_team.developer import DeveloperAgent
+from src.swe_team.embeddings import embed_ticket
+from src.swe_team.supabase_store import SupabaseTicketStore
 from src.swe_team.ticket_store import TicketStore
 
 
@@ -734,6 +736,82 @@ class TestTicketStore:
 
 
 # ======================================================================
+# Semantic Memory (Embeddings + Supabase pgvector)
+# ======================================================================
+
+class TestEmbeddings:
+    def test_embed_ticket_success(self):
+        ticket = SWETicket(title="Embed me", description="x", error_log="Traceback")
+        mock_client = type(
+            "C",
+            (),
+            {
+                "embeddings": type(
+                    "E",
+                    (),
+                    {
+                        "create": lambda self, **_: type(
+                            "Resp",
+                            (),
+                            {"data": [type("D", (), {"embedding": [0.1, 0.2, 0.3]})()]},
+                        )()
+                    },
+                )()
+            },
+        )()
+        with (
+            patch.dict(os.environ, {"BASE_LLM_API_URL": "https://api.example", "BASE_LLM_API_KEY": "k"}),
+            patch("openai.OpenAI", return_value=mock_client),
+        ):
+            result = embed_ticket(ticket)
+        assert result == [0.1, 0.2, 0.3]
+
+    def test_embed_ticket_failure_is_non_fatal(self):
+        ticket = SWETicket(title="Embed me", description="x")
+        with patch("openai.OpenAI", side_effect=RuntimeError("proxy down")):
+            result = embed_ticket(ticket)
+        assert result is None
+
+
+class TestSupabaseSemanticMemory:
+    def test_store_embedding_uses_patch(self):
+        store = SupabaseTicketStore(
+            supabase_url="https://example.supabase.co",
+            supabase_key="test-key",
+            team_id="team-a",
+        )
+        with patch.object(store, "_request", return_value=None) as mock_request:
+            store.store_embedding("t1", [1.0, 2.0])
+        mock_request.assert_called_once_with(
+            "PATCH",
+            "/swe_tickets",
+            params={"ticket_id": "eq.t1", "team_id": "eq.team-a"},
+            body={"embedding": "[1.0,2.0]"},
+        )
+
+    def test_find_similar_calls_rpc(self):
+        store = SupabaseTicketStore(
+            supabase_url="https://example.supabase.co",
+            supabase_key="test-key",
+            team_id="team-a",
+        )
+        fake_rows = [{"ticket_id": "t2", "similarity": 0.91}]
+        with patch.object(store, "_request", return_value=fake_rows) as mock_request:
+            result = store.find_similar([0.5, 0.6], top_k=3, similarity_floor=0.8)
+        assert result == fake_rows
+        mock_request.assert_called_once_with(
+            "POST",
+            "/rpc/match_similar_tickets",
+            body={
+                "query_embedding": "[0.5,0.6]",
+                "team": "team-a",
+                "match_count": 3,
+                "similarity_floor": 0.8,
+            },
+        )
+
+
+# ======================================================================
 # SWE_TEAM_ENABLED environment variable override
 # ======================================================================
 
@@ -1105,6 +1183,70 @@ class TestInvestigatorAgent:
 
         assert result is False
         mock_run.assert_not_called()
+
+    def test_prompt_includes_semantic_memory_when_hits_exist(self, tmp_path):
+        from src.swe_team.investigator import InvestigatorAgent
+
+        program = tmp_path / "investigate.md"
+        program.write_text("Error: {error_log}\nModule: {source_module}\n")
+        ticket = SWETicket(
+            title="Scraper crash",
+            description="boom",
+            severity=TicketSeverity.HIGH,
+            source_module="scraping",
+            error_log="Traceback: boom",
+        )
+        ticket.transition(TicketStatus.TRIAGED)
+        store = SupabaseTicketStore(
+            supabase_url="https://example.supabase.co",
+            supabase_key="test-key",
+            team_id="team-a",
+        )
+        with (
+            patch("src.swe_team.investigator.embed_ticket", return_value=[0.1, 0.2]),
+            patch.object(
+                store,
+                "find_similar",
+                return_value=[
+                    {
+                        "ticket_id": "abc123",
+                        "title": "Previous timeout",
+                        "source_module": "scraping",
+                        "investigation_report": "Root cause: flaky upstream",
+                        "proposed_fix": "Added retry",
+                        "similarity": 0.91,
+                    }
+                ],
+            ),
+        ):
+            agent = InvestigatorAgent(program_path=program, store=store)
+            prompt = agent._build_prompt(ticket)
+        assert "## Semantic Memory — Similar Resolved Tickets" in prompt
+        assert "Previous timeout" in prompt
+
+    def test_prompt_unchanged_when_embedding_fails(self, tmp_path):
+        from src.swe_team.investigator import InvestigatorAgent
+
+        program = tmp_path / "investigate.md"
+        program.write_text("Error: {error_log}\nModule: {source_module}\n")
+        ticket = SWETicket(
+            title="Scraper crash",
+            description="boom",
+            severity=TicketSeverity.HIGH,
+            source_module="scraping",
+            error_log="Traceback: boom",
+        )
+        ticket.transition(TicketStatus.TRIAGED)
+        store = SupabaseTicketStore(
+            supabase_url="https://example.supabase.co",
+            supabase_key="test-key",
+            team_id="team-a",
+        )
+        with patch("src.swe_team.investigator.embed_ticket", return_value=None):
+            agent = InvestigatorAgent(program_path=program, store=store)
+            prompt = agent._build_prompt(ticket)
+        assert "Semantic Memory" not in prompt
+        assert "Traceback: boom" in prompt
 
 
 class TestParseCost:
@@ -1512,3 +1654,34 @@ class TestFetchGithubTickets:
 
         assert len(tickets) == 1
         assert tickets[0].description == ""
+
+
+class TestRunnerSemanticMemory:
+    def test_store_ticket_embedding_calls_store_for_supabase(self):
+        import scripts.ops.swe_team_runner as runner
+
+        store = SupabaseTicketStore(
+            supabase_url="https://example.supabase.co",
+            supabase_key="test-key",
+            team_id="team-a",
+        )
+        ticket = SWETicket(title="Bug", description="x", investigation_report="report")
+        with (
+            patch("scripts.ops.swe_team_runner.embed_ticket", return_value=[0.1, 0.2]),
+            patch.object(store, "store_embedding") as mock_store_embedding,
+        ):
+            runner.store_ticket_embedding(store, ticket, enabled=True)
+        mock_store_embedding.assert_called_once_with(ticket.ticket_id, [0.1, 0.2])
+
+    def test_store_ticket_embedding_noops_without_report(self):
+        import scripts.ops.swe_team_runner as runner
+
+        store = SupabaseTicketStore(
+            supabase_url="https://example.supabase.co",
+            supabase_key="test-key",
+            team_id="team-a",
+        )
+        ticket = SWETicket(title="Bug", description="x")
+        with patch.object(store, "store_embedding") as mock_store_embedding:
+            runner.store_ticket_embedding(store, ticket, enabled=True)
+        mock_store_embedding.assert_not_called()

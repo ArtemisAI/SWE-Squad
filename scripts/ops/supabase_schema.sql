@@ -3,6 +3,8 @@
 -- Run once to initialise the ticket store and audit trail.
 -- =============================================================================
 
+CREATE EXTENSION IF NOT EXISTS vector;
+
 -- ---------------------------------------------------------------------------
 -- 1. swe_tickets — main work queue
 -- ---------------------------------------------------------------------------
@@ -34,8 +36,13 @@ CREATE TABLE IF NOT EXISTS swe_tickets (
     proposed_fix         TEXT,
     test_results         JSONB,
     deployment_id        TEXT,
-    rollback_reason      TEXT
+    rollback_reason      TEXT,
+    embedding            vector(1024)
 );
+
+ALTER TABLE swe_tickets
+    -- Keep this for existing deployments where table predates embeddings.
+    ADD COLUMN IF NOT EXISTS embedding vector(1024);
 
 -- Indexes for common query patterns
 CREATE INDEX IF NOT EXISTS idx_tickets_team_status
@@ -48,6 +55,11 @@ CREATE INDEX IF NOT EXISTS idx_tickets_fingerprint
 CREATE INDEX IF NOT EXISTS idx_tickets_assigned
     ON swe_tickets (assigned_to)
     WHERE assigned_to IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tickets_embedding
+    ON swe_tickets
+    USING ivfflat (embedding vector_cosine_ops)
+    -- Lists tuned for moderate ticket volume; increase with table growth.
+    WITH (lists = 100);
 
 -- Auto-update updated_at on row changes
 CREATE OR REPLACE FUNCTION update_updated_at()
@@ -140,3 +152,39 @@ CREATE POLICY tickets_all_access ON swe_tickets
 DROP POLICY IF EXISTS events_all_access ON swe_ticket_events;
 CREATE POLICY events_all_access ON swe_ticket_events
     FOR ALL USING (true) WITH CHECK (true);
+
+-- ---------------------------------------------------------------------------
+-- 5. Semantic memory retrieval (pgvector similarity)
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION match_similar_tickets(
+    query_embedding  vector(1024),
+    team             TEXT,
+    match_count      INT     DEFAULT 5,
+    similarity_floor FLOAT   DEFAULT 0.75
+)
+RETURNS TABLE (
+    ticket_id            TEXT,
+    title                TEXT,
+    source_module        TEXT,
+    error_log            TEXT,
+    investigation_report TEXT,
+    proposed_fix         TEXT,
+    similarity           FLOAT
+)
+LANGUAGE sql STABLE AS $$
+    SELECT
+        t.ticket_id,
+        t.title,
+        t.source_module,
+        t.error_log,
+        t.investigation_report,
+        t.proposed_fix,
+        1 - (t.embedding <=> query_embedding) AS similarity
+    FROM swe_tickets t
+    WHERE t.team_id = team
+      AND t.status IN ('resolved', 'closed')
+      AND t.embedding IS NOT NULL
+      AND 1 - (t.embedding <=> query_embedding) >= similarity_floor
+    ORDER BY t.embedding <=> query_embedding
+    LIMIT match_count;
+$$;

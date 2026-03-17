@@ -139,6 +139,36 @@ class SupabaseTicketStore:
         rows = self._request("GET", "/swe_tickets", params=params)
         return [self._row_to_ticket(r) for r in (rows or [])]
 
+    def store_embedding(self, ticket_id: str, embedding: List[float]) -> None:
+        """Persist an embedding vector for an existing ticket."""
+        params = {
+            "ticket_id": f"eq.{ticket_id}",
+            "team_id": f"eq.{self._team_id}",
+        }
+        self._request(
+            "PATCH",
+            "/swe_tickets",
+            params=params,
+            body={"embedding": self._vector_literal(embedding)},
+        )
+
+    def find_similar(
+        self,
+        embedding: List[float],
+        *,
+        top_k: int = 5,
+        similarity_floor: float = 0.75,
+    ) -> List[Dict[str, Any]]:
+        """Query the pgvector similarity RPC for resolved/closed matches."""
+        payload = {
+            "query_embedding": self._vector_literal(embedding),
+            "team": self._team_id,
+            "match_count": top_k,
+            "similarity_floor": similarity_floor,
+        }
+        rows = self._request("POST", "/rpc/match_similar_tickets", body=payload)
+        return rows or []
+
     @property
     def known_fingerprints(self) -> Set[str]:
         """Fingerprints of all stored tickets for this team (for dedup)."""
@@ -265,3 +295,8 @@ class SupabaseTicketStore:
             len(fps), self._team_id,
         )
         return fps
+
+    @staticmethod
+    def _vector_literal(embedding: List[float]) -> str:
+        """Convert a list of floats into pgvector text literal format."""
+        return "[" + ",".join(str(float(v)) for v in embedding) + "]"

@@ -206,6 +206,10 @@ python -m pytest tests/unit/test_swe_team.py -v
 | `TELEGRAM_CHAT_ID` | No | Telegram chat ID for alerts |
 | `SUPABASE_URL` | No | Enables Supabase ticket store |
 | `SUPABASE_ANON_KEY` | No | Supabase authentication key |
+| `EMBEDDING_MODEL` | No | Embedding model for semantic memory (default: `bge-m3`) |
+| `EMBEDDING_DIMENSIONS` | No | Embedding dimensions (default: `1024`) |
+| `EMBEDDING_API_URL` | No | Embeddings endpoint (defaults to `BASE_LLM_API_URL`) |
+| `EMBEDDING_API_KEY` | No | Embeddings key (defaults to `BASE_LLM_API_KEY`) |
 | `SWE_REMOTE_NODES` | No | JSON array of SSH worker nodes for log collection |
 
 ### YAML Config (`config/swe_team.yaml`)

@@ -32,6 +32,7 @@ from src.swe_team.monitor_agent import MonitorAgent
 from src.swe_team.triage_agent import TriageAgent
 from src.swe_team.ralph_wiggum import RalphWiggumGate
 from src.swe_team.ticket_store import TicketStore
+from src.swe_team.embeddings import embed_ticket
 from src.swe_team.supabase_store import SupabaseTicketStore
 from src.swe_team.notifier import notify_new_tickets, notify_stability_gate, notify_daily_summary
 from src.swe_team.github_integration import create_github_issue, find_existing_issue
@@ -52,6 +53,28 @@ def comment_on_github_issue(issue_number: int, body: str) -> None:
         )
     except Exception:
         logger.exception("Failed to comment on issue #%d", issue_number)
+
+
+def store_ticket_embedding(
+    store: TicketStore | SupabaseTicketStore,
+    ticket: SWETicket,
+    *,
+    enabled: bool = True,
+) -> None:
+    """Store semantic embedding for an investigated ticket when supported."""
+    if (
+        not enabled
+        or not ticket.investigation_report
+        or not isinstance(store, SupabaseTicketStore)
+    ):
+        return
+    try:
+        emb = embed_ticket(ticket)
+        if emb:
+            store.store_embedding(ticket.ticket_id, emb)
+            logger.info("Stored embedding for ticket %s", ticket.ticket_id)
+    except Exception as exc:
+        logger.warning("Embedding storage failed (non-fatal): %s", exc)
 
 
 def fetch_github_tickets(store, github_account: str = "") -> List[SWETicket]:
@@ -252,12 +275,21 @@ def run_cycle(
         ticket for ticket in triaged if ticket.ticket_id not in automated_ids
     ]
     if pending_investigation and not dry_run:
-        investigator = InvestigatorAgent()
+        investigator = InvestigatorAgent(
+            store=store,
+            memory_top_k=config.memory.top_k,
+            memory_similarity_floor=config.memory.similarity_floor,
+        )
         try:
             investigated = investigator.investigate_batch(pending_investigation, limit=5)
             for ticket in investigated:
                 try:
                     store.add(ticket)
+                    store_ticket_embedding(
+                        store,
+                        ticket,
+                        enabled=config.memory.store_on_investigation_complete,
+                    )
                 except Exception:
                     logger.exception("Failed to persist investigation for %s", ticket.ticket_id)
                 swe_events.append(
