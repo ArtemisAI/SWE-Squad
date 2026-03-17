@@ -1440,7 +1440,7 @@ class TestFetchGithubTickets:
         mock_result = type("R", (), {"returncode": 0, "stdout": gh_output, "stderr": ""})()
 
         with patch("scripts.ops.swe_team_runner.subprocess.run", return_value=mock_result):
-            tickets = runner.fetch_github_tickets(store)
+            tickets = runner.fetch_github_tickets(store, github_account="test-bot")
 
         assert len(tickets) == 1
         assert tickets[0].title == "[GH-42] Fix scraper timeout"
@@ -1466,7 +1466,7 @@ class TestFetchGithubTickets:
         mock_result = type("R", (), {"returncode": 0, "stdout": gh_output, "stderr": ""})()
 
         with patch("scripts.ops.swe_team_runner.subprocess.run", return_value=mock_result):
-            tickets = runner.fetch_github_tickets(store)
+            tickets = runner.fetch_github_tickets(store, github_account="test-bot")
 
         assert len(tickets) == 0
 
@@ -1477,7 +1477,7 @@ class TestFetchGithubTickets:
         mock_result = type("R", (), {"returncode": 1, "stdout": "", "stderr": "auth required"})()
 
         with patch("scripts.ops.swe_team_runner.subprocess.run", return_value=mock_result):
-            tickets = runner.fetch_github_tickets(store)
+            tickets = runner.fetch_github_tickets(store, github_account="test-bot")
 
         assert tickets == []
 
@@ -1487,7 +1487,7 @@ class TestFetchGithubTickets:
         store = TicketStore(str(tmp_path / "tickets.json"))
 
         with patch("scripts.ops.swe_team_runner.subprocess.run", side_effect=Exception("network")):
-            tickets = runner.fetch_github_tickets(store)
+            tickets = runner.fetch_github_tickets(store, github_account="test-bot")
 
         assert tickets == []
 
@@ -1501,7 +1501,7 @@ class TestFetchGithubTickets:
         mock_result = type("R", (), {"returncode": 0, "stdout": gh_output, "stderr": ""})()
 
         with patch("scripts.ops.swe_team_runner.subprocess.run", return_value=mock_result):
-            tickets = runner.fetch_github_tickets(store)
+            tickets = runner.fetch_github_tickets(store, github_account="test-bot")
 
         assert len(tickets) == 1
         assert tickets[0].description == ""

@@ -36,6 +36,7 @@ from src.swe_team.developer import DeveloperAgent
 from src.swe_team.creative_agent import CreativeAgent
 from src.swe_team.distiller import TrajectoryDistiller
 from src.swe_team.ticket_store import TicketStore
+from src.swe_team.supabase_store import SupabaseTicketStore
 
 __all__ = [
     # Models
@@ -68,4 +69,5 @@ __all__ = [
     "TrajectoryDistiller",
     # Storage
     "TicketStore",
+    "SupabaseTicketStore",
 ]

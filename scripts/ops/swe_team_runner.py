@@ -32,6 +32,7 @@ from src.swe_team.monitor_agent import MonitorAgent
 from src.swe_team.triage_agent import TriageAgent
 from src.swe_team.ralph_wiggum import RalphWiggumGate
 from src.swe_team.ticket_store import TicketStore
+from src.swe_team.supabase_store import SupabaseTicketStore
 from src.swe_team.notifier import notify_new_tickets, notify_stability_gate, notify_daily_summary
 from src.swe_team.github_integration import create_github_issue, find_existing_issue
 from src.swe_team.events import SWEEvent
@@ -53,11 +54,14 @@ def comment_on_github_issue(issue_number: int, body: str) -> None:
         logger.exception("Failed to comment on issue #%d", issue_number)
 
 
-def fetch_github_tickets(store) -> List[SWETicket]:
-    """Fetch open GitHub issues assigned to Agent-Smith-AI or labeled swe-team."""
+def fetch_github_tickets(store, github_account: str = "") -> List[SWETicket]:
+    """Fetch open GitHub issues assigned to the team's GitHub account."""
+    if not github_account:
+        logger.debug("No github_account configured — skipping GitHub issue fetch")
+        return []
     try:
         result = subprocess.run(
-            ["gh", "issue", "list", "--state", "open", "--assignee", "Agent-Smith-AI",
+            ["gh", "issue", "list", "--state", "open", "--assignee", github_account,
              "--json", "number,title,body,labels", "--limit", "20"],
             capture_output=True, text=True, timeout=15,
         )
@@ -136,8 +140,8 @@ def run_cycle(
     except Exception:
         logger.exception("Remote log collection failed — scanning local only")
 
-    # 0b. Pick up GitHub issues assigned to the SWE team
-    gh_tickets = fetch_github_tickets(store)
+    # 0b. Pick up GitHub issues assigned to this team's GitHub account
+    gh_tickets = fetch_github_tickets(store, github_account=config.github_account)
     if gh_tickets:
         logger.info("Fetched %d new GitHub issue ticket(s)", len(gh_tickets))
         for gt in gh_tickets:
@@ -145,9 +149,9 @@ def run_cycle(
             if issue_num and not dry_run:
                 comment_on_github_issue(
                     issue_num,
-                    "🤖 **SWE Squad picked up this issue.**\n\n"
-                    "Status: `TRIAGED` — queued for investigation.\n"
-                    "Agent: `Agent-Smith-AI` on `browser-2`",
+                    f"🤖 **SWE Squad picked up this issue.**\n\n"
+                    f"Status: `TRIAGED` — queued for investigation.\n"
+                    f"Team: `{config.team_id}` | Account: `{config.github_account}`",
                 )
 
     # 1. Monitor: scan logs for new errors
@@ -466,7 +470,13 @@ def main() -> None:
 
     logger.info("=== SWE Team Runner starting ===")
 
-    store = TicketStore(config.ticket_store_path)
+    # Auto-select ticket store backend
+    if os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_ANON_KEY"):
+        store = SupabaseTicketStore(team_id=config.team_id)
+        logger.info("Using Supabase ticket store (team=%s)", config.team_id)
+    else:
+        store = TicketStore(config.ticket_store_path)
+        logger.info("Using JSON ticket store (%s)", config.ticket_store_path)
 
     # Daily summary mode — send and exit
     if args.summary:

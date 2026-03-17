@@ -123,6 +123,8 @@ class SWETeamConfig:
     ticket_store_path: str = "data/swe_team/tickets.json"
     a2a_hub_url: str = "http://localhost:18790"
     enabled: bool = False
+    team_id: str = "default"
+    github_account: str = ""
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SWETeamConfig":
@@ -140,6 +142,8 @@ class SWETeamConfig:
             ),
             a2a_hub_url=data.get("a2a_hub_url", "http://localhost:18790"),
             enabled=data.get("enabled", False),
+            team_id=data.get("team_id", "default"),
+            github_account=data.get("github_account", ""),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -150,6 +154,8 @@ class SWETeamConfig:
             "ticket_store_path": self.ticket_store_path,
             "a2a_hub_url": self.a2a_hub_url,
             "enabled": self.enabled,
+            "team_id": self.team_id,
+            "github_account": self.github_account,
         }
 
     def get_agents_by_role(self, role: AgentRole) -> List[SWEAgentConfig]:
@@ -176,10 +182,20 @@ def load_config(path: Optional[str] = None) -> SWETeamConfig:
         logger.info("SWE team config %s not found — using defaults", p)
         config = SWETeamConfig()
 
-    # Environment variable override for the kill switch
+    # Environment variable overrides
     env_enabled = os.environ.get("SWE_TEAM_ENABLED")
     if env_enabled is not None:
         config.enabled = env_enabled.lower() in ("true", "1", "yes")
         logger.info("SWE_TEAM_ENABLED=%s → enabled=%s", env_enabled, config.enabled)
+
+    env_team_id = os.environ.get("SWE_TEAM_ID")
+    if env_team_id:
+        config.team_id = env_team_id
+        logger.info("SWE_TEAM_ID=%s", env_team_id)
+
+    env_gh_account = os.environ.get("SWE_GITHUB_ACCOUNT")
+    if env_gh_account:
+        config.github_account = env_gh_account
+        logger.info("SWE_GITHUB_ACCOUNT=%s", env_gh_account)
 
     return config

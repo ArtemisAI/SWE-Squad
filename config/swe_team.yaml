@@ -11,10 +11,16 @@
 # Override via environment variable: SWE_TEAM_ENABLED=true
 enabled: false
 
+# Team identity — scopes tickets so multiple SWE teams don't overlap.
+# Override via: SWE_TEAM_ID, SWE_GITHUB_ACCOUNT
+team_id: "default"
+github_account: ""        # Dedicated GitHub bot account for this team
+
 # A2A hub for inter-agent communication
 a2a_hub_url: "http://localhost:18790"
 
-# Persistent ticket storage (JSON file, lightweight default)
+# Persistent ticket storage (JSON file, lightweight default).
+# Set SUPABASE_URL + SUPABASE_ANON_KEY in .env to use Supabase instead.
 ticket_store_path: "data/swe_team/tickets.json"
 
 # ---------------------------------------------------------------------------
