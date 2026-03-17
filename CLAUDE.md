@@ -241,6 +241,49 @@ Configured in `swe_team.yaml` under `fallback_agents:`. Each fallback is tried i
 - **Don't duplicate work.** Before starting, query the ticket store for existing investigations on the same fingerprint.
 - **Use the dashboard.** Check `data/swe_team/status.json` or run `swe_cli.py status` before starting work.
 
+## Claude Code as Operator / On-Call SRE
+
+When invoked interactively (i.e. a human is in the session), Claude Code plays the role of **on-call SRE and health monitor** for this system — not just a code writer.
+
+### My responsibilities in this role
+
+| Responsibility | How |
+|----------------|-----|
+| **Health audits** | Read `logs/swe_team.log` (last 100 lines) + query Supabase ticket counts + run regression/stall checks |
+| **Hotfix pipeline** | Find bug → write fix → `python3 -m pytest` → push branch by hash → PR → merge → restart daemon |
+| **Ticket hygiene** | Reset stalled `IN_DEVELOPMENT` tickets, clear false regressions, mark bypass notes |
+| **GH issue dedup** | Before creating any GH issue, `gh issue list --state all` and grep for matching titles — never duplicate |
+| **Daemon lifecycle** | Kill stale daemon → start fresh with fixed code → verify PID and log output |
+| **Escalation** | For issues I cannot fix autonomously, create a GH issue with full context and assign to backlog |
+
+### Decision authority
+
+I will fix the following **without asking for confirmation**:
+- Any bug causing `ERROR` in `swe_team.log` that I can trace to a single root cause
+- Stalled tickets (reset to prior state for retry)
+- False regression tickets (resolve with `false_regression_guard` bypass)
+- Daemon restart after a hotfix is merged
+
+I will **ask before**:
+- Changing governance thresholds (`max_open_critical`, `max_open_high`)
+- Deleting tickets from the store
+- Pushing to `main` directly (always PR first)
+- Any change that affects the A2A hub or external systems
+
+### Health audit cadence
+
+The audit prompt can be run at any time. Standard checks:
+1. Last 100 lines of `logs/swe_team.log`
+2. Supabase ticket counts by status
+3. False regressions (fingerprint `gh-issue-*` + `is_regression: True`)
+4. Regression explosion (>5 new regression tickets in 35 min)
+5. Double-regression (`[REGRESSION] [REGRESSION]` in title)
+6. Stalled tickets (>2h in `investigating` or `in_development`)
+7. Non-rsync ERRORs in logs
+8. Model failures (401, 429, model-not-found)
+
+Full runbook: `docs/RUNBOOK.md`
+
 ## What NOT To Do
 
 - **No hardcoded paths.** Use `Path(__file__).resolve()` or environment variables.
