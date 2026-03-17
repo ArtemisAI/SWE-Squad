@@ -79,6 +79,90 @@ def store_ticket_embedding(
         logger.warning("Embedding storage failed (non-fatal): %s", exc)
 
 
+def write_status(
+    status_path: str,
+    *,
+    cycle_result: Dict[str, Any],
+    store: object,
+    interval_seconds: int = 0,
+) -> None:
+    """Write a JSON status file for external monitoring."""
+    now = datetime.now(timezone.utc)
+    open_tickets = store.list_open() if hasattr(store, "list_open") else []
+
+    investigating = [
+        t for t in open_tickets if t.status == TicketStatus.INVESTIGATING
+    ]
+
+    next_cycle = None
+    if interval_seconds > 0:
+        from datetime import timedelta
+        next_cycle = (now + timedelta(seconds=interval_seconds)).isoformat()
+
+    status = {
+        "last_cycle": now.isoformat(),
+        "tickets_open": len(open_tickets),
+        "tickets_investigating": len(investigating),
+        "gate_verdict": cycle_result.get("gate_verdict", "N/A"),
+        "next_cycle": next_cycle,
+    }
+
+    p = Path(status_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    try:
+        with open(tmp, "w") as fh:
+            json.dump(status, fh, indent=2)
+        tmp.replace(p)
+        logger.debug("Status written to %s", p)
+    except OSError as exc:
+        logger.warning("Failed to write status to %s: %s", p, exc)
+
+
+def run_test_only_cycle(
+    config,
+    store,
+) -> Dict[str, Any]:
+    """Re-run tests on all in_development or in_review tickets.
+
+    Skips monitor/triage — useful for CI integration to verify that
+    existing fixes still pass their test suites.
+    """
+    from src.swe_team.developer import DeveloperAgent
+
+    candidates = store.list_by_status(TicketStatus.IN_DEVELOPMENT) + store.list_by_status(
+        TicketStatus.IN_REVIEW
+    )
+
+    if not candidates:
+        logger.info("test-only: no in_development/in_review tickets found")
+        return {"tested": 0, "passed": 0, "failed": 0}
+
+    dev = DeveloperAgent(repo_root=PROJECT_ROOT)
+    passed = 0
+    failed = 0
+    for ticket in candidates:
+        logger.info("test-only: running tests for ticket %s", ticket.ticket_id)
+        try:
+            ok, error = dev._run_tests(
+                deadline=__import__("time").monotonic() + 300,
+            )
+            if ok:
+                passed += 1
+                ticket.test_results = {"status": "pass"}
+                logger.info("test-only: PASS for %s", ticket.ticket_id)
+            else:
+                failed += 1
+                ticket.test_results = {"status": "fail", "error": error}
+                logger.warning("test-only: FAIL for %s: %s", ticket.ticket_id, error[:200])
+            store.add(ticket)
+        except Exception:
+            failed += 1
+            logger.exception("test-only: error running tests for %s", ticket.ticket_id)
+
+    return {"tested": len(candidates), "passed": passed, "failed": failed}
+
+
 _SEVERITY_ESCALATION = {
     TicketSeverity.LOW: TicketSeverity.MEDIUM,
     TicketSeverity.MEDIUM: TicketSeverity.HIGH,
@@ -687,7 +771,18 @@ def run_cycle(
         "open_tickets": len(store.list_open()),
     }
 
-    # 9. Append session progress log
+    # 9. Write status file for external monitoring
+    if not dry_run:
+        try:
+            write_status(
+                config.ticket_store_path.replace("tickets.json", "status.json"),
+                cycle_result=result,
+                store=store,
+            )
+        except Exception:
+            logger.exception("Failed to write status file after cycle")
+
+    # 10. Append session progress log
     done_parts = []
     if new_tickets:
         done_parts.append(f"Detected {len(new_tickets)} issue(s)")
@@ -756,6 +851,7 @@ def daemon_loop(
     interval_seconds: int,
     dry_run: bool = False,
     creative: bool = False,
+    status_path: str = "data/swe_team/status.json",
 ) -> None:
     """Run monitor/triage cycles continuously until signaled to stop."""
     shutdown = threading.Event()
@@ -764,17 +860,33 @@ def daemon_loop(
         logger.info("Shutdown signal received (%s)", signum)
         shutdown.set()
 
-    signal.signal(signal.SIGTERM, _signal_handler)
-    signal.signal(signal.SIGINT, _signal_handler)
+    prev_sigterm = signal.signal(signal.SIGTERM, _signal_handler)
+    prev_sigint = signal.signal(signal.SIGINT, _signal_handler)
 
     logger.info("SWE Team daemon starting (interval=%ds)", interval_seconds)
-    while not shutdown.is_set():
-        try:
-            run_cycle(config, store, dry_run=dry_run, creative=creative)
-        except Exception:
-            logger.exception("Unhandled error in SWE team cycle")
-        if shutdown.wait(timeout=interval_seconds):
-            break
+    try:
+        while not shutdown.is_set():
+            try:
+                result = run_cycle(config, store, dry_run=dry_run, creative=creative)
+            except Exception:
+                logger.exception("Unhandled error in SWE team cycle")
+                result = {"gate_verdict": "error"}
+
+            try:
+                write_status(
+                    status_path,
+                    cycle_result=result,
+                    store=store,
+                    interval_seconds=interval_seconds,
+                )
+            except Exception:
+                logger.exception("Failed to write status file")
+
+            if shutdown.wait(timeout=interval_seconds):
+                break
+    finally:
+        signal.signal(signal.SIGTERM, prev_sigterm)
+        signal.signal(signal.SIGINT, prev_sigint)
     logger.info("SWE Team daemon stopped")
 
 
@@ -787,6 +899,11 @@ def main() -> None:
     parser.add_argument("--bootstrap", action="store_true", help="Baseline scan and acknowledge existing issues")
     parser.add_argument("--daemon", action="store_true", help="Run continuously in daemon mode")
     parser.add_argument("--creative", action="store_true", help="Generate creative proposals")
+    parser.add_argument(
+        "--test-only",
+        action="store_true",
+        help="Skip monitor/triage; re-run tests on in_development/in_review tickets",
+    )
     parser.add_argument(
         "--interval",
         type=int,
@@ -815,6 +932,17 @@ def main() -> None:
     if args.summary:
         notify_daily_summary(store)
         logger.info("=== Daily summary sent ===")
+        return
+
+    # Test-only mode — re-run tests on in-flight tickets and exit
+    if args.test_only:
+        result = run_test_only_cycle(config, store)
+        logger.info(
+            "=== Test-only complete: %d tested, %d passed, %d failed ===",
+            result["tested"],
+            result["passed"],
+            result["failed"],
+        )
         return
 
     # Bootstrap mode — acknowledge existing issues and exit

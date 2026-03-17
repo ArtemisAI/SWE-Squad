@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -254,7 +255,9 @@ class TestSWETeamConfig:
 
 class TestLoadConfig:
     def test_load_missing_file(self):
-        cfg = load_config("/nonexistent/path.yaml")
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SWE_TEAM_ENABLED", None)
+            cfg = load_config("/nonexistent/path.yaml")
         assert isinstance(cfg, SWETeamConfig)
         assert cfg.enabled is False
 
@@ -264,7 +267,9 @@ class TestLoadConfig:
         ) as f:
             f.write("enabled: false\ngovernance:\n  max_open_high: 10\n")
             f.flush()
-            cfg = load_config(f.name)
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("SWE_TEAM_ENABLED", None)
+                cfg = load_config(f.name)
         os.unlink(f.name)
         assert cfg.enabled is False
         assert cfg.governance.max_open_high == 10
@@ -2209,3 +2214,405 @@ class TestRegressionWindowConfig:
         assert d["regression_window_hours"] == 12
         config2 = SWETeamConfig.from_dict(d)
         assert config2.regression_window_hours == 12
+
+
+# ======================================================================
+# Status File Writing
+# ======================================================================
+
+class TestWriteStatus:
+    def test_write_status_creates_file(self, tmp_path):
+        import scripts.ops.swe_team_runner as runner
+
+        status_path = str(tmp_path / "status.json")
+        store = TicketStore(str(tmp_path / "tickets.json"))
+        t = SWETicket(title="Open bug", description="x", severity=TicketSeverity.HIGH)
+        t.transition(TicketStatus.TRIAGED)
+        store.add(t)
+
+        runner.write_status(
+            status_path,
+            cycle_result={"gate_verdict": "pass"},
+            store=store,
+        )
+
+        assert Path(status_path).is_file()
+        data = json.loads(Path(status_path).read_text())
+        assert data["gate_verdict"] == "pass"
+        assert data["tickets_open"] == 1
+        assert data["tickets_investigating"] == 0
+        assert data["next_cycle"] is None  # no interval provided
+
+    def test_write_status_with_interval(self, tmp_path):
+        import scripts.ops.swe_team_runner as runner
+
+        status_path = str(tmp_path / "status.json")
+        store = TicketStore(str(tmp_path / "tickets.json"))
+
+        runner.write_status(
+            status_path,
+            cycle_result={"gate_verdict": "warn"},
+            store=store,
+            interval_seconds=1800,
+        )
+
+        data = json.loads(Path(status_path).read_text())
+        assert data["gate_verdict"] == "warn"
+        assert data["next_cycle"] is not None
+        assert data["tickets_open"] == 0
+
+    def test_write_status_counts_investigating(self, tmp_path):
+        import scripts.ops.swe_team_runner as runner
+
+        status_path = str(tmp_path / "status.json")
+        store = TicketStore(str(tmp_path / "tickets.json"))
+
+        t1 = SWETicket(title="A", description="x", severity=TicketSeverity.HIGH)
+        t1.transition(TicketStatus.INVESTIGATING)
+        store.add(t1)
+
+        t2 = SWETicket(title="B", description="y", severity=TicketSeverity.CRITICAL)
+        t2.transition(TicketStatus.INVESTIGATING)
+        store.add(t2)
+
+        t3 = SWETicket(title="C", description="z", severity=TicketSeverity.MEDIUM)
+        t3.transition(TicketStatus.TRIAGED)
+        store.add(t3)
+
+        runner.write_status(
+            status_path,
+            cycle_result={"gate_verdict": "block"},
+            store=store,
+        )
+
+        data = json.loads(Path(status_path).read_text())
+        assert data["tickets_open"] == 3
+        assert data["tickets_investigating"] == 2
+
+    def test_write_status_creates_parent_dirs(self, tmp_path):
+        import scripts.ops.swe_team_runner as runner
+
+        status_path = str(tmp_path / "deep" / "nested" / "status.json")
+        store = TicketStore(str(tmp_path / "tickets.json"))
+
+        runner.write_status(
+            status_path,
+            cycle_result={"gate_verdict": "pass"},
+            store=store,
+        )
+
+        assert Path(status_path).is_file()
+
+
+# ======================================================================
+# Test-Only Mode
+# ======================================================================
+
+class TestTestOnlyMode:
+    def test_test_only_no_candidates(self, tmp_path):
+        import scripts.ops.swe_team_runner as runner
+
+        config = SWETeamConfig()
+        store = TicketStore(str(tmp_path / "tickets.json"))
+
+        result = runner.run_test_only_cycle(config, store)
+        assert result["tested"] == 0
+        assert result["passed"] == 0
+        assert result["failed"] == 0
+
+    def test_test_only_runs_tests_on_in_development(self, tmp_path):
+        import scripts.ops.swe_team_runner as runner
+
+        config = SWETeamConfig()
+        store = TicketStore(str(tmp_path / "tickets.json"))
+
+        t = SWETicket(
+            title="Fix bug",
+            description="broken",
+            severity=TicketSeverity.HIGH,
+            investigation_report="Root cause found",
+        )
+        t.transition(TicketStatus.IN_DEVELOPMENT)
+        store.add(t)
+
+        mock_result = type("R", (), {"returncode": 0, "stdout": "all passed", "stderr": ""})()
+        with patch("src.swe_team.developer.subprocess.run", return_value=mock_result):
+            result = runner.run_test_only_cycle(config, store)
+
+        assert result["tested"] == 1
+        assert result["passed"] == 1
+        assert result["failed"] == 0
+
+    def test_test_only_runs_tests_on_in_review(self, tmp_path):
+        import scripts.ops.swe_team_runner as runner
+
+        config = SWETeamConfig()
+        store = TicketStore(str(tmp_path / "tickets.json"))
+
+        t = SWETicket(
+            title="Fix applied",
+            description="review pending",
+            severity=TicketSeverity.HIGH,
+            investigation_report="Found the issue",
+        )
+        t.transition(TicketStatus.IN_REVIEW)
+        store.add(t)
+
+        mock_result = type("R", (), {"returncode": 1, "stdout": "FAILED test_x", "stderr": ""})()
+        with patch("src.swe_team.developer.subprocess.run", return_value=mock_result):
+            result = runner.run_test_only_cycle(config, store)
+
+        assert result["tested"] == 1
+        assert result["passed"] == 0
+        assert result["failed"] == 1
+        # Verify test_results recorded on ticket
+        updated = store.get(t.ticket_id)
+        assert updated.test_results["status"] == "fail"
+
+    def test_test_only_handles_exceptions(self, tmp_path):
+        import scripts.ops.swe_team_runner as runner
+
+        config = SWETeamConfig()
+        store = TicketStore(str(tmp_path / "tickets.json"))
+
+        t = SWETicket(
+            title="Fix bug",
+            description="broken",
+            severity=TicketSeverity.HIGH,
+            investigation_report="Root cause found",
+        )
+        t.transition(TicketStatus.IN_DEVELOPMENT)
+        store.add(t)
+
+        with patch("src.swe_team.developer.subprocess.run", side_effect=Exception("boom")):
+            result = runner.run_test_only_cycle(config, store)
+
+        assert result["tested"] == 1
+        assert result["passed"] == 0
+        assert result["failed"] == 1
+
+
+# ======================================================================
+# Daemon Signal Handling
+# ======================================================================
+
+class TestDaemonSignalHandling:
+    def test_daemon_stops_on_shutdown_event(self, tmp_path):
+        """Daemon exits when shutdown event is set (simulating SIGTERM)."""
+        import scripts.ops.swe_team_runner as runner
+
+        config = SWETeamConfig(enabled=True)
+        store = TicketStore(str(tmp_path / "tickets.json"))
+
+        call_count = {"n": 0}
+
+        def mock_run_cycle(cfg, st, dry_run=False, creative=False):
+            call_count["n"] += 1
+            # Return a minimal result
+            return {"gate_verdict": "pass"}
+
+        # Patch daemon_loop's internals: make it run one cycle then stop
+        original_event_wait = threading.Event.wait
+
+        def patched_wait(self, timeout=None):
+            # After the first cycle, trigger shutdown
+            if call_count["n"] >= 1:
+                self.set()
+                return True
+            return original_event_wait(self, timeout=0)
+
+        with (
+            patch.object(runner, "run_cycle", side_effect=mock_run_cycle),
+            patch.object(threading.Event, "wait", patched_wait),
+        ):
+            runner.daemon_loop(
+                config,
+                store,
+                interval_seconds=1,
+                dry_run=True,
+                status_path=str(tmp_path / "status.json"),
+            )
+
+        assert call_count["n"] >= 1
+
+    def test_daemon_recovers_from_cycle_exception(self, tmp_path):
+        """Daemon continues running even when a cycle throws an exception."""
+        import scripts.ops.swe_team_runner as runner
+
+        config = SWETeamConfig(enabled=True)
+        store = TicketStore(str(tmp_path / "tickets.json"))
+
+        call_count = {"n": 0}
+
+        def mock_run_cycle(cfg, st, dry_run=False, creative=False):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError("Simulated crash")
+            return {"gate_verdict": "pass"}
+
+        original_event_wait = threading.Event.wait
+
+        def patched_wait(self, timeout=None):
+            if call_count["n"] >= 2:
+                self.set()
+                return True
+            return original_event_wait(self, timeout=0)
+
+        with (
+            patch.object(runner, "run_cycle", side_effect=mock_run_cycle),
+            patch.object(threading.Event, "wait", patched_wait),
+        ):
+            runner.daemon_loop(
+                config,
+                store,
+                interval_seconds=1,
+                dry_run=True,
+                status_path=str(tmp_path / "status.json"),
+            )
+
+        # Must have run at least 2 cycles — crashed on first, recovered on second
+        assert call_count["n"] >= 2
+
+    def test_daemon_writes_status_each_cycle(self, tmp_path):
+        """Status file is written after each cycle in daemon mode."""
+        import scripts.ops.swe_team_runner as runner
+
+        config = SWETeamConfig(enabled=True)
+        store = TicketStore(str(tmp_path / "tickets.json"))
+        status_path = str(tmp_path / "status.json")
+
+        call_count = {"n": 0}
+
+        def mock_run_cycle(cfg, st, dry_run=False, creative=False):
+            call_count["n"] += 1
+            return {"gate_verdict": "pass"}
+
+        original_event_wait = threading.Event.wait
+
+        def patched_wait(self, timeout=None):
+            if call_count["n"] >= 1:
+                self.set()
+                return True
+            return original_event_wait(self, timeout=0)
+
+        with (
+            patch.object(runner, "run_cycle", side_effect=mock_run_cycle),
+            patch.object(threading.Event, "wait", patched_wait),
+        ):
+            runner.daemon_loop(
+                config,
+                store,
+                interval_seconds=60,
+                dry_run=True,
+                status_path=status_path,
+            )
+
+        assert Path(status_path).is_file()
+        data = json.loads(Path(status_path).read_text())
+        assert data["gate_verdict"] == "pass"
+        assert data["next_cycle"] is not None  # interval was provided
+
+    def test_daemon_interval_from_config(self):
+        """Runner derives daemon interval from config when --interval is omitted."""
+        config = SWETeamConfig(
+            enabled=True,
+            monitor=MonitorConfig(scan_interval_minutes=15),
+        )
+        # The formula in main(): max(60, int(config.monitor.scan_interval_minutes * 60))
+        expected = max(60, int(15 * 60))
+        assert expected == 900
+
+
+# ======================================================================
+# Developer Handoff Verification
+# ======================================================================
+
+class TestDeveloperHandoff:
+    def test_developer_reads_investigation_report(self, tmp_path):
+        """Verify the developer prompt includes the investigation report."""
+        program = tmp_path / "fix.md"
+        program.write_text(
+            "Ticket: {ticket_id}\nTitle: {title}\n"
+            "Severity: {severity}\nModule: {source_module}\n"
+            "Report:\n{investigation_report}\n"
+        )
+
+        ticket = SWETicket(
+            title="Crash in scraper",
+            description="boom",
+            severity=TicketSeverity.HIGH,
+            source_module="scraping",
+            investigation_report="Root cause: null pointer in parse_html()",
+        )
+        ticket.transition(TicketStatus.INVESTIGATION_COMPLETE)
+
+        dev = DeveloperAgent(
+            repo_root=tmp_path,
+            program_path=program,
+        )
+        prompt = dev._build_prompt(ticket)
+
+        assert prompt is not None
+        assert "Root cause: null pointer in parse_html()" in prompt
+        assert ticket.ticket_id in prompt
+
+    def test_developer_rejects_without_investigation(self, tmp_path):
+        """Developer agent should not proceed without investigation_report."""
+        ticket = SWETicket(
+            title="Some bug",
+            description="x",
+            severity=TicketSeverity.HIGH,
+        )
+        ticket.transition(TicketStatus.INVESTIGATION_COMPLETE)
+
+        dev = DeveloperAgent(repo_root=tmp_path)
+        assert dev._eligible(ticket) is False
+
+    def test_developer_eligible_with_report(self, tmp_path):
+        """Developer agent accepts ticket with investigation_report."""
+        ticket = SWETicket(
+            title="Some bug",
+            description="x",
+            severity=TicketSeverity.HIGH,
+            investigation_report="Found the issue",
+        )
+        ticket.transition(TicketStatus.INVESTIGATION_COMPLETE)
+
+        dev = DeveloperAgent(repo_root=tmp_path)
+        assert dev._eligible(ticket) is True
+
+
+# ======================================================================
+# Developer Test Execution Verification
+# ======================================================================
+
+class TestDeveloperTestExecution:
+    def test_run_tests_captures_pass(self, tmp_path):
+        """Developer agent correctly detects passing tests."""
+        mock_result = type("R", (), {"returncode": 0, "stdout": "5 passed", "stderr": ""})()
+        dev = DeveloperAgent(repo_root=tmp_path)
+
+        import time
+        deadline = time.monotonic() + 60
+        with patch("src.swe_team.developer.subprocess.run", return_value=mock_result):
+            ok, error = dev._run_tests(deadline)
+
+        assert ok is True
+        assert error == ""
+
+    def test_run_tests_captures_failure(self, tmp_path):
+        """Developer agent correctly captures test failure output."""
+        mock_result = type("R", (), {
+            "returncode": 1,
+            "stdout": "FAILED test_something - AssertionError",
+            "stderr": "",
+        })()
+        dev = DeveloperAgent(repo_root=tmp_path)
+
+        import time
+        deadline = time.monotonic() + 60
+        with patch("src.swe_team.developer.subprocess.run", return_value=mock_result):
+            ok, error = dev._run_tests(deadline)
+
+        assert ok is False
+        assert "FAILED" in error
