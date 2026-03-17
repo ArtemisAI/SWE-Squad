@@ -1,22 +1,30 @@
 """
-Gemini CLI fallback adapter for InvestigatorAgent.
+Gemini CLI adapter — fallback investigator and specialist for WebUI/dashboard tasks.
 
-When Claude Code CLI is rate-limited or unavailable, the investigator
-falls back to Gemini CLI for investigation tasks.
+## When to use Gemini CLI (not Claude Code)
 
-Gemini CLI advantages:
-  - 1M token context window (large codebases, long logs)
-  - Web search capability (external library docs, CVEs)
-  - Separate quota from Claude — keeps wheels turning during 429s
+| Task type          | Use Gemini? | Reason |
+|--------------------|-------------|--------|
+| Log/error analysis | Yes         | 1M context, handles huge dumps |
+| Library docs/CVE   | Yes         | Built-in web search |
+| WebUI / dashboard  | YES (prefer) | Gemini excels at HTML/CSS/JS/charts |
+| Playwright tests   | Yes         | Needs `npx playwright install chromium` |
+| Proprietary code   | NO          | Data retention policy risk |
+| Fix + git commit   | NO          | No repo write access |
 
-Data retention caution: Do NOT pass proprietary source code or PII.
-Use only for log analysis, library research, and public-facing patterns.
+## Data retention
 Gemini CLI is subject to Google data retention policies.
+The adapter blocks prompts containing: password, secret, token, api_key, credential.
+Never send proprietary source code or PII through this adapter.
+
+## Skills
+Declared skills: investigate, review, dashboard, websearch
+Skill routing: swe_team.yaml fallback_agents[gemini-cli].skills
 
 Usage:
-    adapter = GeminiCLIAdapter()
-    if adapter.is_available():
-        result = adapter.invoke(prompt, timeout=120)
+    adapter = GeminiCLIAdapter(skills=["investigate", "dashboard", "websearch"])
+    if adapter.is_available() and adapter.has_skill("dashboard"):
+        result = adapter.invoke(dashboard_prompt, timeout=180)
 """
 
 from __future__ import annotations
@@ -25,7 +33,7 @@ import logging
 import os
 import subprocess
 import shutil
-from typing import Optional
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +67,17 @@ class GeminiCLIAdapter:
         command: Optional[str] = None,
         model: str = _DEFAULT_MODEL,
         max_prompt_chars: int = 50_000,  # stay well within context, keep cost low
+        skills: Optional[List[str]] = None,
     ) -> None:
         self._command = command or os.environ.get("GEMINI_CLI_PATH", _DEFAULT_GEMINI_CMD)
         self._model = model
         self._max_prompt_chars = max_prompt_chars
         self._name = "gemini-cli"
+        self._skills: List[str] = skills or ["investigate", "review", "dashboard", "websearch"]
+
+    def has_skill(self, skill: str) -> bool:
+        """Return True if this adapter declares the given skill."""
+        return skill in self._skills
 
     def is_available(self) -> bool:
         """Return True if gemini CLI is installed and reachable."""

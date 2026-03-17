@@ -123,9 +123,14 @@ fallback_agents:
     priority: 50
     timeout: 180          # Gemini can be slow on large prompts
     prompt_via_stdin: false
-    skills: ["investigate", "review"]             # not fix — no direct repo write access
+    skills:
+      - "investigate"    # log analysis, library research, public API docs
+      - "review"         # code review of non-proprietary diffs
+      - "dashboard"      # WebUI / HTML / CSS / chart generation (Gemini excels at web design)
+      - "websearch"      # external docs, CVE lookup, RFC research
     # DATA RETENTION WARNING: Do not forward proprietary source code or PII.
     # The GeminiCLIAdapter sanitises prompts before sending.
+    # Needs Playwright for dashboard rendering tests — install: npx playwright install chromium
 
   - name: "opencode"
     command: "/usr/local/bin/opencode"

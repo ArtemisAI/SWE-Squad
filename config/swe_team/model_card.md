@@ -76,27 +76,35 @@ Configured via `BASE_LLM_API_KEY` in `.env`.
 
 ---
 
-## 3. Gemini CLI (Specialist Delegation)
+## 3. Gemini CLI (Specialist — WebUI, Search, Large Context)
 
-Installed at `/usr/bin/gemini` (or similar). Logged in on this machine.
+Installed at `/usr/bin/gemini` v0.33.2. Logged in. **Active** (`enabled: true` in `swe_team.yaml`).
 
 | Property | Value |
 |----------|-------|
 | Context window | **1M tokens** |
-| Good for | Web search, large context summarisation, doc analysis |
-| Data retention | **Caution** — Google data retention policies apply; do not send proprietary code or PII |
-| Daily limits | Applies — check remaining quota before assigning large batches |
-| Enabled in fallback | `enabled: false` in `swe_team.yaml` (off by default) |
+| Skills declared | `investigate`, `review`, `dashboard`, `websearch` |
+| Data retention | **Caution** — Google data retention policies; no proprietary code or PII |
+| Daily limits | Yes — Gemini free/pro tier limits apply |
+| Fallback priority | 50 (tried after Claude backoff exhausted) |
 
-**Safe tasks for Gemini delegation:**
-- Web search for library docs, CVEs, RFC lookups
-- Summarising large log dumps (non-proprietary)
-- Comparing public API specs
+### Task routing — prefer Gemini over Claude for:
+
+| Task | Why Gemini |
+|------|-----------|
+| **Dashboard / WebUI** | Gemini excels at HTML/CSS/JS/charts; faster and cheaper than Opus for UI |
+| **Web search** | Built-in Google search — library docs, CVEs, RFCs, API specs |
+| **Large log dumps** | 1M context fits entire log files Claude would truncate |
+| **Public API research** | Web search + reasoning in one call |
+| **Playwright tests for UI** | Needs `npx playwright install chromium` — then can render and screenshot |
+
+### MCP status for Gemini CLI
+Gemini CLI v0.33.2 has its own MCP support via `~/.gemini/settings.json`. See background agent report for details. Playwright is available globally via `npx @playwright/mcp@latest` but must be configured in Gemini's settings separately from Claude's `.mcp.json`.
 
 **Do NOT delegate:**
-- Source code from LinkedAi (proprietary)
+- Proprietary source code (LinkedAi, SWE-Squad internals)
 - User PII or credentials
-- Internal system architecture details
+- Git commits / branch operations (no repo write access)
 
 ---
 

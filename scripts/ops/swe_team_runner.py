@@ -844,10 +844,14 @@ def run_cycle(
                 adapter = GeminiCLIAdapter(
                     command=fa_cfg.command or "/usr/bin/gemini",
                     model=fa_cfg.default_model or "gemini-2.5-flash-thinking",
+                    skills=fa_cfg.skills or ["investigate", "review"],
                 )
                 if adapter.is_available():
                     fallback_agents.append(adapter)
-                    logger.info("Fallback agent registered: gemini-cli")
+                    logger.info(
+                        "Fallback agent registered: gemini-cli (skills=%s)",
+                        fa_cfg.skills,
+                    )
                 else:
                     logger.warning("gemini-cli configured but not found — skipping")
 
