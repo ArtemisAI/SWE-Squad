@@ -360,6 +360,175 @@ class TestMonitorAgent:
         assert events[0].event == SWEEventType.ISSUE_DETECTED
 
 
+class TestMonitorSelfReferentialGuard:
+    """Regression tests for issues #8 / #9 — recursive ticket prevention."""
+
+    def test_scan_file_skips_excluded_patterns(self):
+        """Files whose path contains an exclude_pattern are skipped entirely."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a log file whose path contains "swe_team"
+            swe_dir = Path(tmpdir) / "swe_team"
+            swe_dir.mkdir()
+            log_file = swe_dir / "swe_team.log"
+            log_file.write_text(
+                "2025-01-01 10:00:00 ERROR Something broke\n"
+                "2025-01-01 10:01:00 CRITICAL Fatal error\n"
+            )
+            cfg = MonitorConfig(
+                enabled=True,
+                log_directories=[tmpdir],
+                exclude_patterns=["swe_team"],
+            )
+            agent = MonitorAgent(cfg)
+            tickets = agent.scan()
+            assert tickets == [], (
+                "Monitor must skip files matching exclude_patterns"
+            )
+
+    def test_scan_file_skips_swe_team_runner(self):
+        """swe_team_runner in the path is also excluded."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner_dir = Path(tmpdir) / "swe_team_runner"
+            runner_dir.mkdir()
+            log_file = runner_dir / "runner.log"
+            log_file.write_text("ERROR crash in runner\n")
+            cfg = MonitorConfig(
+                enabled=True,
+                log_directories=[tmpdir],
+                exclude_patterns=["swe_team", "swe_team_runner"],
+            )
+            agent = MonitorAgent(cfg)
+            tickets = agent.scan()
+            assert tickets == []
+
+    def test_internal_log_lines_filtered(self):
+        """Lines containing internal SWE Squad markers are never ticketed."""
+        internal_lines = [
+            "2025-01-01 10:00:00 [INFO] ERROR in SWE Team triage output",
+            "2025-01-01 10:01:00 [WARNING] CRITICAL alert from Stability gate",
+            "2025-01-01 10:02:00 Triage complete — FAILED to classify",
+            "=== Cycle 42 === ERROR detected previously",
+            "2025-01-01 10:03:00 SWE Team CRITICAL re-triage noise",
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_file = Path(tmpdir) / "app.log"
+            log_file.write_text("\n".join(internal_lines) + "\n")
+            cfg = MonitorConfig(
+                enabled=True,
+                log_directories=[tmpdir],
+                exclude_patterns=[],  # No path exclusion — test line filter
+            )
+            agent = MonitorAgent(cfg)
+            tickets = agent.scan()
+            assert tickets == [], (
+                f"Internal SWE lines should be filtered, got {len(tickets)} ticket(s)"
+            )
+
+    def test_real_errors_still_detected_alongside_noise(self):
+        """Legitimate errors are still picked up even when noise is present."""
+        lines = [
+            "2025-01-01 10:00:00 [INFO] ERROR in SWE Team triage output",
+            "2025-01-01 10:01:00 ERROR real database connection timeout",
+            "2025-01-01 10:02:00 CRITICAL disk full on /data",
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_file = Path(tmpdir) / "app.log"
+            log_file.write_text("\n".join(lines) + "\n")
+            cfg = MonitorConfig(
+                enabled=True,
+                log_directories=[tmpdir],
+                exclude_patterns=[],  # No path exclusion
+            )
+            agent = MonitorAgent(cfg)
+            tickets = agent.scan()
+            assert len(tickets) == 2, (
+                f"Expected 2 real tickets, got {len(tickets)}"
+            )
+
+    def test_seeded_swe_team_log_produces_zero_tickets_across_cycles(self):
+        """Multiple scan cycles on a realistic swe_team.log yield zero tickets.
+
+        This is the end-to-end regression test: seed a file that looks
+        exactly like the monitor's own output and confirm no tickets are
+        created over 3 consecutive scans.
+        """
+        swe_log_content = (
+            "2025-06-01 08:00:00,123 [INFO] SWE Team cycle started\n"
+            "2025-06-01 08:00:01,456 [INFO] MonitorAgent scan complete: 0 new ticket(s) from 1 dir(s)\n"
+            "2025-06-01 08:00:02,789 [WARNING] Stability gate BLOCKED — 2 CRITICAL bugs open\n"
+            "2025-06-01 08:00:03,012 Triage complete: ERROR ticket abc123 assigned to browser_investigator\n"
+            "=== Cycle 7 === CRITICAL threshold breached, FAILED stability check\n"
+            "2025-06-01 08:00:04,345 [INFO] SWE Team cycle finished\n"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Put the log under a path containing "swe_team" (path guard)
+            swe_dir = Path(tmpdir) / "logs" / "swe_team"
+            swe_dir.mkdir(parents=True)
+            log_file = swe_dir / "swe_team.log"
+            log_file.write_text(swe_log_content)
+
+            cfg = MonitorConfig(
+                enabled=True,
+                log_directories=[tmpdir],
+                exclude_patterns=["swe_team", "swe_team_runner"],
+            )
+            agent = MonitorAgent(cfg)
+            for cycle in range(3):
+                tickets = agent.scan()
+                assert tickets == [], (
+                    f"Cycle {cycle}: expected 0 tickets from swe_team.log, "
+                    f"got {len(tickets)}"
+                )
+
+    def test_seeded_swe_team_log_line_filter_alone(self):
+        """Even without path exclusion, the line-level filter catches
+        SWE Squad internal lines in swe_team.log content."""
+        swe_log_content = (
+            "2025-06-01 08:00:00,123 [INFO] SWE Team cycle started\n"
+            "2025-06-01 08:00:02,789 [WARNING] Stability gate BLOCKED — 2 CRITICAL bugs\n"
+            "2025-06-01 08:00:03,012 Triage complete: ERROR ticket abc123\n"
+            "=== Cycle 7 === CRITICAL threshold breached, FAILED stability check\n"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Deliberately NOT under a "swe_team" path
+            log_file = Path(tmpdir) / "general.log"
+            log_file.write_text(swe_log_content)
+
+            cfg = MonitorConfig(
+                enabled=True,
+                log_directories=[tmpdir],
+                exclude_patterns=[],  # Path exclusion disabled
+            )
+            agent = MonitorAgent(cfg)
+            tickets = agent.scan()
+            assert tickets == [], (
+                f"Line-level filter should catch all SWE internal lines, "
+                f"got {len(tickets)} ticket(s)"
+            )
+
+    def test_exclude_patterns_default(self):
+        """MonitorConfig defaults include swe_team exclusion patterns."""
+        cfg = MonitorConfig()
+        assert "swe_team" in cfg.exclude_patterns
+        assert "swe_team_runner" in cfg.exclude_patterns
+
+    def test_exclude_patterns_roundtrip(self):
+        """exclude_patterns survives to_dict / from_dict round-trip."""
+        cfg = MonitorConfig(exclude_patterns=["swe_team", "custom_agent"])
+        d = cfg.to_dict()
+        assert "exclude_patterns" in d
+        cfg2 = MonitorConfig.from_dict(d)
+        assert cfg2.exclude_patterns == ["swe_team", "custom_agent"]
+
+    def test_fingerprint_strips_timestamps(self):
+        """Identical triage lines with different timestamps get the same fingerprint."""
+        line_a = "2025-06-01 08:00:00,123 ERROR connection reset"
+        line_b = "2026-03-17 14:22:33,999 ERROR connection reset"
+        fp_a = _fingerprint("/logs/app.log", line_a)
+        fp_b = _fingerprint("/logs/app.log", line_b)
+        assert fp_a == fp_b, "Timestamps should be stripped before fingerprinting"
+
+
 # ======================================================================
 # Triage Agent
 # ======================================================================

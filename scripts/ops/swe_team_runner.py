@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import threading
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 from pathlib import Path
 
@@ -39,6 +40,7 @@ from src.swe_team.github_integration import create_github_issue, find_existing_i
 from src.swe_team.events import SWEEvent
 from src.swe_team.creative_agent import CreativeAgent
 from src.swe_team.distiller import TrajectoryDistiller
+from src.swe_team.preflight import PreflightCheck
 from src.a2a.adapters.swe_team import dispatch_swe_events
 
 logger = logging.getLogger("swe_team")
@@ -146,6 +148,111 @@ def setup_logging(verbose: bool = False) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Heartbeat stall detection
+# ---------------------------------------------------------------------------
+
+_STALL_THRESHOLD_HOURS = 2
+
+
+def detect_stalled_tickets(store) -> List[SWETicket]:
+    """Find tickets stuck in investigating/in_development for >2 hours.
+
+    Resets them to OPEN with a stall note.  Returns the list of reset tickets.
+    """
+    stalled: List[SWETicket] = []
+    now = datetime.now(timezone.utc)
+    stall_statuses = {TicketStatus.INVESTIGATING, TicketStatus.IN_DEVELOPMENT}
+
+    for ticket in store.list_all():
+        if ticket.status not in stall_statuses:
+            continue
+
+        # Use last_heartbeat from metadata, falling back to updated_at
+        heartbeat_iso = ticket.metadata.get("last_heartbeat") or ticket.updated_at
+        try:
+            heartbeat = datetime.fromisoformat(heartbeat_iso)
+        except (ValueError, TypeError):
+            continue
+
+        # Ensure timezone-aware comparison
+        if heartbeat.tzinfo is None:
+            heartbeat = heartbeat.replace(tzinfo=timezone.utc)
+
+        hours_since = (now - heartbeat).total_seconds() / 3600
+        if hours_since > _STALL_THRESHOLD_HOURS:
+            logger.warning(
+                "Stalled ticket %s: status=%s, no heartbeat for %.1f hours — resetting to OPEN",
+                ticket.ticket_id,
+                ticket.status.value,
+                hours_since,
+            )
+            ticket.metadata["stall_detected"] = {
+                "previous_status": ticket.status.value,
+                "stalled_hours": round(hours_since, 2),
+                "detected_at": now.isoformat(),
+            }
+            ticket.transition(TicketStatus.OPEN)
+            try:
+                store.add(ticket)
+            except Exception:
+                logger.exception("Failed to persist stall reset for %s", ticket.ticket_id)
+            stalled.append(ticket)
+
+    return stalled
+
+
+# ---------------------------------------------------------------------------
+# Progress log
+# ---------------------------------------------------------------------------
+
+_PROGRESS_LOG_PATH = PROJECT_ROOT / "swe_progress.txt"
+
+
+def append_progress_log(
+    result: Dict[str, Any],
+    *,
+    done: str = "",
+    next_step: str = "",
+    blockers: str = "",
+) -> None:
+    """Append a structured entry to swe_progress.txt (append-only)."""
+    ts = datetime.now(timezone.utc).isoformat()
+    new_count = result.get("new_tickets", 0)
+    open_count = result.get("open_tickets", 0)
+    verdict = result.get("gate_verdict", "N/A")
+
+    entry = (
+        f"--- CYCLE {ts} | Tickets: {new_count}/{open_count} | Gate: {verdict}\n"
+        f"DONE: {done or 'Cycle completed'}\n"
+        f"NEXT: {next_step or 'Continue monitoring'}\n"
+        f"BLOCKERS: {blockers or 'None'}\n"
+        f"---\n"
+    )
+
+    try:
+        with open(_PROGRESS_LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write(entry)
+    except OSError:
+        logger.exception("Failed to write progress log to %s", _PROGRESS_LOG_PATH)
+
+
+def _send_preflight_alert(failures: List[str]) -> None:
+    """Send a Telegram alert when preflight checks fail."""
+    from src.swe_team.notifier import _send
+
+    lines = [
+        "<b>\u26a0\ufe0f SWE Preflight FAILED</b>",
+        "",
+        "The SWE Team runner aborted a cycle because pre-flight "
+        "validation failed:",
+        "",
+    ]
+    for f in failures:
+        lines.append(f"  \u2022 {f}")
+    _send("\n".join(lines))
+
+
 def run_cycle(
     config,
     store,
@@ -153,6 +260,34 @@ def run_cycle(
     creative: bool = False,
 ) -> Dict[str, Any]:
     """Run one monitor -> triage -> gate cycle."""
+    # 0. Preflight validation — abort if running in wrong context
+    preflight = PreflightCheck(
+        expected_git_name=os.environ.get("SWE_EXPECTED_GIT_NAME"),
+        expected_git_email=os.environ.get("SWE_EXPECTED_GIT_EMAIL"),
+        expected_github_account=config.github_account or None,
+        expected_repo_root=PROJECT_ROOT if os.environ.get("SWE_GITHUB_REPO") else None,
+        required_env_vars=["SWE_TEAM_ID", "SWE_GITHUB_REPO"],
+    )
+    preflight_result = preflight.run()
+    if not preflight_result.passed:
+        logger.error("Preflight FAILED — skipping cycle: %s", preflight_result.summary())
+        try:
+            _send_preflight_alert(preflight_result.failures)
+        except Exception:
+            logger.exception("Failed to send preflight failure alert")
+        return {
+            "new_tickets": 0,
+            "triaged": 0,
+            "investigated": 0,
+            "gate_verdict": "preflight_failed",
+            "preflight_failures": preflight_result.failures,
+        }
+
+    # 0.5. Heartbeat stall detection — reset stuck tickets
+    stalled = detect_stalled_tickets(store)
+    if stalled:
+        logger.info("Reset %d stalled ticket(s)", len(stalled))
+
     # 0a. Collect remote logs before scanning
     from src.swe_team.remote_logs import collect_remote_logs
     try:
@@ -279,6 +414,7 @@ def run_cycle(
             store=store,
             memory_top_k=config.memory.top_k,
             memory_similarity_floor=config.memory.similarity_floor,
+            model_config=config.models,
         )
         try:
             investigated = investigator.investigate_batch(pending_investigation, limit=5)
@@ -317,7 +453,7 @@ def run_cycle(
     # 5c. Dev agent: attempt fixes for investigated tickets
     if investigated and not dry_run:
         from src.swe_team.developer import DeveloperAgent
-        dev = DeveloperAgent(repo_root=PROJECT_ROOT)
+        dev = DeveloperAgent(repo_root=PROJECT_ROOT, model_config=config.models)
         for ticket in investigated:
             if ticket.investigation_report and ticket.severity.value in ("critical", "high"):
                 try:
@@ -403,7 +539,7 @@ def run_cycle(
         except Exception:
             logger.exception("Failed to dispatch SWE events to A2A")
 
-    return {
+    result = {
         "new_tickets": len(new_tickets),
         "triaged": len(triaged),
         "investigated": len(investigated),
@@ -411,6 +547,32 @@ def run_cycle(
         "gate_details": report.details,
         "open_tickets": len(store.list_open()),
     }
+
+    # 9. Append session progress log
+    done_parts = []
+    if new_tickets:
+        done_parts.append(f"Detected {len(new_tickets)} issue(s)")
+    if triaged:
+        done_parts.append(f"triaged {len(triaged)}")
+    if investigated:
+        done_parts.append(f"investigated {len(investigated)}")
+    if stalled:
+        done_parts.append(f"reset {len(stalled)} stalled")
+    done_summary = ", ".join(done_parts) if done_parts else "No new issues"
+
+    blockers_parts = []
+    if report.verdict.value == "block":
+        blockers_parts.append(f"Gate blocked: {report.details}")
+    blockers_summary = "; ".join(blockers_parts) if blockers_parts else "None"
+
+    append_progress_log(
+        result,
+        done=done_summary,
+        next_step="Continue monitoring" if report.verdict.value != "block" else "Fix blockers before new work",
+        blockers=blockers_summary,
+    )
+
+    return result
 
 
 def bootstrap_cycle(config, store, dry_run: bool = False) -> Dict[str, Any]:

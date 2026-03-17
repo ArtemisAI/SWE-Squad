@@ -66,6 +66,14 @@ class MonitorAgent:
 
     AGENT_NAME = "swe_monitor"
 
+    # Regex matching internal SWE Squad log noise — lines matching this
+    # pattern are skipped to prevent the monitor from filing tickets on
+    # its own triage/governance output.
+    _INTERNAL_LINE_RE = re.compile(
+        r"\[INFO\]|\[WARNING\]|SWE Team|Stability gate|Triage|=== Cycle",
+        re.IGNORECASE,
+    )
+
     def __init__(
         self,
         config: MonitorConfig,
@@ -134,6 +142,18 @@ class MonitorAgent:
         """Scan a single log file for matching patterns."""
         tickets: List[SWETicket] = []
 
+        # --- Self-referential guard: skip files whose path contains any
+        # of the configured exclude_patterns (e.g. "swe_team").  This
+        # prevents the monitor from scanning its own log output and
+        # creating recursive tickets.
+        file_str = str(log_file)
+        for pat in self._config.exclude_patterns:
+            if pat in file_str:
+                logger.debug(
+                    "Skipping %s — matches exclude pattern %r", log_file, pat
+                )
+                return tickets
+
         # Skip files older than dedup window (mtime check)
         try:
             mtime = datetime.fromtimestamp(
@@ -154,6 +174,12 @@ class MonitorAgent:
             match = self._pattern_re.search(line)
             if not match:
                 continue
+
+            # --- Line-level filter: skip lines that look like internal
+            # SWE Squad triage / governance output to avoid recursive tickets.
+            if self._INTERNAL_LINE_RE.search(line):
+                continue
+
             fp = _fingerprint(str(log_file), line)
             if fp in self._known:
                 continue

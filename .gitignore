@@ -37,6 +37,7 @@ logs/
 *.sqlite
 *.db
 tickets.json
+swe_progress.txt
 
 # -----------------------------------------------------------------------------
 # Python
@@ -105,3 +106,4 @@ temp/
 *.backup
 *.orig
 scratch/
+.claude/worktrees/

@@ -48,6 +48,7 @@ class InvestigatorAgent:
         store: Optional[object] = None,
         memory_top_k: int = 5,
         memory_similarity_floor: float = 0.75,
+        model_config: Optional[object] = None,
     ) -> None:
         self._program_path = Path(program_path)
         self._claude_path = claude_path
@@ -57,6 +58,7 @@ class InvestigatorAgent:
         self._memory_top_k = memory_top_k
         self._memory_similarity_floor = memory_similarity_floor
         self._program_cache: Optional[str] = None
+        self._model_config = model_config
 
     def investigate_batch(
         self, tickets: Iterable[SWETicket], *, limit: Optional[int] = None
@@ -88,6 +90,7 @@ class InvestigatorAgent:
 
         started_at = datetime.now(timezone.utc).isoformat()
         ticket.transition(TicketStatus.INVESTIGATING)
+        ticket.metadata["last_heartbeat"] = started_at
 
         model = self._select_model(ticket)
 
@@ -229,14 +232,16 @@ class InvestigatorAgent:
         return text
 
     def _select_model(self, ticket: SWETicket) -> str:
-        """Opus for CRITICAL bugs, sonnet for everything else."""
+        """Select model from config tiers: t1_heavy for CRITICAL, t2_standard otherwise."""
+        heavy = self._model_config.t1_heavy if self._model_config else "opus"
+        standard = self._model_config.t2_standard if self._model_config else "sonnet"
         if ticket.severity == TicketSeverity.CRITICAL:
-            return "opus"
-        # Escalate to opus if a previous investigation failed
+            return heavy
+        # Escalate to heavy tier if a previous investigation failed
         inv = ticket.metadata.get("investigation", {})
         if inv.get("status") == "failed":
-            return "opus"
-        return "sonnet"
+            return heavy
+        return standard
 
     def _run_claude(
         self, prompt: str, *, model: str = "sonnet", timeout: Optional[int] = None

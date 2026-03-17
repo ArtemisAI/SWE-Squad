@@ -35,6 +35,7 @@ from src.swe_team.governance import DeploymentGovernor, DeploymentRecord, check_
 from src.swe_team.developer import DeveloperAgent
 from src.swe_team.creative_agent import CreativeAgent
 from src.swe_team.distiller import TrajectoryDistiller
+from src.swe_team.preflight import PreflightCheck, PreflightResult
 from src.swe_team.ticket_store import TicketStore
 from src.swe_team.supabase_store import SupabaseTicketStore
 
@@ -67,6 +68,9 @@ __all__ = [
     "DeveloperAgent",
     "CreativeAgent",
     "TrajectoryDistiller",
+    # Preflight
+    "PreflightCheck",
+    "PreflightResult",
     # Storage
     "TicketStore",
     "SupabaseTicketStore",

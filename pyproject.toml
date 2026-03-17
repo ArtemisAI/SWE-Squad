@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "swe-squad"
+version = "0.1.0"
+description = "Autonomous SWE agents — monitor, triage, investigate, and fix issues."
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "pyyaml",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+embeddings = ["openai"]
+supabase = []  # uses stdlib urllib — no extra deps
+
+[project.scripts]
+swe-squad = "scripts.ops.swe_team_runner:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.setuptools.packages.find]
+include = ["src*", "scripts*"]

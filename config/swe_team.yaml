@@ -50,6 +50,19 @@ monitor:
     - "FAILED"
     - "reCAPTCHA"
     - "TimeoutError"
+  exclude_patterns:
+    - "swe_team"
+    - "swe_team_runner"
+
+# ---------------------------------------------------------------------------
+# Model Cost Tiers
+# ---------------------------------------------------------------------------
+# Route tasks to the right model tier for cost efficiency.
+# Override via environment variables: T1_MODEL, T2_MODEL, T3_MODEL
+models:
+  t1_heavy: "opus"      # Architecture, orchestration, critical bugs
+  t2_standard: "sonnet"  # Feature implementation, routine fixes
+  t3_fast: "haiku"       # Docs, scanning, simple tasks
 
 # ---------------------------------------------------------------------------
 # Semantic Memory (pgvector embeddings + similar ticket retrieval)

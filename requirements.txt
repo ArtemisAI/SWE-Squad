@@ -1,0 +1,6 @@
+# Core
+pyyaml
+python-dotenv
+
+# Dev / Testing
+pytest
