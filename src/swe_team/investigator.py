@@ -19,6 +19,7 @@ from src.swe_team.embeddings import embed_ticket
 from src.swe_team.github_integration import comment_on_issue
 from src.swe_team.models import SWETicket, TicketSeverity, TicketStatus
 from src.swe_team.notifier import notify_investigation_summary
+from src.swe_team.rate_limiter import ExponentialBackoff, RateLimitExhausted, RateLimitTracker
 from src.swe_team.supabase_store import SupabaseTicketStore
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,8 @@ class InvestigatorAgent:
         memory_top_k: int = 5,
         memory_similarity_floor: float = 0.75,
         model_config: Optional[object] = None,
+        rate_limit_config: Optional[object] = None,
+        rate_limit_tracker: Optional[RateLimitTracker] = None,
     ) -> None:
         self._program_path = Path(program_path)
         self._claude_path = claude_path
@@ -59,6 +62,15 @@ class InvestigatorAgent:
         self._memory_similarity_floor = memory_similarity_floor
         self._program_cache: Optional[str] = None
         self._model_config = model_config
+
+        # Rate limit backoff
+        rl = rate_limit_config
+        self._backoff = ExponentialBackoff(
+            max_retries=getattr(rl, "max_retries_on_429", 3) if rl else 3,
+            initial_delay=getattr(rl, "initial_backoff_seconds", 30) if rl else 30,
+            max_delay=getattr(rl, "max_backoff_seconds", 300) if rl else 300,
+            tracker=rate_limit_tracker,
+        )
 
     def investigate_batch(
         self, tickets: Iterable[SWETicket], *, limit: Optional[int] = None
@@ -110,7 +122,16 @@ class InvestigatorAgent:
         logger.info("Investigating ticket %s via Claude CLI (model=%s)", ticket.ticket_id, model)
         start = time.monotonic()
         try:
-            stdout, stderr = self._run_claude(prompt, model=model, timeout=timeout)
+            stdout, stderr = self._backoff.execute(
+                lambda: self._run_claude(prompt, model=model, timeout=timeout),
+                context=model,
+            )
+        except RateLimitExhausted as exc:
+            self._record_failure(ticket, started_at, str(exc))
+            ticket.metadata["rate_limited"] = True
+            ticket.metadata["rate_limited_at"] = datetime.now(timezone.utc).isoformat()
+            self._send_rate_limit_alert(ticket, exc)
+            return False
         except (subprocess.TimeoutExpired, OSError, RuntimeError) as exc:
             self._record_failure(ticket, started_at, str(exc))
             return False
@@ -314,6 +335,22 @@ class InvestigatorAgent:
             ]
         )
         comment_on_issue(issue_number, body)
+
+    @staticmethod
+    def _send_rate_limit_alert(ticket: SWETicket, exc: Exception) -> None:
+        """Send a Telegram alert when rate limits are exhausted."""
+        from src.swe_team.telegram import send_message
+
+        message = (
+            "<b>Rate Limit Exhausted</b>\n\n"
+            f"Ticket: <code>{ticket.ticket_id}</code>\n"
+            f"Title: {ticket.title[:80]}\n"
+            f"Error: {str(exc)[:200]}"
+        )
+        try:
+            send_message(message, parse_mode="HTML")
+        except Exception:
+            logger.exception("Failed to send rate limit alert for %s", ticket.ticket_id)
 
     def _record_failure(
         self, ticket: SWETicket, started_at: str, error: str

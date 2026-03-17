@@ -89,6 +89,15 @@ models:
   t3_fast: "haiku"       # Docs, scanning, simple tasks
 
 # ---------------------------------------------------------------------------
+# Rate Limit Backoff
+# ---------------------------------------------------------------------------
+# Exponential backoff when Claude Code CLI returns 429 rate limit errors.
+rate_limits:
+  max_retries_on_429: 3
+  initial_backoff_seconds: 30
+  max_backoff_seconds: 300
+
+# ---------------------------------------------------------------------------
 # Semantic Memory (pgvector embeddings + similar ticket retrieval)
 # ---------------------------------------------------------------------------
 memory:

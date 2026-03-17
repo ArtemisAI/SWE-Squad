@@ -165,6 +165,37 @@ class ModelConfig:
 
 
 # ---------------------------------------------------------------------------
+# Rate limit backoff settings
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RateLimitConfig:
+    """Settings for exponential backoff on Claude Code CLI rate limits (429).
+
+    Controls retry behaviour when the CLI returns a rate limit error.
+    """
+
+    max_retries_on_429: int = 3
+    initial_backoff_seconds: float = 30
+    max_backoff_seconds: float = 300
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "RateLimitConfig":
+        return cls(
+            max_retries_on_429=data.get("max_retries_on_429", 3),
+            initial_backoff_seconds=data.get("initial_backoff_seconds", 30),
+            max_backoff_seconds=data.get("max_backoff_seconds", 300),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "max_retries_on_429": self.max_retries_on_429,
+            "initial_backoff_seconds": self.initial_backoff_seconds,
+            "max_backoff_seconds": self.max_backoff_seconds,
+        }
+
+
+# ---------------------------------------------------------------------------
 # Per-cycle throttle settings
 # ---------------------------------------------------------------------------
 
@@ -269,6 +300,7 @@ class SWETeamConfig:
     monitor: MonitorConfig = field(default_factory=MonitorConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     models: ModelConfig = field(default_factory=ModelConfig)
+    rate_limits: RateLimitConfig = field(default_factory=RateLimitConfig)
     cycle: CycleConfig = field(default_factory=CycleConfig)
     ticket_store_path: str = "data/swe_team/tickets.json"
     a2a_hub_url: str = "http://localhost:18790"
@@ -286,6 +318,7 @@ class SWETeamConfig:
         mon = MonitorConfig.from_dict(data.get("monitor", {}))
         memory = MemoryConfig.from_dict(data.get("memory", {}))
         models = ModelConfig.from_dict(data.get("models", {}))
+        rate_limits = RateLimitConfig.from_dict(data.get("rate_limits", {}))
         cycle = CycleConfig.from_dict(data.get("cycle", {}))
         return cls(
             agents=agents,
@@ -293,6 +326,7 @@ class SWETeamConfig:
             monitor=mon,
             memory=memory,
             models=models,
+            rate_limits=rate_limits,
             cycle=cycle,
             ticket_store_path=data.get(
                 "ticket_store_path", "data/swe_team/tickets.json"
@@ -311,6 +345,7 @@ class SWETeamConfig:
             "monitor": self.monitor.to_dict(),
             "memory": self.memory.to_dict(),
             "models": self.models.to_dict(),
+            "rate_limits": self.rate_limits.to_dict(),
             "cycle": self.cycle.to_dict(),
             "ticket_store_path": self.ticket_store_path,
             "a2a_hub_url": self.a2a_hub_url,

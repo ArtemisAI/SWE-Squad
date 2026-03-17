@@ -50,6 +50,7 @@ from src.swe_team.creative_agent import CreativeAgent
 from src.swe_team.distiller import TrajectoryDistiller
 from src.swe_team.preflight import PreflightCheck
 from src.swe_team.model_probe import ModelProbe
+from src.swe_team.rate_limiter import RateLimitTracker
 from src.a2a.adapters.swe_team import dispatch_swe_events
 
 logger = logging.getLogger("swe_team")
@@ -491,6 +492,9 @@ def run_cycle(
     creative: bool = False,
 ) -> Dict[str, Any]:
     """Run one monitor -> triage -> gate cycle."""
+    # Rate limit tracker — shared across investigator and developer within this cycle
+    rate_limit_tracker = RateLimitTracker()
+
     # 0. Supabase keep-alive — prevent free-tier pause from inactivity
     if isinstance(store, SupabaseTicketStore):
         try:
@@ -720,7 +724,7 @@ def run_cycle(
 
     if not pending_investigation and not triaged and not new_tickets:
         logger.info("Nothing to do this cycle (no new tickets, no backlog)")
-        return {"new_tickets": 0, "triaged": 0, "investigated": 0, "gate_verdict": "N/A"}
+        return {"new_tickets": 0, "triaged": 0, "investigated": 0, "gate_verdict": "N/A", "rate_limit_events": len(rate_limit_tracker.recent_events(hours=1))}
     # Enforce max_open_investigating — don't pile on if already at the cap
     if pending_investigation and not dry_run:
         currently_investigating = sum(
@@ -741,16 +745,26 @@ def run_cycle(
             )
             pending_investigation = pending_investigation[:slots_free]
     if pending_investigation and not dry_run:
+        # Reduce batch size if rate limit tracker shows recent cooldown
+        investigate_limit = config.cycle.max_investigations_per_cycle
+        if rate_limit_tracker.is_cooling_down():
+            investigate_limit = min(2, investigate_limit)
+            logger.warning(
+                "Rate limit cooldown active — reducing investigation batch to %d",
+                investigate_limit,
+            )
         investigator = InvestigatorAgent(
             store=store,
             memory_top_k=config.memory.top_k,
             memory_similarity_floor=config.memory.similarity_floor,
             model_config=config.models,
+            rate_limit_config=config.rate_limits,
+            rate_limit_tracker=rate_limit_tracker,
         )
         try:
             investigated = investigator.investigate_batch(
                 pending_investigation,
-                limit=config.cycle.max_investigations_per_cycle,
+                limit=investigate_limit,
             )
             for ticket in investigated:
                 try:
@@ -787,7 +801,12 @@ def run_cycle(
     # 5c. Dev agent: attempt fixes for investigated tickets
     if investigated and not dry_run:
         from src.swe_team.developer import DeveloperAgent
-        dev = DeveloperAgent(repo_root=PROJECT_ROOT, model_config=config.models)
+        dev = DeveloperAgent(
+            repo_root=PROJECT_ROOT,
+            model_config=config.models,
+            rate_limit_config=config.rate_limits,
+            rate_limit_tracker=rate_limit_tracker,
+        )
         for ticket in investigated:
             if ticket.investigation_report and ticket.severity.value in ("critical", "high"):
                 try:
@@ -894,6 +913,12 @@ def run_cycle(
             except Exception:
                 logger.exception("Failed to persist cost metadata for %s", ticket.ticket_id)
 
+    rate_limit_events = rate_limit_tracker.recent_events(hours=1)
+    if rate_limit_events:
+        logger.warning(
+            "Rate limit events this cycle: %d", len(rate_limit_events)
+        )
+
     result = {
         "new_tickets": len(new_tickets),
         "triaged": len(triaged),
@@ -902,6 +927,7 @@ def run_cycle(
         "gate_details": report.details,
         "open_tickets": len(store.list_open()),
         "cycle_cost_usd": round(cycle_cost, 4),
+        "rate_limit_events": len(rate_limit_events),
     }
 
     # 9. Write status file for external monitoring
