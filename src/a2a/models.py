@@ -52,3 +52,22 @@ class AgentCard:
     version: str = "0.1.0"
     skills: List[AgentSkill] = field(default_factory=list)
     provider: Dict[str, str] = field(default_factory=dict)
+    capabilities: Dict[str, bool] = field(default_factory=lambda: {
+        "streaming": False,
+        "pushNotifications": False,
+    })
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize the agent card to a JSON-compatible dict."""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "url": self.url,
+            "version": self.version,
+            "skills": [
+                {"id": s.id, "name": s.name, "description": s.description, "tags": s.tags}
+                for s in self.skills
+            ],
+            "provider": self.provider,
+            "capabilities": self.capabilities,
+        }

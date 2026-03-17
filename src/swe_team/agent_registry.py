@@ -7,13 +7,20 @@ intelligent agent selection based on task type, severity, and availability.
 
 Agents register via ``AgentCard``-like dicts and are discovered either through
 local registration or by querying well-known A2A endpoints.
+
+The registry can use an :class:`~src.a2a.client.A2AClient` for network-based
+discovery and health checking when available.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
+
+if TYPE_CHECKING:
+    from src.a2a.adapters.base import AgentAdapter
+    from src.a2a.client import A2AClient
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +56,14 @@ class AgentRegistry:
         *,
         ttl_seconds: int = _DEFAULT_TTL_SECONDS,
         discovery_urls: Optional[List[str]] = None,
+        a2a_client: Optional["A2AClient"] = None,
     ) -> None:
         self._agents: Dict[str, Dict[str, Any]] = {}
         self._registered_at: Dict[str, float] = {}
         self._ttl_seconds = ttl_seconds
         self._discovery_urls = discovery_urls or []
+        self._a2a_client = a2a_client
+        self._local_adapters: Dict[str, "AgentAdapter"] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -83,6 +93,48 @@ class AgentRegistry:
             s.get("id", "?") for s in agent_card.get("skills", [])
         ])
 
+    def register_local(self, adapter: "AgentAdapter") -> None:
+        """Register a locally-running agent adapter.
+
+        The adapter's agent card is extracted and registered, and the adapter
+        reference is stored so it can be used for local invocations without
+        going through HTTP.
+
+        Parameters
+        ----------
+        adapter:
+            An ``AgentAdapter`` instance (e.g. ``GeminiCLIAdapter``).
+        """
+        card = adapter.agent_card()
+        card_dict: Dict[str, Any] = {
+            "name": card.name,
+            "url": card.url,
+            "version": card.version,
+            "provider": card.provider,
+            "skills": [
+                {"id": s.id, "name": s.name, "description": s.description, "tags": s.tags}
+                for s in card.skills
+            ],
+            "status": "online",
+        }
+        # Include priority if the adapter exposes it
+        if hasattr(adapter, "_priority"):
+            card_dict["priority"] = adapter._priority
+        # Include availability check if available
+        if hasattr(adapter, "is_available") and callable(adapter.is_available):
+            try:
+                card_dict["status"] = "online" if adapter.is_available() else "offline"
+            except Exception:
+                card_dict["status"] = "offline"
+
+        self.register(card_dict)
+        self._local_adapters[card.name] = adapter
+        logger.info("Registered local adapter: %s", card.name)
+
+    def get_local_adapter(self, name: str) -> Optional["AgentAdapter"]:
+        """Return the local adapter for *name*, or ``None`` if not registered locally."""
+        return self._local_adapters.get(name)
+
     def unregister(self, name: str) -> bool:
         """Remove an agent from the registry.
 
@@ -91,6 +143,7 @@ class AgentRegistry:
         if name in self._agents:
             del self._agents[name]
             self._registered_at.pop(name, None)
+            self._local_adapters.pop(name, None)
             logger.info("Unregistered agent: %s", name)
             return True
         return False
@@ -98,9 +151,9 @@ class AgentRegistry:
     def discover(self) -> List[Dict[str, Any]]:
         """Query configured A2A discovery URLs for agent cards.
 
-        This is a best-effort operation: network failures are logged but
-        do not raise exceptions.  Successfully discovered agents are merged
-        into the local registry.
+        Uses :class:`A2AClient` when available, falling back to direct
+        ``urllib`` requests.  This is a best-effort operation: network
+        failures are logged but do not raise exceptions.
 
         Returns
         -------
@@ -109,15 +162,57 @@ class AgentRegistry:
         """
         discovered: List[Dict[str, Any]] = []
         for base_url in self._discovery_urls:
-            url = base_url.rstrip("/") + WELL_KNOWN_AGENT_CARD_PATH
             try:
-                card = self._fetch_agent_card(url)
+                if self._a2a_client is not None:
+                    card = self._a2a_client.discover(base_url)
+                else:
+                    url = base_url.rstrip("/") + WELL_KNOWN_AGENT_CARD_PATH
+                    card = self._fetch_agent_card(url)
                 if card and card.get("name"):
+                    # Preserve the discovery URL so we know where this agent lives
+                    card.setdefault("url", base_url)
+                    card.setdefault("status", "online")
                     self.register(card)
                     discovered.append(card)
             except Exception:
-                logger.warning("A2A discovery failed for %s", url, exc_info=True)
+                logger.warning("A2A discovery failed for %s", base_url, exc_info=True)
         return discovered
+
+    def check_health(self, name: str) -> bool:
+        """Check if a registered agent is healthy.
+
+        Uses the A2A client for remote agents (those with ``http://`` URLs)
+        and the adapter's ``is_available()`` for local agents.
+
+        Returns True if the agent is reachable and healthy.
+        """
+        card = self._agents.get(name)
+        if card is None:
+            return False
+
+        # Check local adapter first
+        adapter = self._local_adapters.get(name)
+        if adapter is not None:
+            if hasattr(adapter, "is_available") and callable(adapter.is_available):
+                try:
+                    healthy = adapter.is_available()
+                except Exception:
+                    healthy = False
+                self.set_status(name, "online" if healthy else "offline")
+                return healthy
+            return True
+
+        # Remote agent — use A2A client
+        url = card.get("url", "")
+        if url.startswith("http") and self._a2a_client is not None:
+            try:
+                healthy = self._a2a_client.health_check(url)
+            except Exception:
+                healthy = False
+            self.set_status(name, "online" if healthy else "offline")
+            return healthy
+
+        return card.get("status", "online") == "online"
 
     def get(self, name: str) -> Optional[Dict[str, Any]]:
         """Return the agent card for *name*, or ``None`` if not found."""
