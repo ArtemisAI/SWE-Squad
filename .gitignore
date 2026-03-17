@@ -8,6 +8,7 @@
 .env
 .env.*
 !.env.example
+.last_public_sync
 *.pem
 *.key
 *.p12
