@@ -19,12 +19,46 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Preference-ordered fallback lists per task type.
-# First match wins when the configured model is not available.
-_EMBEDDING_FALLBACKS = ["bge-m3", "mxbai-embed-large", "nomic-embed-text", "qwen3-embedding"]
-_EXTRACTION_FALLBACKS = ["gemini-3-flash", "qwen3:8b", "gemini-2.5-flash-thinking", "qwen3:4b"]
-_T1_FALLBACKS = ["gemini-3-flash", "qwen3:8b", "qwen3:4b"]
-_T2_FALLBACKS = ["gemini-2.5-flash-thinking", "qwen3:8b", "gemini-3-flash"]
-_T3_FALLBACKS = ["gemini-2.5-pro", "gemini-3-pro-high", "claude-opus-4-6", "gemini-2.5-flash-thinking"]
+# Each candidate is PROBED with a real API call before being selected.
+# Order: fastest/cheapest first, degrading gracefully to heavier models.
+# gemini-3-flash is known to return empty completions on this proxy — keep it
+# as a last-resort in case it's fixed, but never first.
+_EMBEDDING_FALLBACKS = [
+    "bge-m3",            # primary — fast, 1024-dim
+    "mxbai-embed-large", # fallback
+    "nomic-embed-text",  # fallback
+    "qwen3-embedding",   # fallback
+]
+_EXTRACTION_FALLBACKS = [
+    "gemini-2.5-flash-thinking",  # proven working
+    "kimi-k2.5:cloud",            # 1M context, good for long logs
+    "qwen3-coder:30b",            # code-aware, reliable
+    "qwen3:8b",                   # lightweight fallback
+    "deepseek-r1:14b",            # strong reasoning fallback
+    "gemini-3-flash",             # last resort — known to return empty sometimes
+]
+_T1_FALLBACKS = [                 # cheap/fast tasks via BASE_LLM proxy
+    "gemini-2.5-flash-thinking",
+    "kimi-k2.5:cloud",
+    "qwen3:8b",
+    "qwen3:4b",
+    "gemini-3-flash",             # last resort
+]
+_T2_FALLBACKS = [                 # standard tasks via BASE_LLM proxy
+    "gemini-2.5-flash-thinking",
+    "kimi-k2.5:cloud",
+    "qwen3-coder:30b",
+    "deepseek-r1:14b",
+    "gemini-3-flash",
+]
+_T3_FALLBACKS = [                 # heavy/critical tasks via BASE_LLM proxy
+    "gemini-2.5-pro",
+    "kimi-k2.5:cloud",
+    "gemini-3-pro-high",
+    "claude-opus-4-6",
+    "deepseek-v3.1:671b-cloud",
+    "gemini-2.5-flash-thinking",
+]
 
 
 def list_available_models(
