@@ -83,7 +83,7 @@ if ticket:
     repo_root = ticket.metadata.get('repo_root', '/home/agent/Projects/LinkedAi')
     code_reviewer = CodeReviewerAgent(model='sonnet')
     approved, feedback = code_reviewer.review(ticket, store, repo_root=repo_root)
-    print(f"Ticket {ticket.ticket_id}: approved={approved} feedback={feedback}")
+    print(f"Ticket {{ticket.ticket_id}}: approved={{approved}} feedback={{feedback}}")
 else:
     print("Ticket not found")
 ```

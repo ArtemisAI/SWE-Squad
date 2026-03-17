@@ -307,6 +307,8 @@ class InvestigatorAgent:
                 source_module=ticket.source_module or "unknown",
                 description=description,
                 investigation_report=ticket.investigation_report or "No prior investigation.",
+                ticket_id=ticket.ticket_id,
+                branch=ticket.metadata.get("branch", ""),
             )
         except (KeyError, ValueError) as exc:
             logger.warning("Invalid orchestrate.md template: %s", exc)
