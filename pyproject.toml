@@ -19,6 +19,7 @@ supabase = []  # uses stdlib urllib — no extra deps
 
 [project.scripts]
 swe-squad = "scripts.ops.swe_team_runner:main"
+swe-cli = "scripts.ops.swe_cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -7,7 +7,6 @@ and only keep changes that pass tests and complexity gates.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import subprocess
 import time
@@ -374,27 +373,9 @@ class DeveloperAgent:
 
     @staticmethod
     def _send_telegram(message: str) -> None:
-        from src.notifications.telegram import send_telegram_alert
+        from src.swe_team.telegram import send_message
 
         try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            try:
-                asyncio.run(send_telegram_alert(message, parse_mode="HTML"))
-            except Exception:
-                logger.exception("Failed to send developer escalation via asyncio.run")
-        else:
-            task = loop.create_task(send_telegram_alert(message, parse_mode="HTML"))
-            task.add_done_callback(_handle_telegram_task_result)
-
-
-def _handle_telegram_task_result(task: asyncio.Task[None]) -> None:
-    """Log exceptions from async Telegram escalation tasks."""
-    try:
-        if task.cancelled():
-            return
-        exc = task.exception()
-        if exc:
-            logger.exception("Developer escalation task failed: %s", exc)
-    except Exception:
-        logger.exception("Failed to inspect developer escalation task")
+            send_message(message, parse_mode="HTML")
+        except Exception:
+            logger.exception("Failed to send developer escalation")

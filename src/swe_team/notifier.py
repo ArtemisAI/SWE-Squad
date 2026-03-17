@@ -4,18 +4,15 @@ Telegram notification integration for SWE Team events.
 Sends alerts for new high/critical tickets, stability gate blocks,
 and daily summaries of open ticket counts.
 
-Uses the project's existing ``send_telegram_alert()`` from
-``src.notifications.telegram`` (async, HTML parse mode).  The async
-call is wrapped in ``asyncio.run()`` inside ``_send()`` so that all
-public functions in this module are synchronous and safe to call from
-the CLI runner without event-loop gymnastics.
+Uses ``src.swe_team.telegram.send_message()`` — a synchronous,
+stdlib-only Telegram Bot API client.  All public functions in this
+module are synchronous and safe to call from the CLI runner.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import List
+from typing import List, Optional
 
 from src.swe_team.models import SWETicket, StabilityReport, TicketSeverity
 
@@ -31,22 +28,14 @@ _SEVERITY_EMOJI = {
 
 
 def _send(message: str) -> bool:
-    """Send a Telegram message using the project's async helper.
+    """Send a Telegram message via the standalone Bot API client.
 
-    Wraps the async ``send_telegram_alert`` in ``asyncio.run()`` so
-    callers in synchronous contexts (the CLI runner) can use it directly.
-    Returns True on success, False otherwise.
+    Returns True on success, False otherwise.  Never raises.
     """
-    from src.notifications.telegram import send_telegram_alert
+    from src.swe_team.telegram import send_message
 
     try:
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(
-                send_telegram_alert(message, parse_mode="HTML")
-            )
-        finally:
-            loop.close()
+        return send_message(message, parse_mode="HTML")
     except Exception as exc:  # noqa: BLE001
         logger.warning("Telegram send failed: %s", exc)
         return False
@@ -97,20 +86,25 @@ def notify_stability_gate(report: StabilityReport) -> None:
     _send(message)
 
 
-def notify_daily_summary(store) -> None:
+def notify_daily_summary(store, *, cost_total: Optional[float] = None) -> None:
     """Daily summary of open tickets by severity.
 
     Parameters
     ----------
     store:
         A ``TicketStore`` instance to query.
+    cost_total:
+        Optional total estimated cost (USD) for the reporting period.
     """
     all_open = store.list_open()
     if not all_open:
-        _send("<b>\U0001f4cb SWE Daily Summary</b>\n\nNo open tickets.")
+        msg = "<b>\U0001f4cb SWE Daily Summary</b>\n\nNo open tickets."
+        if cost_total is not None:
+            msg += f"\n\n<b>Estimated cost:</b> ${cost_total:.2f}"
+        _send(msg)
         return
 
-    counts = {}
+    counts: dict[TicketSeverity, int] = {}
     for t in all_open:
         counts[t.severity] = counts.get(t.severity, 0) + 1
 
@@ -134,6 +128,11 @@ def notify_daily_summary(store) -> None:
         lines.append("<b>By status:</b>")
         for status, count in sorted(status_counts.items()):
             lines.append(f"  {status}: {count}")
+
+    # Cost summary
+    if cost_total is not None:
+        lines.append("")
+        lines.append(f"<b>Estimated cost:</b> ${cost_total:.2f}")
 
     message = "\n".join(lines)
     _send(message)
@@ -187,6 +186,89 @@ def notify_regression_hitl(ticket: SWETicket) -> None:
     ]
     message = "\n".join(lines)
     _send(message)
+
+
+def notify_cycle_summary(
+    *,
+    new_tickets: int = 0,
+    triaged: int = 0,
+    investigated: int = 0,
+    fixes_attempted: int = 0,
+    fixes_succeeded: int = 0,
+    gate_verdict: str = "N/A",
+    cost_usd: Optional[float] = None,
+) -> None:
+    """Send a concise cycle summary to Telegram.
+
+    Designed to be called after each run_cycle() completes.
+    """
+    lines = [
+        "<b>\U0001f504 SWE Cycle Summary</b>",
+        "",
+        f"New tickets: {new_tickets}",
+        f"Triaged: {triaged}",
+        f"Investigated: {investigated}",
+        f"Fixes attempted: {fixes_attempted}",
+        f"Fixes succeeded: {fixes_succeeded}",
+        f"Gate: <b>{_esc(gate_verdict)}</b>",
+    ]
+    if cost_usd is not None:
+        lines.append(f"Cycle cost: ${cost_usd:.2f}")
+    message = "\n".join(lines)
+    _send(message)
+
+
+def notify_status(status_data: dict) -> None:
+    """Send the current status.json contents as a formatted Telegram message.
+
+    Parameters
+    ----------
+    status_data:
+        A dict (typically loaded from ``status.json``).
+    """
+    lines = [
+        "<b>\U0001f4ca SWE Status Report</b>",
+        "",
+    ]
+    for key, value in sorted(status_data.items()):
+        lines.append(f"<b>{_esc(str(key))}:</b> {_esc(str(value))}")
+    message = "\n".join(lines)
+    _send(message)
+
+
+def aggregate_daily_costs(store) -> float:
+    """Sum cost_usd from investigation metadata across all tickets updated today.
+
+    Looks at ``ticket.metadata["investigation"]["cost_usd"]`` and
+    ``ticket.metadata["cycle_costs"]`` entries.
+
+    Returns the total cost in USD (0.0 if none found).
+    """
+    from datetime import datetime, timezone
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    total = 0.0
+
+    all_tickets = store.list_all() if hasattr(store, "list_all") else []
+    for ticket in all_tickets:
+        # Investigation cost
+        inv = ticket.metadata.get("investigation", {})
+        completed = inv.get("completed_at", "")
+        if completed.startswith(today) and inv.get("cost_usd"):
+            try:
+                total += float(inv["cost_usd"])
+            except (ValueError, TypeError):
+                pass
+
+        # Cycle costs appended by the runner
+        for entry in ticket.metadata.get("cycle_costs", []):
+            if str(entry.get("date", "")).startswith(today):
+                try:
+                    total += float(entry.get("cost_usd", 0))
+                except (ValueError, TypeError):
+                    pass
+
+    return round(total, 4)
 
 
 def _esc(text: str) -> str:

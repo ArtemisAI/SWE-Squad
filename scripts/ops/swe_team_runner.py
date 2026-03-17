@@ -35,7 +35,15 @@ from src.swe_team.ralph_wiggum import RalphWiggumGate
 from src.swe_team.ticket_store import TicketStore
 from src.swe_team.embeddings import embed_ticket
 from src.swe_team.supabase_store import SupabaseTicketStore
-from src.swe_team.notifier import notify_new_tickets, notify_stability_gate, notify_daily_summary, notify_regression_hitl
+from src.swe_team.notifier import (
+    notify_new_tickets,
+    notify_stability_gate,
+    notify_daily_summary,
+    notify_regression_hitl,
+    notify_cycle_summary,
+    notify_status,
+    aggregate_daily_costs,
+)
 from src.swe_team.github_integration import create_github_issue, find_existing_issue
 from src.swe_team.events import SWEEvent
 from src.swe_team.creative_agent import CreativeAgent
@@ -762,6 +770,27 @@ def run_cycle(
         except Exception:
             logger.exception("Failed to dispatch SWE events to A2A")
 
+    # Aggregate cycle costs from investigation metadata
+    cycle_cost = 0.0
+    for ticket in investigated:
+        inv = ticket.metadata.get("investigation", {})
+        cost_val = inv.get("cost_usd")
+        if cost_val:
+            try:
+                cycle_cost += float(cost_val)
+            except (ValueError, TypeError):
+                pass
+            # Append cost entry to ticket metadata for daily aggregation
+            ticket.metadata.setdefault("cycle_costs", []).append({
+                "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "cost_usd": cost_val,
+                "phase": "investigation",
+            })
+            try:
+                store.add(ticket)
+            except Exception:
+                logger.exception("Failed to persist cost metadata for %s", ticket.ticket_id)
+
     result = {
         "new_tickets": len(new_tickets),
         "triaged": len(triaged),
@@ -769,6 +798,7 @@ def run_cycle(
         "gate_verdict": report.verdict.value,
         "gate_details": report.details,
         "open_tickets": len(store.list_open()),
+        "cycle_cost_usd": round(cycle_cost, 4),
     }
 
     # 9. Write status file for external monitoring
@@ -909,6 +939,11 @@ def main() -> None:
         type=int,
         help="Seconds between cycles in daemon mode (default: monitor scan interval)",
     )
+    parser.add_argument(
+        "--report",
+        choices=["daily", "cycle", "status"],
+        help="Send a Telegram report and exit (daily|cycle|status). Designed for cron.",
+    )
     args = parser.parse_args()
 
     setup_logging(args.verbose)
@@ -928,9 +963,43 @@ def main() -> None:
         store = TicketStore(config.ticket_store_path)
         logger.info("Using JSON ticket store (%s)", config.ticket_store_path)
 
-    # Daily summary mode — send and exit
+    # --report mode — send a Telegram report and exit (cron-friendly)
+    if args.report:
+        if args.report == "daily":
+            cost = aggregate_daily_costs(store)
+            notify_daily_summary(store, cost_total=cost if cost else None)
+            logger.info("=== Daily report sent (cost=$%.2f) ===", cost)
+        elif args.report == "cycle":
+            # Send a cycle summary from the last status.json
+            status_path = config.ticket_store_path.replace("tickets.json", "status.json")
+            status_data: Dict[str, Any] = {}
+            try:
+                with open(status_path) as fh:
+                    status_data = json.load(fh)
+            except (OSError, json.JSONDecodeError):
+                logger.warning("Could not read %s for cycle report", status_path)
+            notify_cycle_summary(
+                new_tickets=status_data.get("tickets_open", 0),
+                triaged=0,
+                investigated=0,
+                gate_verdict=status_data.get("gate_verdict", "N/A"),
+            )
+            logger.info("=== Cycle report sent ===")
+        elif args.report == "status":
+            status_path = config.ticket_store_path.replace("tickets.json", "status.json")
+            try:
+                with open(status_path) as fh:
+                    status_data = json.load(fh)
+            except (OSError, json.JSONDecodeError):
+                status_data = {"error": "Could not read status.json"}
+            notify_status(status_data)
+            logger.info("=== Status report sent ===")
+        return
+
+    # Daily summary mode — send and exit (legacy flag, kept for backwards compat)
     if args.summary:
-        notify_daily_summary(store)
+        cost = aggregate_daily_costs(store)
+        notify_daily_summary(store, cost_total=cost if cost else None)
         logger.info("=== Daily summary sent ===")
         return
 

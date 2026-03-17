@@ -1,0 +1,40 @@
+# ============================================================================
+# SWE Squad — recommended cron schedules
+# ============================================================================
+#
+# Install with:
+#   crontab crontab.example          (replace current crontab)
+#   crontab -l | cat - crontab.example | crontab -   (append to existing)
+#
+# Prerequisites:
+#   - Python 3.10+ with deps installed: pip install -r requirements.txt
+#   - .env file with required credentials (TELEGRAM_BOT_TOKEN, etc.)
+#   - GitHub CLI (gh) authenticated for the issues/repos commands
+#
+# Update /path/to/SWE-Squad to your actual install path.
+# ============================================================================
+
+# Environment — adjust as needed
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+SWE_SQUAD_DIR=/path/to/SWE-Squad
+
+# ── Scan cycle every 30 minutes ──────────────────────────────────────────────
+# Runs the full monitor -> triage -> investigate -> gate cycle
+*/30 * * * * cd $SWE_SQUAD_DIR && python scripts/ops/swe_team_runner.py -v >> logs/cron.log 2>&1
+
+# ── Daily summary at 8am ─────────────────────────────────────────────────────
+# Sends a Telegram summary of open tickets by severity and status
+0 8 * * * cd $SWE_SQUAD_DIR && python scripts/ops/swe_cli.py report daily >> logs/cron.log 2>&1
+
+# ── Status check every hour ──────────────────────────────────────────────────
+# Sends a quick Telegram status snapshot (last cycle, gate verdict, open count)
+0 * * * * cd $SWE_SQUAD_DIR && python scripts/ops/swe_cli.py report status >> logs/cron.log 2>&1
+
+# ── Weekly creative proposals on Monday at 9am ───────────────────────────────
+# Generates improvement / tech-debt proposals (only when gate is not blocked)
+0 9 * * 1 cd $SWE_SQUAD_DIR && python scripts/ops/swe_team_runner.py --creative -v >> logs/cron.log 2>&1
+
+# ── Test-only verification twice daily (noon and midnight) ───────────────────
+# Re-runs tests on in_development/in_review tickets without a full cycle
+0 0,12 * * * cd $SWE_SQUAD_DIR && python scripts/ops/swe_team_runner.py --test-only -v >> logs/cron.log 2>&1
