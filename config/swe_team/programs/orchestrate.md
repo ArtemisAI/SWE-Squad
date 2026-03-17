@@ -23,6 +23,9 @@ Launch an Agent (model: sonnet) to:
 - Read all files in src/{source_module}/
 - Search for the error pattern across the entire codebase
 - Check git blame and recent commits for the affected area
+- If any third-party library or external API is involved, use the DeepWiki MCP tool
+  (`mcp__deepwiki__ask_question`) to query that library's repo for relevant documentation
+  before drawing conclusions — e.g. `ask_question(repoUrl="https://github.com/org/repo", question="...")`
 - Identify root cause, affected files, blast radius
 - Produce a structured diagnosis report
 

@@ -7,13 +7,20 @@ You have read-only access. Do NOT modify any files.
 ## Module
 {source_module}
 
+## Tools available
+- **DeepWiki** (`mcp__deepwiki__ask_question`): query any public GitHub repo's documentation.
+  Use it when the error involves a third-party library or external API — e.g. ask
+  `ask_question(repoUrl="https://github.com/supabase/supabase", question="...")` to understand
+  an SDK behaviour before proposing a fix. Do NOT use it for internal source files (use Read/Grep instead).
+
 ## Instructions
 1. Read the relevant source files in `src/{source_module}/`
 2. Search the codebase for the error pattern using Grep
 3. Check recent git history: `git log --oneline -10 -- src/{source_module}/`
-4. Identify the root cause — what code path produces this error?
-5. Propose a specific fix (exact file, exact line, exact change)
-6. Assess blast radius — what else could break?
+4. If the error involves a third-party dependency, use DeepWiki to understand its expected behaviour
+5. Identify the root cause — what code path produces this error?
+6. Propose a specific fix (exact file, exact line, exact change)
+7. Assess blast radius — what else could break?
 
 ## Output (use this exact format)
 - **Root cause:** (1-2 sentences explaining WHY this happens)
