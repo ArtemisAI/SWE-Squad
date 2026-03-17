@@ -49,6 +49,63 @@ def list_available_models(
         return []
 
 
+def probe_embedding_model(
+    model: str,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> bool:
+    """Test that *model* actually responds to an embed request.
+
+    Returns True on success, False on any error.  Uses a tiny probe string
+    to keep cost near zero.
+    """
+    url = api_url or os.getenv("BASE_LLM_API_URL")
+    key = api_key or os.getenv("BASE_LLM_API_KEY", "")
+    if not url:
+        return False
+    try:
+        from openai import OpenAI
+        client = OpenAI(base_url=url, api_key=key, timeout=10)
+        resp = client.embeddings.create(model=model, input="probe")
+        ok = bool(resp.data and resp.data[0].embedding)
+        if not ok:
+            logger.warning("model_probe: embed probe for '%s' returned empty result", model)
+        return ok
+    except Exception as exc:
+        logger.warning("model_probe: embed probe for '%s' failed: %s", model, exc)
+        return False
+
+
+def probe_chat_model(
+    model: str,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> bool:
+    """Test that *model* actually responds to a minimal chat completion.
+
+    Returns True on success, False on any error.
+    """
+    url = api_url or os.getenv("BASE_LLM_API_URL")
+    key = api_key or os.getenv("BASE_LLM_API_KEY", "")
+    if not url:
+        return False
+    try:
+        from openai import OpenAI
+        client = OpenAI(base_url=url, api_key=key, timeout=15)
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "ping"}],
+            max_tokens=4,
+        )
+        ok = bool(resp.choices and resp.choices[0].message.content)
+        if not ok:
+            logger.warning("model_probe: chat probe for '%s' returned empty result", model)
+        return ok
+    except Exception as exc:
+        logger.warning("model_probe: chat probe for '%s' failed: %s", model, exc)
+        return False
+
+
 def select_model(
     preferred: str,
     available: list[str],
@@ -119,8 +176,13 @@ class ModelProbe:
     def validate_and_patch_env(self) -> dict[str, str]:
         """Validate key env-var models and patch os.environ with corrections.
 
-        Returns a dict of {env_var: corrected_value} for any vars that
-        were changed, so callers can log or alert.
+        For each model, first checks the proxy's model list, then sends an
+        actual probe request to confirm the model responds before committing
+        to it.  Falls back through the fallback list until one passes both
+        checks.
+
+        Returns a dict of {env_var: final_value} for any vars that were
+        changed so callers can log/alert.
         """
         available = self.available
         if not available:
@@ -129,15 +191,46 @@ class ModelProbe:
         patches: dict[str, str] = {}
 
         checks = [
-            ("EMBEDDING_MODEL", os.getenv("EMBEDDING_MODEL", "bge-m3"), _EMBEDDING_FALLBACKS, "embedding"),
-            ("EXTRACTION_MODEL", os.getenv("EXTRACTION_MODEL", "gemini-3-flash"), _EXTRACTION_FALLBACKS, "extraction"),
+            ("EMBEDDING_MODEL", os.getenv("EMBEDDING_MODEL", "bge-m3"), _EMBEDDING_FALLBACKS, "embedding", "embed"),
+            ("EXTRACTION_MODEL", os.getenv("EXTRACTION_MODEL", "gemini-3-flash"), _EXTRACTION_FALLBACKS, "extraction", "chat"),
         ]
 
-        for env_var, configured, fallbacks, task in checks:
-            corrected = select_model(configured, available, fallbacks, task)
-            if corrected != configured:
-                os.environ[env_var] = corrected
-                patches[env_var] = corrected
+        for env_var, configured, fallbacks, task, probe_type in checks:
+            # Build candidate list: configured first, then fallbacks
+            candidates = [configured] + [f for f in fallbacks if f != configured]
+            chosen = None
+            for candidate in candidates:
+                if candidate not in available:
+                    logger.debug("model_probe: '%s' not in proxy model list — skipping", candidate)
+                    continue
+                # Actually probe the model
+                if probe_type == "embed":
+                    ok = probe_embedding_model(candidate, self._api_url, self._api_key)
+                else:
+                    ok = probe_chat_model(candidate, self._api_url, self._api_key)
+                if ok:
+                    chosen = candidate
+                    break
+                logger.warning(
+                    "model_probe: '%s' listed but probe failed for %s — trying next fallback",
+                    candidate, task,
+                )
+
+            if chosen is None:
+                logger.error(
+                    "model_probe: ALL candidates failed probe for %s; keeping '%s'",
+                    task, configured,
+                )
+                chosen = configured  # keep original — let caller fail loudly
+
+            if chosen != configured:
+                logger.warning(
+                    "model_probe: using '%s' instead of '%s' for %s",
+                    chosen, configured, task,
+                )
+            os.environ[env_var] = chosen
+            if chosen != configured:
+                patches[env_var] = chosen
 
         return patches
 

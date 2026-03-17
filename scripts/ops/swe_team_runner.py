@@ -644,6 +644,7 @@ def run_cycle(
                     f"🤖 **SWE Squad picked up this issue.**\n\n"
                     f"Status: `TRIAGED` — queued for investigation.\n"
                     f"Team: `{config.team_id}` | Account: `{config.github_account}`",
+                    repo=gt.repo or "",
                 )
 
     # 1. Monitor: scan logs for new errors
@@ -905,6 +906,7 @@ def run_cycle(
                                 f"**Lines changed:** {last.get('lines_changed', '?')}\n"
                                 f"**Tests:** passing\n\n"
                                 f"Fix is on branch `{branch}`. Ready for human review.",
+                                repo=ticket.repo or "",
                             )
                     elif issue_num:
                         attempts = ticket.metadata.get("attempts", [])
@@ -914,6 +916,7 @@ def run_cycle(
                             f"**Attempts:** {len(attempts)}/{dev._max_attempts}\n"
                             f"**Last error:** `{attempts[-1].get('error', '?')[:200] if attempts else '?'}`\n\n"
                             f"Escalating to HITL.",
+                            repo=ticket.repo or "",
                         )
                 except Exception:
                     logger.exception("Dev agent failed for ticket %s", ticket.ticket_id)

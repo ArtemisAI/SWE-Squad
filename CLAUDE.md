@@ -140,6 +140,66 @@ record_memory_hit()            ← increments memory_confidence (+0.1, max 2.0)
 - Configuration is loaded once via `load_config()` and threaded through as arguments.
 - Tests must not require network access, API keys, or running services.
 
+## Divide-and-Conquer: Always Orchestrate Sub-Agents
+
+**This is mandatory.** The main agent's context window is a finite shared resource.
+Exhaust it and the entire session is lost.
+
+### Rules for every agent in this system
+
+1. **Never do large tasks alone.** Any task that touches > 2 files or requires > 3 research steps must be broken into parallel sub-agents.
+2. **Always prefer parallel over sequential.** If two sub-tasks don't depend on each other, launch them at the same time.
+3. **Keep the main context clean.** Read only what you need. Delegate broad search ("find all usages of X across the repo") to a sub-agent rather than running it yourself.
+4. **Opus orchestrates, never implements.** Opus breaks problems into sub-tasks and synthesises results. Sonnet/Haiku do the actual work.
+5. **Sub-agents report back summaries, not raw output.** A sub-agent that returns 5000 lines of grep output is useless. It must distil findings to < 200 lines before returning.
+
+### How to break down a task
+
+```
+Big task → identify independent components
+         → launch one sub-agent per component in parallel
+         → collect summarised results
+         → synthesise into final answer / commit
+```
+
+Example: investigating a LinkedAi scraping failure:
+- Sub-agent A: read the failing module + recent git log
+- Sub-agent B: search for similar past tickets in Supabase
+- Sub-agent C: look up the third-party lib docs via DeepWiki
+- Synthesise: root cause analysis from A + B + C combined
+
+## DevOps / GitOps Practices
+
+These rules apply to ALL agents (investigator, developer, orchestrator):
+
+### Git hygiene
+- **Feature branches only.** Never commit directly to `main` without a PR (except hot-fixes with explicit human approval).
+- **One commit per logical change.** Squash noisy work-in-progress commits before opening a PR.
+- **Descriptive commit messages.** Format: `type(scope): short summary` — types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`.
+- **Always pull before pushing.** Run `git fetch && git rebase origin/main` to avoid unnecessary merge commits.
+- **Never force-push to main.** Only force-push to personal feature branches.
+
+### CI/CD gate
+- **Tests must pass locally before pushing.** Run `python3 -m pytest tests/unit/ -q` — zero failures required.
+- **Don't bypass hooks.** Never use `--no-verify`.
+- **PR description must include a test plan.** The SWE developer agent's PRs must always list the test command and expected output.
+
+### Secrets management
+- All secrets via `.env` or environment variables — never hardcoded.
+- Never commit `.env`, `*.key`, `*.pem`, or credentials files.
+- Rotate any key that appears in a diff or log immediately.
+
+### Observability
+- Every cycle writes `data/swe_team/status.json` — check it before diagnosing a cycle failure.
+- Telegram alerts on CRITICAL tickets, stability gate BLOCK, and HITL escalations.
+- Supabase is the source of truth for ticket state — always query it, not local JSON, in multi-agent contexts.
+- Emit A2A events for every state transition so the hub can correlate across agents.
+
+### Safe deployment
+- Developer agent creates a branch + PR, never merges directly.
+- After merge, the deployer agent monitors for 30 minutes (check `status.json`).
+- On regression: auto-rollback via `git revert` + Telegram alert.
+
 ## What NOT To Do
 
 - **No hardcoded paths.** Use `Path(__file__).resolve()` or environment variables.
@@ -150,3 +210,5 @@ record_memory_hit()            ← increments memory_confidence (+0.1, max 2.0)
 - **No calling claude CLI from library code** (`embeddings.py`, `supabase_store.py`, etc.).
 - **No using `claude-haiku` via BASE_LLM proxy** — that model is not available there.
 - **No Opus as implementer** — Opus orchestrates sub-agents; Sonnet/Haiku do the work.
+- **No large tasks without sub-agents** — see Divide-and-Conquer rules above.
+- **No raw grep/search output returned to main agent** — sub-agents must summarise.
