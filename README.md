@@ -1,126 +1,355 @@
-# SWE Squad — Autonomous Software Engineering Team
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.10+-blue?logo=python&logoColor=white" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/Claude_Code-CLI-blueviolet?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJ3aGl0ZSI+PHBhdGggZD0iTTEyIDJDNi40OCAyIDIgNi40OCAyIDEyczQuNDggMTAgMTAgMTAgMTAtNC40OCAxMC0xMFMxNy41MiAyIDEyIDJ6Ii8+PC9zdmc+" alt="Claude Code">
+  <img src="https://img.shields.io/badge/A2A-Protocol-orange" alt="A2A Protocol">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
+  <img src="https://img.shields.io/github/stars/ArtemisAI/SWE-Squad?style=social" alt="GitHub Stars">
+</p>
 
-Self-healing, self-diagnosing development agents that monitor production systems, detect errors, investigate root causes, implement fixes, and learn from successes.
+<h1 align="center">SWE Squad</h1>
 
-Built on [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and the [A2A protocol](https://github.com/google/A2A) for inter-agent coordination.
+<p align="center">
+  <strong>Autonomous Software Engineering Agents That Fix Bugs While You Sleep</strong>
+</p>
 
-## How It Works
+<p align="center">
+  Self-healing, self-diagnosing development agents that monitor production systems,<br>
+  detect errors, investigate root causes, implement fixes, and learn from successes.
+</p>
+
+<p align="center">
+  Built on <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a> &bull;
+  <a href="https://github.com/google/A2A">A2A Protocol</a> &bull;
+  <a href="https://supabase.com">Supabase</a>
+</p>
+
+---
+
+## Overview
+
+SWE Squad is a team of AI agents that autonomously monitors your production systems, detects issues, and fixes them — with human oversight at every critical decision point.
+
+Unlike single-agent coding tools, SWE Squad operates as a **coordinated team** where each agent has a specialized role, cost-optimized model routing keeps bills low, and a stability gate prevents regressions.
+
+### Key Features
+
+- **Automated Error Detection** — Scans logs for errors with fingerprint-based deduplication
+- **Smart Model Routing** — Uses Haiku for cheap tasks, Sonnet for routine fixes, Opus only for critical orchestration
+- **Keep/Discard Fix Loop** — Every fix lives on a git branch; tests fail = auto-revert
+- **Ralph Wiggum Gate** — Stability-first governance: bugs must be fixed before features ship
+- **Deterministic Replay** — Caches successful fixes by error fingerprint for zero-cost replay
+- **Multi-Team Support** — Multiple squads share a Supabase backend without overlap
+- **A2A Protocol** — Inter-agent communication for cross-team coordination
+
+---
+
+## Architecture
 
 ```
-Every 30 min:
-│
-├─ COLLECT ─── rsync logs from remote workers via SSH
-├─ FETCH ───── pick up GitHub issues assigned to the team's bot account
-├─ MONITOR ─── scan logs for ERROR, CRITICAL, Traceback patterns
-├─ TRIAGE ──── route by severity and module to specialist agents
-├─ NOTIFY ──── Telegram alerts for HIGH/CRITICAL issues
-├─ DISTILL ─── check for cached deterministic fixes (zero LLM cost)
-├─ INVESTIGATE  Claude Code CLI diagnosis (Sonnet or Opus)
-├─ FIX ─────── keep/discard loop with git branches, auto-revert on failure
-├─ GATE ────── Ralph Wiggum stability gate (bugs before features)
-├─ CREATIVE ── weekly improvement proposals from ticket patterns
-└─ DISPATCH ── A2A events for cross-agent coordination
+                    ┌─────────────────────────────────────┐
+                    │         SWE Squad Runner             │
+                    │     (cron / daemon / one-shot)       │
+                    └──────────────┬──────────────────────┘
+                                   │
+          ┌────────────────────────┼────────────────────────┐
+          ▼                        ▼                        ▼
+   ┌──────────────┐      ┌────────────────┐      ┌────────────────┐
+   │   Monitor    │      │  GitHub Fetch   │      │  Remote Logs   │
+   │  Agent       │      │  (assigned      │      │  (SSH/rsync)   │
+   │  (log scan)  │      │   issues)       │      │                │
+   └──────┬───────┘      └───────┬────────┘      └────────┬───────┘
+          │                      │                         │
+          └──────────────────────┼─────────────────────────┘
+                                 ▼
+                    ┌────────────────────────┐
+                    │     Triage Agent       │
+                    │  (severity + routing)  │
+                    └───────────┬────────────┘
+                                │
+               ┌────────────────┼────────────────┐
+               ▼                ▼                ▼
+     ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+     │  Trajectory  │  │ Investigator │  │   Notifier   │
+     │  Distiller   │  │    Agent     │  │  (Telegram)  │
+     │ (cache hit?) │  │ (Claude CLI) │  │              │
+     └──────┬───────┘  └──────┬───────┘  └──────────────┘
+            │                 │
+            │    ┌────────────┘
+            ▼    ▼
+     ┌──────────────────┐
+     │  Developer Agent  │
+     │  (keep/discard    │
+     │   fix loop)       │
+     └────────┬─────────┘
+              │
+              ▼
+     ┌──────────────────┐      ┌──────────────────┐
+     │  Ralph Wiggum    │      │  Creative Agent   │
+     │  Stability Gate  │─────▶│  (proposals,      │
+     │  (bugs first)    │      │   only if stable) │
+     └────────┬─────────┘      └──────────────────┘
+              │
+              ▼
+     ┌──────────────────┐
+     │  A2A Dispatch    │
+     │  (event bus)     │
+     └──────────────────┘
 ```
+
+---
+
+## How the Fix Loop Works
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Attempt 1 (Sonnet)                                             │
+│  try fix → run tests → FAIL → capture error message             │
+├─────────────────────────────────────────────────────────────────┤
+│  Attempt 2 (Sonnet)                                             │
+│  try fix WITH previous error context → run tests → FAIL         │
+├─────────────────────────────────────────────────────────────────┤
+│  Attempt 3 (Opus)                                               │
+│  escalate → orchestrate sub-agents → run tests → PASS → KEEP   │
+├─────────────────────────────────────────────────────────────────┤
+│  All 3 fail? → HITL escalation via Telegram                    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+Each attempt runs on a **git branch**. Tests pass → commit. Tests fail → `git reset --hard` (auto-revert). No broken code ever reaches main.
+
+---
 
 ## Model Routing
 
-| Scenario | Model | Why |
-|----------|-------|-----|
-| Routine HIGH bugs | **Sonnet** | Fast, cost-efficient |
-| CRITICAL bugs | **Opus** | Orchestrates sub-agents |
-| After 2 failed Sonnet attempts | **Opus** | Automatic escalation |
-| Issue scanning, docs | **Haiku** | Cheap, fast |
-| Deterministic replay | **None** | Cached fix, zero LLM cost |
+SWE Squad routes to the cheapest model that can handle the job:
 
-## Ralph Wiggum Loop
+| Scenario | Model | Cost | Timeout |
+|----------|-------|------|---------|
+| Issue scanning, docs | **Haiku** | $ | 30s |
+| Routine HIGH bugs | **Sonnet** | $$ | 2 min |
+| CRITICAL bugs | **Opus** | $$$ | 10 min |
+| After 2 failed Sonnet attempts | **Opus** | $$$ | 10 min |
+| Deterministic replay (cached) | **None** | Free | < 1s |
 
-The developer agent feeds failures forward into the next attempt:
+---
 
-```
-Attempt 1 (Sonnet): try fix → tests fail → capture error
-Attempt 2 (Sonnet): try fix WITH previous error context → tests fail → capture
-Attempt 3 (Opus):   escalate, orchestrate sub-agents → tests pass → KEEP
-```
+## Quick Start
 
-If all 3 attempts fail → HITL escalation via Telegram.
+### 1. Clone & install
 
-## Multi-Team Support
-
-Each SWE Squad instance is scoped by `team_id` and a dedicated GitHub account. Multiple teams can share the same Supabase backend without overlap.
-
-Configure in `.env`:
 ```bash
-SWE_TEAM_ID=my-team
-SWE_GITHUB_ACCOUNT=my-bot-account
-SWE_GITHUB_REPO=owner/repo
+git clone https://github.com/ArtemisAI/SWE-Squad.git
+cd SWE-Squad
+pip install python-dotenv pyyaml
 ```
+
+### 2. Configure
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your credentials:
+
+```bash
+# Required
+SWE_TEAM_ENABLED=true
+SWE_TEAM_ID=my-squad
+SWE_GITHUB_ACCOUNT=my-bot-account    # Dedicated GitHub account for the squad
+SWE_GITHUB_REPO=owner/repo           # Repository to monitor
+GH_TOKEN=ghp_...                     # GitHub PAT with repo scope
+
+# Optional
+TELEGRAM_BOT_TOKEN=...               # For alerts
+TELEGRAM_CHAT_ID=...                 # For alerts
+SUPABASE_URL=...                     # For shared ticket store
+SUPABASE_ANON_KEY=...                # For shared ticket store
+```
+
+### 3. Run
+
+```bash
+# Bootstrap — acknowledge existing errors on first run
+python scripts/ops/swe_team_runner.py --bootstrap -v
+
+# Single scan cycle
+python scripts/ops/swe_team_runner.py -v
+
+# Daemon mode (continuous 30-minute cycles)
+python scripts/ops/swe_team_runner.py --daemon -v
+
+# Daily summary via Telegram
+python scripts/ops/swe_team_runner.py --summary
+```
+
+### 4. Test
+
+```bash
+python -m pytest tests/unit/test_swe_team.py -v
+```
+
+---
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SWE_TEAM_ENABLED` | Yes | Kill switch (`true`/`false`) |
+| `SWE_TEAM_ID` | Yes | Unique team identifier for ticket scoping |
+| `SWE_GITHUB_ACCOUNT` | Yes | Dedicated GitHub bot account for issue assignment |
+| `SWE_GITHUB_REPO` | Yes | Target repository (`owner/repo`) |
+| `GH_TOKEN` | Yes | GitHub PAT with `repo` scope |
+| `SWE_TEAM_CONFIG` | No | Path to `swe_team.yaml` (default: `config/swe_team.yaml`) |
+| `TELEGRAM_BOT_TOKEN` | No | Telegram bot token for alerts |
+| `TELEGRAM_CHAT_ID` | No | Telegram chat ID for alerts |
+| `SUPABASE_URL` | No | Enables Supabase ticket store |
+| `SUPABASE_ANON_KEY` | No | Supabase authentication key |
+| `SWE_REMOTE_NODES` | No | JSON array of SSH worker nodes for log collection |
+
+### YAML Config (`config/swe_team.yaml`)
+
+Controls governance thresholds, monitoring patterns, and agent definitions. See the included config file for full documentation.
+
+---
 
 ## Ticket Store
 
-Two backends available:
+Two backends are available — the runner auto-selects based on environment variables:
 
-- **JSON** (default) — file-backed, zero dependencies, good for single-machine setups
-- **Supabase** — PostgreSQL-backed, multi-agent, real-time capable, audit trail
+| Backend | When | Pros | Setup |
+|---------|------|------|-------|
+| **JSON** | `SUPABASE_URL` not set | Zero deps, single file, works anywhere | Nothing — it's the default |
+| **Supabase** | `SUPABASE_URL` + `SUPABASE_ANON_KEY` set | Multi-agent, queryable, audit trail, real-time | Run `scripts/ops/supabase_schema.sql` |
 
-Set `SUPABASE_URL` and `SUPABASE_ANON_KEY` in `.env` to activate Supabase. Run `scripts/ops/supabase_schema.sql` to create tables.
+### Supabase Schema
+
+```bash
+psql $DATABASE_URL -f scripts/ops/supabase_schema.sql
+```
+
+Creates:
+- `swe_tickets` — main work queue with team scoping
+- `swe_ticket_events` — immutable audit trail
+- Views: `v_backlog`, `v_queue_critical`, `v_queue_by_agent`, `v_stability`
+
+---
+
+## Multi-Team Support
+
+Multiple SWE Squads can operate independently on the same infrastructure:
+
+```
+Squad Alpha (team_id: "alpha")  ──▶  Supabase  ◀──  Squad Beta (team_id: "beta")
+     │                                                    │
+     ▼                                                    ▼
+  Repo A (issues assigned to @bot-alpha)            Repo B (issues assigned to @bot-beta)
+```
+
+Each squad:
+- Has its own `team_id` scoping all tickets
+- Uses a dedicated GitHub bot account
+- Only picks up issues assigned to its account
+- Shares the Supabase backend without overlap
+
+---
 
 ## Components
 
 | File | Purpose |
 |------|---------|
 | `src/swe_team/monitor_agent.py` | Log scanning, error detection, fingerprint dedup |
-| `src/swe_team/triage_agent.py` | Severity routing, module specialist assignment |
+| `src/swe_team/triage_agent.py` | Severity routing, specialist assignment |
 | `src/swe_team/investigator.py` | Claude Code CLI diagnosis with model routing |
 | `src/swe_team/developer.py` | Keep/discard fix loop with git branches |
 | `src/swe_team/ralph_wiggum.py` | Stability gate — bugs before features |
-| `src/swe_team/governance.py` | Deployment governor, complexity gate |
+| `src/swe_team/governance.py` | Deployment governor, complexity limits |
 | `src/swe_team/creative_agent.py` | Proactive improvement proposals |
 | `src/swe_team/distiller.py` | Trajectory distillation — cache successful fixes |
-| `src/swe_team/supabase_store.py` | Supabase ticket store (zero-dep, stdlib urllib) |
+| `src/swe_team/supabase_store.py` | Supabase ticket store (zero-dep, stdlib only) |
 | `src/swe_team/ticket_store.py` | JSON ticket store with fingerprint dedup |
+| `src/swe_team/notifier.py` | Telegram alerts and daily summaries |
+| `src/swe_team/github_integration.py` | GitHub issue creation and commenting |
+| `src/swe_team/remote_logs.py` | SSH/rsync log collection from workers |
 | `src/a2a/adapters/swe_team.py` | A2A protocol adapter |
 | `scripts/ops/swe_team_runner.py` | Entry point — cron, daemon, bootstrap modes |
-| `scripts/ops/supabase_schema.sql` | Supabase schema migration |
-| `config/swe_team/programs/` | Markdown agent programs (investigate, fix, orchestrate) |
+| `scripts/ops/supabase_schema.sql` | Database schema for Supabase backend |
+| `config/swe_team/programs/` | Markdown prompt programs (investigate, fix, orchestrate) |
 
-## Quick Start
-
-```bash
-# Clone
-git clone https://github.com/ArtemisAI/SWE-Squad.git
-cd SWE-Squad
-
-# Install dependencies
-pip install python-dotenv pyyaml
-
-# Configure
-cp .env.example .env
-# Edit .env with your GitHub token, Telegram bot, etc.
-
-# Bootstrap (first run — acknowledge existing errors)
-SWE_TEAM_ENABLED=true python scripts/ops/swe_team_runner.py --bootstrap -v
-
-# Run a single scan cycle
-SWE_TEAM_ENABLED=true python scripts/ops/swe_team_runner.py -v
-
-# Daemon mode (persistent loop, 30-minute cycles)
-SWE_TEAM_ENABLED=true python scripts/ops/swe_team_runner.py --daemon -v
-
-# Daily summary via Telegram
-SWE_TEAM_ENABLED=true python scripts/ops/swe_team_runner.py --summary
-
-# Run tests
-python -m pytest tests/unit/test_swe_team.py -v
-```
+---
 
 ## Requirements
 
-- Python 3.10+
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`)
-- [`gh` CLI](https://cli.github.com/) (authenticated)
-- SSH access to worker machines (optional, for remote log collection)
-- Telegram bot token (optional, for notifications)
+- **Python 3.10+**
+- **[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)** — the AI backbone
+- **[GitHub CLI](https://cli.github.com/)** (`gh`) — authenticated for issue management
+- **SSH access** to worker machines (optional, for remote log collection)
+- **Telegram bot** (optional, for notifications)
+- **Supabase project** (optional, for shared multi-team ticket store)
+
+---
+
+## Contributing
+
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+### Development Setup
+
+```bash
+git clone https://github.com/ArtemisAI/SWE-Squad.git
+cd SWE-Squad
+pip install python-dotenv pyyaml pytest
+cp .env.example .env
+# Edit .env with your test credentials
+python -m pytest tests/unit/test_swe_team.py -v
+```
+
+### Areas We'd Love Help With
+
+- Additional ticket store backends (Redis, SQLite, PostgreSQL direct)
+- CI/CD pipeline integration (GitHub Actions, GitLab CI)
+- Web dashboard for ticket monitoring
+- Additional notification channels (Slack, Discord, email)
+- Agent prompt optimization and benchmarking
+- Documentation and tutorials
+
+---
+
+## Roadmap
+
+- [x] Core agent loop (monitor → triage → investigate → fix)
+- [x] Ralph Wiggum stability gate
+- [x] Trajectory distillation (cached fixes)
+- [x] Supabase ticket store with multi-team support
+- [x] A2A protocol adapter
+- [ ] Web dashboard for ticket monitoring
+- [ ] GitHub Actions integration
+- [ ] Slack/Discord notifications
+- [ ] Custom agent plugin system
+- [ ] Metrics and observability (Prometheus/Grafana)
+
+---
+
+## Support & Sponsoring
+
+If SWE Squad is useful to your team, consider supporting the project:
+
+<p align="center">
+  <a href="https://github.com/sponsors/ArtemisAI">
+    <img src="https://img.shields.io/badge/Sponsor-ArtemisAI-ea4aaa?logo=github-sponsors&logoColor=white&style=for-the-badge" alt="Sponsor">
+  </a>
+</p>
+
+- **Star** this repo to help others discover it
+- **Report issues** — bug reports and feature requests are valuable contributions
+- **Share** with your team — the more users, the better the project gets
+- **Contribute** — PRs are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md)
+
+For enterprise support or custom deployments, reach out via [GitHub Discussions](https://github.com/ArtemisAI/SWE-Squad/discussions).
+
+---
 
 ## License
 
-MIT
+[MIT](LICENSE) — use it, fork it, build on it.
