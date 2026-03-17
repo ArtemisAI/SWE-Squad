@@ -52,7 +52,9 @@ def embed_ticket(ticket: SWETicket) -> Optional[list[float]]:
             if ticket.investigation_report
             else _ticket_text(ticket)
         )
-        client = OpenAI(base_url=api_url, api_key=api_key)
+        # Short timeout — embeddings are best-effort; 504s should fail fast
+        # not burn 60s per retry (3 retries × 60s = 3min blocked per cycle).
+        client = OpenAI(base_url=api_url, api_key=api_key, timeout=15.0, max_retries=2)
         resp = client.embeddings.create(
             input=embedding_input,
             model=model,

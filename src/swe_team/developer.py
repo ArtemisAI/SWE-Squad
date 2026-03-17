@@ -282,6 +282,27 @@ class DeveloperAgent:
 
     def _ensure_branch(self, ticket: SWETicket) -> str:
         branch = f"swe-fix/ticket-{ticket.ticket_id}"
+        # Pre-flight: abort if index has unresolved merge conflicts.
+        # Conflict markers (UU, AA, DD, etc.) prevent checkout from succeeding.
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, cwd=self._repo_root, timeout=10,
+        )
+        conflict_codes = {"UU", "AA", "DD", "AU", "UA", "DU", "UD"}
+        conflicts = [
+            line for line in status.stdout.splitlines()
+            if line[:2] in conflict_codes
+        ]
+        if conflicts:
+            # Attempt automatic recovery — reset merge state without touching commits
+            logger.warning(
+                "developer: unresolved index conflicts (%d files) — attempting git reset --merge",
+                len(conflicts),
+            )
+            subprocess.run(
+                ["git", "reset", "--merge"],
+                capture_output=True, cwd=self._repo_root, timeout=15,
+            )
         self._git(["git", "checkout", "-B", branch])
         return branch
 
