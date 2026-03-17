@@ -16,7 +16,7 @@ Or via the Makefile:
 make test
 ```
 
-All tests must pass before committing. Tests live in `tests/unit/` and use only the standard library plus pytest (no external services required). Current baseline: **327 tests**.
+All tests must pass before committing. Tests live in `tests/unit/` and use only the standard library plus pytest (no external services required). Current baseline: **827+ tests**.
 
 ## Architecture Overview
 
@@ -43,7 +43,15 @@ src/swe_team/
     preflight.py       — PreflightCheck: validates git identity, clean tree, env vars
     events.py          — SWE event definitions for A2A dispatch
     remote_logs.py     — SSH/rsync remote log collection
-src/a2a/               — Agent-to-Agent protocol stubs (dispatch, models, events)
+src/a2a/               — A2A protocol: server, client, dispatch (hub + standalone), adapters
+    src/a2a/server.py      — Lightweight A2A HTTP server (standalone mode)
+    src/a2a/client.py      — A2A client (hub mode + direct agent mode)
+    src/a2a/dispatch.py    — Event dispatcher: POSTs to centralized hub, fallback to standalone
+    src/a2a/adapters/      — Agent adapters: gemini, opencode, generic CLI, swe_team
+scripts/ops/a2a_hub.py     — Standalone A2A hub entry point
+scripts/ops/a2a_request.py — CLI for sending A2A requests to any agent
+scripts/ops/dashboard_data.py — Dashboard metrics generator
+config/agent-card.json     — SWE Squad A2A agent card
 config/swe_team.yaml   — Runtime configuration (agents, thresholds, log dirs, model tiers)
 config/swe_team/programs/
     investigate.md     — Prompt template for Sonnet investigation pass
@@ -199,6 +207,39 @@ These rules apply to ALL agents (investigator, developer, orchestrator):
 - Developer agent creates a branch + PR, never merges directly.
 - After merge, the deployer agent monitors for 30 minutes (check `status.json`).
 - On regression: auto-rollback via `git revert` + Telegram alert.
+
+## A2A Hub — Inter-Agent Communication
+
+SWE Squad connects to a **centralized A2A Hub** for cross-agent coordination:
+
+```
+LinkedAi A2A Hub (Tailnet): http://100.110.176.73:18790
+├── Registered: openclaw, gemini, llm_proxy, swe-squad
+├── Protocol: JSON-RPC 2.0 over HTTP POST
+├── Discovery: GET /health, GET /.well-known/agent-card.json
+└── Events: POST /v1/events
+```
+
+- `src/a2a/dispatch.py` POSTs events to the hub (fallback: standalone log)
+- `src/a2a/client.py` discovers agents and sends tasks through the hub
+- `src/swe_team/agent_registry.py` registers with hub and discovers peers
+- Config: `a2a_hub_url` in `swe_team.yaml` or `A2A_HUB_URL` env var
+- **Standalone mode**: if hub is unreachable, the system runs `src/a2a/server.py` locally
+
+### Fallback agent chain (when Claude Code is rate-limited)
+```
+Claude Code (primary) → Gemini CLI (T2 fallback) → OpenCode (T3 fallback) → fail gracefully
+```
+
+Configured in `swe_team.yaml` under `fallback_agents:`. Each fallback is tried in order via the agent registry.
+
+## Multi-Agent Coordination Rules
+
+- **Claim before working.** Before editing a file, check that no other agent has it in progress (check Supabase ticket assignments + git branches).
+- **Heartbeat every 30 min.** Long-running investigations must update `ticket.metadata.last_heartbeat`. Stale tickets (>2h) get reassigned.
+- **Emit A2A events.** Every state transition (triage, investigation start/complete, fix start/complete) must dispatch an event to the hub so other agents can react.
+- **Don't duplicate work.** Before starting, query the ticket store for existing investigations on the same fingerprint.
+- **Use the dashboard.** Check `data/swe_team/status.json` or run `swe_cli.py status` before starting work.
 
 ## What NOT To Do
 
