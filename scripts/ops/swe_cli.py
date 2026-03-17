@@ -11,7 +11,8 @@ Usage:
     swe_cli.py issues [--json]
     swe_cli.py repos [--json]
     swe_cli.py summary [--json]
-    swe_cli.py report {daily|status|cycle}
+    swe_cli.py dashboard [--json] [--html]
+    swe_cli.py report {daily|status|cycle|dashboard}
 """
 
 from __future__ import annotations
@@ -440,6 +441,31 @@ def cmd_summary(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    """Generate observability dashboard data."""
+    from scripts.ops.dashboard_data import (
+        generate_dashboard_data,
+        render_dashboard_html,
+    )
+
+    try:
+        store = _get_ticket_store()
+    except Exception as exc:
+        print(f"Error loading ticket store: {exc}", file=sys.stderr)
+        return 1
+
+    data = generate_dashboard_data(store)
+
+    if getattr(args, "html", False):
+        html = render_dashboard_html(data)
+        print(html)
+        return 0
+
+    # Default: JSON output
+    print(json.dumps(data, indent=2))
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     """Send a report via Telegram."""
     report_type = args.report_type
@@ -450,9 +476,11 @@ def cmd_report(args: argparse.Namespace) -> int:
         return _report_status()
     elif report_type == "cycle":
         return _report_cycle()
+    elif report_type == "dashboard":
+        return _report_dashboard()
     else:
         print(f"Unknown report type: {report_type}", file=sys.stderr)
-        print("Valid types: daily, status, cycle", file=sys.stderr)
+        print("Valid types: daily, status, cycle, dashboard", file=sys.stderr)
         return 1
 
 
@@ -527,6 +555,30 @@ def _report_cycle() -> int:
         return 1
 
 
+def _report_dashboard() -> int:
+    """Send dashboard summary report via Telegram."""
+    from scripts.ops.dashboard_data import (
+        format_dashboard_telegram,
+        generate_dashboard_data,
+    )
+
+    try:
+        store = _get_ticket_store()
+        data = generate_dashboard_data(store)
+        msg = format_dashboard_telegram(data)
+    except Exception as exc:
+        print(f"Failed to generate dashboard: {exc}", file=sys.stderr)
+        return 1
+
+    ok = _send_telegram(msg)
+    if ok:
+        print("Dashboard report sent.")
+        return 0
+    else:
+        print("Failed to send dashboard report.", file=sys.stderr)
+        return 1
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CLI entry point
 # ══════════════════════════════════════════════════════════════════════════════
@@ -575,12 +627,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp_summary.add_argument("--json", action="store_true", help="JSON output")
     sp_summary.set_defaults(func=cmd_summary)
 
+    # ── dashboard ─────────────────────────────────────────────────────────
+    sp_dashboard = subparsers.add_parser(
+        "dashboard", help="Generate observability dashboard"
+    )
+    sp_dashboard.add_argument("--json", action="store_true", help="JSON output (default)")
+    sp_dashboard.add_argument(
+        "--html", action="store_true", help="Output self-contained HTML dashboard"
+    )
+    sp_dashboard.set_defaults(func=cmd_dashboard)
+
     # ── report ────────────────────────────────────────────────────────────
     sp_report = subparsers.add_parser("report", help="Send report via Telegram")
     sp_report.add_argument(
         "report_type",
-        choices=["daily", "status", "cycle"],
-        help="Report type: daily, status, or cycle",
+        choices=["daily", "status", "cycle", "dashboard"],
+        help="Report type: daily, status, cycle, or dashboard",
     )
     sp_report.set_defaults(func=cmd_report)
 

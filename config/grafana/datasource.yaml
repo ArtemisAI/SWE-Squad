@@ -1,0 +1,35 @@
+# Grafana datasource provisioning — Supabase PostgreSQL
+#
+# Copy this file to your Grafana provisioning directory:
+#   /etc/grafana/provisioning/datasources/datasource.yaml
+#
+# Configure the environment variables below or replace the placeholders
+# with your Supabase project connection details.
+#
+# Connection string components:
+#   SUPABASE_DB_HOST  = db.<project-ref>.supabase.co   (or pooler URL)
+#   SUPABASE_DB_PORT  = 5432  (or 6543 for connection pooler)
+#   SUPABASE_DB_USER  = postgres.<project-ref>
+#   SUPABASE_DB_PASS  = your-database-password
+#   SUPABASE_DB_NAME  = postgres
+
+apiVersion: 1
+
+datasources:
+  - name: SWE-Squad-Supabase
+    type: postgres
+    access: proxy
+    url: ${SUPABASE_DB_HOST}:${SUPABASE_DB_PORT}
+    user: ${SUPABASE_DB_USER}
+    isDefault: true
+    jsonData:
+      database: ${SUPABASE_DB_NAME}
+      sslmode: require
+      maxOpenConns: 5
+      maxIdleConns: 2
+      connMaxLifetime: 600
+      postgresVersion: 1500    # PostgreSQL 15.x on Supabase
+      timescaledb: false
+    secureJsonData:
+      password: ${SUPABASE_DB_PASS}
+    editable: true

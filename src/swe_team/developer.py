@@ -12,13 +12,17 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 
 from src.swe_team.governance import check_fix_complexity
 from src.swe_team.models import SWETicket, TicketStatus
 from src.swe_team.preflight import PreflightCheck
+from src.swe_team.rate_limiter import ExponentialBackoff, RateLimitExhausted, RateLimitTracker
 
 logger = logging.getLogger(__name__)
+
+# Type alias for fallback agent adapters (duck-typed — must have .invoke())
+_FallbackAgent = Any
 
 _DEFAULT_PROGRAM_PATH = Path("config/swe_team/programs/fix.md")
 _DEFAULT_CLAUDE_PATH = "/usr/bin/claude"
@@ -43,6 +47,9 @@ class DeveloperAgent:
         max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
         test_command: Optional[List[str]] = None,
         model_config: Optional[object] = None,
+        rate_limit_config: Optional[object] = None,
+        rate_limit_tracker: Optional[RateLimitTracker] = None,
+        fallback_agents: Optional[List[_FallbackAgent]] = None,
     ) -> None:
         self._repo_root = Path(repo_root)
         self._program_path = Path(program_path)
@@ -51,6 +58,16 @@ class DeveloperAgent:
         self._program_cache: Optional[str] = None
         self._test_command = test_command or self._default_test_command()
         self._model_config = model_config
+        self._fallback_agents: List[_FallbackAgent] = fallback_agents or []
+
+        # Rate limit backoff
+        rl = rate_limit_config
+        self._backoff = ExponentialBackoff(
+            max_retries=getattr(rl, "max_retries_on_429", 3) if rl else 3,
+            initial_delay=getattr(rl, "initial_backoff_seconds", 30) if rl else 30,
+            max_delay=getattr(rl, "max_backoff_seconds", 300) if rl else 300,
+            tracker=rate_limit_tracker,
+        )
 
     def attempt_fix(self, ticket: SWETicket) -> bool:
         """Run the keep/discard loop for *ticket*."""
@@ -102,7 +119,10 @@ class DeveloperAgent:
 
                 model = self._select_model(ticket)
                 logger.info("Dev attempt %d for %s (model=%s)", attempt_num + 1, ticket.ticket_id, model)
-                self._run_claude(prompt, timeout=self._remaining(deadline), model=model)
+                self._backoff.execute(
+                    lambda: self._run_claude(prompt, timeout=self._remaining(deadline), model=model),
+                    context=model,
+                )
 
                 tests_ok, test_error = self._run_tests(deadline)
                 if not tests_ok:
@@ -155,6 +175,36 @@ class DeveloperAgent:
                 ticket.metadata["attempts"] = attempts
                 return True
 
+            except RateLimitExhausted as exc:
+                # Try fallback agents before giving up
+                if prompt and self._try_fallback_agents(prompt, ticket, timebox):
+                    # Fallback succeeded — check tests and complexity
+                    tests_ok, test_error = self._run_tests(deadline)
+                    if tests_ok:
+                        lines_changed, files_changed = self._diff_stats()
+                        if files_changed:
+                            self._git(["git", "add", "-A"])
+                            if self._git(["git", "diff", "--cached", "--name-only"]).strip():
+                                self._git(["git", "commit", "-m", f"swe-fix: {ticket.ticket_id} (fallback)"])
+                                self._record_automation(ticket)
+                                attempt_record["result"] = "pass"
+                                attempt_record["fallback_agent"] = ticket.metadata.get("fallback_agent_used")
+                                attempts.append(attempt_record)
+                                ticket.transition(TicketStatus.IN_REVIEW)
+                                ticket.metadata["attempts"] = attempts
+                                return True
+                    # Fallback fix didn't pass tests — reset and continue
+                    if base_sha:
+                        self._reset_to(base_sha)
+
+                attempt_record["error"] = str(exc)
+                ticket.metadata["rate_limited"] = True
+                ticket.metadata["rate_limited_at"] = datetime.now(timezone.utc).isoformat()
+                if base_sha:
+                    self._reset_to(base_sha)
+                attempts.append(attempt_record)
+                self._send_rate_limit_alert(ticket, exc)
+                break  # No point retrying more attempts after rate limit exhaustion
             except (subprocess.TimeoutExpired, RuntimeError, OSError) as exc:
                 attempt_record["error"] = str(exc)
                 if base_sha:
@@ -184,6 +234,43 @@ class DeveloperAgent:
             required_env_vars=["SWE_TEAM_ID", "SWE_GITHUB_REPO"],
         )
         return preflight.run()
+
+    def _try_fallback_agents(
+        self, prompt: str, ticket: SWETicket, timeout: int
+    ) -> bool:
+        """Attempt to use fallback agents when the primary agent is rate-limited.
+
+        Returns True if a fallback agent succeeded, False otherwise.
+        """
+        if not self._fallback_agents:
+            return False
+
+        for agent in self._fallback_agents:
+            agent_name = getattr(agent, "_name", getattr(agent, "name", "unknown"))
+            try:
+                if hasattr(agent, "is_available") and not agent.is_available():
+                    logger.info("Fallback agent %s not available, skipping", agent_name)
+                    continue
+
+                logger.info(
+                    "Attempting fallback agent %s for ticket %s",
+                    agent_name, ticket.ticket_id,
+                )
+                agent.invoke(prompt, timeout=timeout)
+                ticket.metadata["fallback_agent_used"] = agent_name
+                logger.info(
+                    "Fallback agent %s succeeded for ticket %s",
+                    agent_name, ticket.ticket_id,
+                )
+                return True
+            except Exception:
+                logger.warning(
+                    "Fallback agent %s failed for ticket %s",
+                    agent_name, ticket.ticket_id,
+                    exc_info=True,
+                )
+                continue
+        return False
 
     def _eligible(self, ticket: SWETicket) -> bool:
         if not ticket.investigation_report:
@@ -356,6 +443,22 @@ class DeveloperAgent:
         if venv_python.exists():
             return [str(venv_python), "-m", "pytest", "tests/unit/", "-x", "-q"]
         return ["python", "-m", "pytest", "tests/unit/", "-x", "-q"]
+
+    @staticmethod
+    def _send_rate_limit_alert(ticket: SWETicket, exc: Exception) -> None:
+        """Send a Telegram alert when rate limits are exhausted."""
+        from src.swe_team.telegram import send_message
+
+        message = (
+            "<b>Rate Limit Exhausted (Developer)</b>\n\n"
+            f"Ticket: <code>{ticket.ticket_id}</code>\n"
+            f"Title: {ticket.title[:80]}\n"
+            f"Error: {str(exc)[:200]}"
+        )
+        try:
+            send_message(message, parse_mode="HTML")
+        except Exception:
+            logger.exception("Failed to send rate limit alert for %s", ticket.ticket_id)
 
     def _escalate(self, ticket: SWETicket) -> None:
         attempts = ticket.metadata.get("attempts", [])
