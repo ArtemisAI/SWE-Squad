@@ -49,6 +49,7 @@ from src.swe_team.events import SWEEvent
 from src.swe_team.creative_agent import CreativeAgent
 from src.swe_team.distiller import TrajectoryDistiller
 from src.swe_team.preflight import PreflightCheck
+from src.swe_team.model_probe import ModelProbe
 from src.a2a.adapters.swe_team import dispatch_swe_events
 
 logger = logging.getLogger("swe_team")
@@ -490,7 +491,18 @@ def run_cycle(
         except Exception:
             logger.warning("Supabase keep-alive check failed (non-fatal)", exc_info=True)
 
-    # 0. Preflight validation — abort if running in wrong context
+    # 0.5. Model probe — validate BASE_LLM models, auto-patch env before any API calls
+    try:
+        probe = ModelProbe()
+        patches = probe.validate_and_patch_env()
+        if patches:
+            logger.warning("model_probe: patched env vars: %s", patches)
+        else:
+            logger.debug("model_probe: all configured models available")
+    except Exception:
+        logger.warning("model_probe: validation failed (non-fatal)", exc_info=True)
+
+    # 0.6. Preflight validation — abort if running in wrong context
     preflight = PreflightCheck(
         expected_git_name=os.environ.get("SWE_EXPECTED_GIT_NAME"),
         expected_git_email=os.environ.get("SWE_EXPECTED_GIT_EMAIL"),
@@ -513,7 +525,7 @@ def run_cycle(
             "preflight_failures": preflight_result.failures,
         }
 
-    # 0.5. Heartbeat stall detection — reset stuck tickets
+    # 0.7. Heartbeat stall detection — reset stuck tickets
     stalled = detect_stalled_tickets(store)
     if stalled:
         logger.info("Reset %d stalled ticket(s)", len(stalled))

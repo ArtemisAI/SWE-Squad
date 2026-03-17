@@ -2978,3 +2978,171 @@ class TestDeveloperTestExecution:
 
         assert ok is False
         assert "FAILED" in error
+
+
+# ======================================================================
+# ModelProbe
+# ======================================================================
+
+class TestListAvailableModels:
+    """Unit tests for model_probe.list_available_models()."""
+
+    def test_returns_sorted_model_ids(self):
+        from src.swe_team.model_probe import list_available_models
+
+        fake_model = type("M", (), {"id": None})
+        m1, m2, m3 = fake_model(), fake_model(), fake_model()
+        m1.id = "zeta-model"
+        m2.id = "alpha-model"
+        m3.id = "bge-m3"
+
+        fake_list = type("L", (), {"data": [m1, m2, m3]})()
+        fake_client = type("C", (), {"models": type("MS", (), {"list": lambda self: fake_list})()})()
+
+        with patch("openai.OpenAI", return_value=fake_client):
+            result = list_available_models(api_url="http://fake/v1", api_key="key")
+
+        assert result == ["alpha-model", "bge-m3", "zeta-model"]
+
+    def test_returns_empty_on_missing_url(self):
+        from src.swe_team.model_probe import list_available_models
+
+        with patch.dict(os.environ, {}, clear=True):
+            result = list_available_models(api_url=None, api_key=None)
+
+        assert result == []
+
+    def test_returns_empty_on_exception(self):
+        from src.swe_team.model_probe import list_available_models
+
+        with patch("openai.OpenAI", side_effect=RuntimeError("timeout")):
+            result = list_available_models(api_url="http://fake/v1", api_key="key")
+
+        assert result == []
+
+
+class TestSelectModel:
+    """Unit tests for model_probe.select_model()."""
+
+    def test_returns_preferred_when_available(self):
+        from src.swe_team.model_probe import select_model
+
+        result = select_model("bge-m3", ["bge-m3", "qwen3:8b"], ["fallback-a"])
+        assert result == "bge-m3"
+
+    def test_falls_back_to_first_available_fallback(self):
+        from src.swe_team.model_probe import select_model
+
+        result = select_model(
+            "missing-model",
+            ["qwen3:8b", "gemini-3-flash"],
+            ["not-there", "qwen3:8b", "gemini-3-flash"],
+        )
+        assert result == "qwen3:8b"
+
+    def test_returns_preferred_when_no_fallback_matches(self):
+        """When neither preferred nor fallbacks are available, returns preferred so caller fails loudly."""
+        from src.swe_team.model_probe import select_model
+
+        result = select_model("missing-model", ["other-model"], ["also-missing"])
+        assert result == "missing-model"
+
+    def test_skips_unavailable_fallbacks(self):
+        from src.swe_team.model_probe import select_model
+
+        result = select_model(
+            "preferred",
+            ["gemini-3-flash"],
+            ["not-here-1", "not-here-2", "gemini-3-flash"],
+        )
+        assert result == "gemini-3-flash"
+
+
+class TestModelProbeValidateAndPatch:
+    """Unit tests for ModelProbe.validate_and_patch_env()."""
+
+    def test_patches_env_when_configured_model_unavailable(self):
+        from src.swe_team.model_probe import ModelProbe
+
+        probe = ModelProbe(api_url="http://fake/v1", api_key="key")
+        probe._available = ["mxbai-embed-large", "gemini-3-flash"]  # bge-m3 missing
+
+        with patch.dict(os.environ, {"EMBEDDING_MODEL": "bge-m3"}, clear=False):
+            patches = probe.validate_and_patch_env()
+            assert "EMBEDDING_MODEL" in patches
+            assert patches["EMBEDDING_MODEL"] == "mxbai-embed-large"
+            assert os.environ["EMBEDDING_MODEL"] == "mxbai-embed-large"
+
+    def test_no_patches_when_all_models_available(self):
+        from src.swe_team.model_probe import ModelProbe
+
+        probe = ModelProbe(api_url="http://fake/v1", api_key="key")
+        probe._available = ["bge-m3", "gemini-3-flash"]
+
+        with patch.dict(os.environ, {"EMBEDDING_MODEL": "bge-m3", "EXTRACTION_MODEL": "gemini-3-flash"}, clear=False):
+            patches = probe.validate_and_patch_env()
+
+        assert patches == {}
+
+    def test_returns_empty_when_proxy_unreachable(self):
+        from src.swe_team.model_probe import ModelProbe
+
+        probe = ModelProbe(api_url="http://fake/v1", api_key="key")
+        probe._available = []  # simulate unreachable proxy
+
+        patches = probe.validate_and_patch_env()
+        assert patches == {}
+
+    def test_check_passthrough_when_no_available(self):
+        """check() returns the requested model unchanged when proxy is unreachable."""
+        from src.swe_team.model_probe import ModelProbe
+
+        probe = ModelProbe(api_url="http://fake/v1", api_key="key")
+        probe._available = []
+
+        result = probe.check("bge-m3", ["fallback-a"], task="embedding")
+        assert result == "bge-m3"
+
+    def test_check_returns_fallback_when_preferred_missing(self):
+        from src.swe_team.model_probe import ModelProbe
+
+        probe = ModelProbe(api_url="http://fake/v1", api_key="key")
+        probe._available = ["mxbai-embed-large"]
+
+        result = probe.check("bge-m3", ["mxbai-embed-large", "nomic-embed-text"], task="embedding")
+        assert result == "mxbai-embed-large"
+
+
+class TestRunnerModelProbeIntegration:
+    """Verify ModelProbe.validate_and_patch_env() is called at cycle start."""
+
+    def test_run_cycle_calls_model_probe(self):
+        import scripts.ops.swe_team_runner as runner
+        from src.swe_team.config import SWETeamConfig
+        from src.swe_team.supabase_store import SupabaseTicketStore
+
+        store = SupabaseTicketStore(
+            supabase_url="https://example.supabase.co",
+            supabase_key="test-key",
+            team_id="team-a",
+        )
+
+        with (
+            patch.object(store, "keep_alive", return_value=False),
+            patch.object(runner, "ModelProbe") as mock_probe_cls,
+            patch.object(runner, "PreflightCheck") as mock_preflight,
+            patch.object(runner, "_send_preflight_alert"),
+        ):
+            # Abort at preflight so the cycle doesn't run further
+            mock_pf = mock_preflight.return_value
+            mock_pf.run.return_value.passed = False
+            mock_pf.run.return_value.failures = ["abort"]
+            mock_pf.run.return_value.summary.return_value = "abort"
+
+            mock_probe_inst = mock_probe_cls.return_value
+            mock_probe_inst.validate_and_patch_env.return_value = {}
+
+            runner.run_cycle(SWETeamConfig(), store, dry_run=True)
+
+        mock_probe_cls.assert_called_once()
+        mock_probe_inst.validate_and_patch_env.assert_called_once()
