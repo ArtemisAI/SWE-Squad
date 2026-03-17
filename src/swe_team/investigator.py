@@ -149,6 +149,7 @@ class InvestigatorAgent:
         if ticket.investigation_report:
             return False
         if ticket.status not in (
+            TicketStatus.OPEN,
             TicketStatus.TRIAGED,
             TicketStatus.INVESTIGATING,
         ):

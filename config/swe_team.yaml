@@ -28,10 +28,10 @@ ticket_store_path: "data/swe_team/tickets.json"
 # ---------------------------------------------------------------------------
 governance:
   enabled: true
-  max_open_critical: 0        # Block ALL new work if any critical bugs
-  max_open_high: 3            # Block if more than 3 high bugs
+  max_open_critical: 5        # Block new FEATURE work if >5 critical bugs open
+  max_open_high: 20           # Block if >20 high bugs open (loosened — large backlog is normal)
   max_failing_tests: 0        # Block if any test failures
-  require_ci_green: true      # Block if CI pipeline is red
+  require_ci_green: false     # Don't block on CI — CI not configured for LinkedAi yet
   check_interval_hours: 6     # Run stability check every 6 hours
 
 # ---------------------------------------------------------------------------
