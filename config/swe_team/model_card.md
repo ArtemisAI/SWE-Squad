@@ -98,8 +98,19 @@ Installed at `/usr/bin/gemini` v0.33.2. Logged in. **Active** (`enabled: true` i
 | **Public API research** | Web search + reasoning in one call |
 | **Playwright tests for UI** | Needs `npx playwright install chromium` — then can render and screenshot |
 
-### MCP status for Gemini CLI
-Gemini CLI v0.33.2 has its own MCP support via `~/.gemini/settings.json`. See background agent report for details. Playwright is available globally via `npx @playwright/mcp@latest` but must be configured in Gemini's settings separately from Claude's `.mcp.json`.
+### MCP status for Gemini CLI — CONFIGURED ✓
+
+Gemini CLI v0.33.2 uses `~/.gemini/settings.json` (user scope) for MCP — separate from Claude's `.mcp.json`.
+
+| MCP Server | Transport | Status |
+|-----------|-----------|--------|
+| **Playwright** | stdio (`npx @playwright/mcp@latest`) | ✅ Connected — browser automation, screenshots |
+| **DeepWiki** | HTTP (`https://mcp.deepwiki.com/mcp`) | ✅ Connected — public GitHub repo docs |
+
+Smoke tested: `gemini -p "navigate to example.com and tell me the page title"` → "Example Domain" ✓
+
+Config location: `~/.gemini/settings.json` → `mcpServers` block.
+To add more: `gemini mcp add <name> <url-or-cmd> --scope user --transport http|stdio`
 
 **Do NOT delegate:**
 - Proprietary source code (LinkedAi, SWE-Squad internals)
