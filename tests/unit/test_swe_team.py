@@ -759,16 +759,32 @@ class TestEmbeddings:
                 )()
             },
         )()
-        with (
-            patch.dict(os.environ, {"BASE_LLM_API_URL": "https://api.example", "BASE_LLM_API_KEY": "k"}),
-            patch("openai.OpenAI", return_value=mock_client),
-        ):
-            result = embed_ticket(ticket)
+        # Inject a fake openai module so patch target resolves even without the package
+        import types
+        fake_openai = types.ModuleType("openai")
+        fake_openai.OpenAI = None  # placeholder — will be patched
+        with patch.dict("sys.modules", {"openai": fake_openai}):
+            with (
+                patch.dict(os.environ, {"BASE_LLM_API_URL": "https://api.example", "BASE_LLM_API_KEY": "k"}),
+                patch("openai.OpenAI", return_value=mock_client),
+            ):
+                result = embed_ticket(ticket)
         assert result == [0.1, 0.2, 0.3]
 
     def test_embed_ticket_failure_is_non_fatal(self):
         ticket = SWETicket(title="Embed me", description="x")
-        with patch("openai.OpenAI", side_effect=RuntimeError("proxy down")):
+        import types
+        fake_openai = types.ModuleType("openai")
+        fake_openai.OpenAI = None
+        with patch.dict("sys.modules", {"openai": fake_openai}):
+            with patch("openai.OpenAI", side_effect=RuntimeError("proxy down")):
+                result = embed_ticket(ticket)
+        assert result is None
+
+    def test_embed_ticket_returns_none_without_openai(self):
+        """When openai package is not installed, embed_ticket returns None gracefully."""
+        ticket = SWETicket(title="No openai", description="x")
+        with patch.dict("sys.modules", {"openai": None}):
             result = embed_ticket(ticket)
         assert result is None
 
