@@ -17,6 +17,14 @@ repos:
   - name: "ArtemisAI/SWE-Squad-DEV"
     local_path: "/home/agent/SWE-Squad"
     description: "This repo — autonomous SWE agent system"
+  - name: "ArtemisAI/dan-ai.pro"
+    local_path: "/home/agent/Projects/dan-ai.pro"
+    description: "Portfolio site — dan-ai.pro (monitor + GitHub Issues; clone if dev needed)"
+    monitor_only: true
+  - name: "ArtemisAI/artemis-ai-ca"
+    local_path: "/home/agent/Projects/artemis-ai-ca"
+    description: "Portfolio site — artemis-ai.ca (monitor + GitHub Issues; clone if dev needed)"
+    monitor_only: true
 
 # Kill switch — set to true to activate SWE team agents.
 # Override via environment variable: SWE_TEAM_ENABLED=true
@@ -64,6 +72,19 @@ monitor:
   exclude_patterns:
     - "swe_team"
     - "swe_team_runner"
+  remote_workers:
+    # LinkedAi production worker nodes (Tailscale network)
+    # Replace placeholder IPs with actual Tailscale IPs from: tailscale status
+    # SSH key must be authorized: ssh-copy-id -i ~/.ssh/id_ed25519 agent@<IP>
+    - name: linkedai-worker-1
+      ssh: "agent@100.x.x.x"          # TODO: replace with actual Tailscale IP
+      log_dir: "~/Projects/LinkedAi/logs"
+    - name: linkedai-worker-2
+      ssh: "agent@100.x.x.x"          # TODO: replace with actual Tailscale IP
+      log_dir: "~/Projects/LinkedAi/logs"
+    - name: linkedai-worker-3
+      ssh: "agent@100.x.x.x"          # TODO: replace with actual Tailscale IP
+      log_dir: "~/Projects/LinkedAi/logs"
 
 # ---------------------------------------------------------------------------
 # Per-Cycle Throttle

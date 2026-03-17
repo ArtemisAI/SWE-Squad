@@ -89,6 +89,7 @@ class MonitorConfig:
     scan_interval_minutes: int = 30
     dedup_window_hours: int = 24    # Avoid re-filing the same issue
     enabled: bool = False
+    remote_workers: List[Dict[str, str]] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MonitorConfig":
@@ -103,6 +104,7 @@ class MonitorConfig:
             scan_interval_minutes=data.get("scan_interval_minutes", 30),
             dedup_window_hours=data.get("dedup_window_hours", 24),
             enabled=data.get("enabled", False),
+            remote_workers=data.get("remote_workers", []),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -113,6 +115,7 @@ class MonitorConfig:
             "scan_interval_minutes": self.scan_interval_minutes,
             "dedup_window_hours": self.dedup_window_hours,
             "enabled": self.enabled,
+            "remote_workers": self.remote_workers,
         }
 
 
@@ -364,6 +367,7 @@ class SWETeamConfig:
     rate_limits: RateLimitConfig = field(default_factory=RateLimitConfig)
     cycle: CycleConfig = field(default_factory=CycleConfig)
     fallback_agents: List[FallbackAgentConfig] = field(default_factory=list)
+    repos: List[Dict[str, Any]] = field(default_factory=list)
     ticket_store_path: str = "data/swe_team/tickets.json"
     a2a_hub_url: str = "http://localhost:18790"
     enabled: bool = False
@@ -395,6 +399,7 @@ class SWETeamConfig:
             rate_limits=rate_limits,
             cycle=cycle,
             fallback_agents=fallbacks,
+            repos=data.get("repos", []),
             ticket_store_path=data.get(
                 "ticket_store_path", "data/swe_team/tickets.json"
             ),
@@ -415,6 +420,7 @@ class SWETeamConfig:
             "rate_limits": self.rate_limits.to_dict(),
             "cycle": self.cycle.to_dict(),
             "fallback_agents": [f.to_dict() for f in self.fallback_agents],
+            "repos": self.repos,
             "ticket_store_path": self.ticket_store_path,
             "a2a_hub_url": self.a2a_hub_url,
             "enabled": self.enabled,

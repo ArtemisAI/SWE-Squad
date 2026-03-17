@@ -63,6 +63,41 @@ Launch an Agent (model: haiku) to:
 - Link any related issues found in Stage 2
 - Update any relevant docs if the fix changes behavior
 
+### Stage 7: Close the Ticket
+After all stages are complete and verified, call `code_reviewer.review()` to push the branch,
+create a PR, review the diff, merge, and close the GitHub issue automatically.
+
+Launch an Agent (model: haiku) to run this Python snippet:
+```python
+import sys
+sys.path.insert(0, '/home/agent/SWE-Squad')
+import os
+from dotenv import load_dotenv
+load_dotenv('/home/agent/SWE-Squad/.env')
+from src.swe_team.supabase_store import SupabaseTicketStore
+from src.swe_team.code_reviewer import CodeReviewerAgent
+
+store = SupabaseTicketStore(supabase_url=os.environ['SUPABASE_URL'], supabase_key=os.environ['SUPABASE_ANON_KEY'], team_id='swe-squad-1')
+ticket = store.get('{ticket_id}')
+if ticket:
+    repo_root = ticket.metadata.get('repo_root', '/home/agent/Projects/LinkedAi')
+    code_reviewer = CodeReviewerAgent(model='sonnet')
+    approved, feedback = code_reviewer.review(ticket, store, repo_root=repo_root)
+    print(f"Ticket {ticket.ticket_id}: approved={approved} feedback={feedback}")
+else:
+    print("Ticket not found")
+```
+
+The `CodeReviewerAgent.review()` method:
+1. Pushes the fix branch with `git push origin {branch} --force-with-lease`
+2. Checks for an existing PR or creates one with `gh pr create`
+3. Gets the diff with `git diff main..{branch}` (capped at 6000 chars)
+4. Calls `claude --model sonnet --print` with a review prompt (correctness, OWASP top 10, side effects, test gaps)
+5. On APPROVE: merges the PR (squash), closes the GitHub issue, transitions ticket to RESOLVED
+6. On REQUEST_CHANGES: bounces ticket to IN_DEVELOPMENT with feedback; after 3 rejections → sets needs_hitl=True
+
+If the transition raises a ValueError, that means the resolution audit failed — report the error and do NOT force-close.
+
 ## RULES
 - ALWAYS use the Agent tool to delegate. Never do the work directly.
 - Use model: sonnet for code reading, writing, and testing

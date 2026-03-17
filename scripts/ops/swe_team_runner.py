@@ -626,7 +626,7 @@ def run_cycle(
     # 0a. Collect remote logs before scanning
     from src.swe_team.remote_logs import collect_remote_logs
     try:
-        remote_dirs = collect_remote_logs()
+        remote_dirs = collect_remote_logs(nodes=config.monitor.remote_workers or [])
         if remote_dirs:
             config.monitor.log_directories.extend(remote_dirs)
             logger.info("Added %d remote log directories", len(remote_dirs))
@@ -645,7 +645,7 @@ def run_cycle(
                     f"🤖 **SWE Squad picked up this issue.**\n\n"
                     f"Status: `TRIAGED` — queued for investigation.\n"
                     f"Team: `{config.team_id}` | Account: `{config.github_account}`",
-                    repo=gt.repo or "",
+                    repo=gt.metadata.get("repo", ""),
                 )
 
     # 1. Monitor: scan logs for new errors
@@ -929,7 +929,7 @@ def run_cycle(
                                 f"**Lines changed:** {last.get('lines_changed', '?')}\n"
                                 f"**Tests:** passing\n\n"
                                 f"Fix is on branch `{branch}`. Ready for human review.",
-                                repo=ticket.repo or "",
+                                repo=ticket.metadata.get("repo", ""),
                             )
                     elif issue_num:
                         attempts = ticket.metadata.get("attempts", [])
@@ -943,6 +943,39 @@ def run_cycle(
                         )
                 except Exception:
                     logger.exception("Dev agent failed for ticket %s", ticket.ticket_id)
+
+    # 5d. Reviewer: promote IN_REVIEW → RESOLVED
+    in_review_tickets = store.list_by_status(TicketStatus.IN_REVIEW)
+    if in_review_tickets and not dry_run:
+        from src.swe_team.reviewer import ReviewerAgent
+        reviewer = ReviewerAgent(
+            model=config.models.t3_fast if hasattr(config.models, 't3_fast') else "haiku",
+            repo_root=PROJECT_ROOT,
+        )
+        resolved_tickets, rejected_tickets, hitl_tickets = reviewer.review_batch(
+            in_review_tickets, store
+        )
+        logger.info(
+            "Reviewer: resolved=%d rejected=%d hitl=%d",
+            len(resolved_tickets),
+            len(rejected_tickets),
+            len(hitl_tickets),
+        )
+        for ticket in resolved_tickets:
+            issue_num = ticket.metadata.get("github_issue")
+            if issue_num:
+                comment_on_github_issue(
+                    issue_num,
+                    f"## Resolved\n\nTicket `{ticket.ticket_id}` has been automatically resolved "
+                    f"after passing review.\n\nInvestigation report: "
+                    f"{len(ticket.investigation_report or '')} chars | "
+                    f"Fix attempts: {len(ticket.metadata.get('attempts', []))}",
+                )
+        for ticket in hitl_tickets:
+            logger.warning(
+                "HITL escalation: ticket %s stuck in review after 3 rejections",
+                ticket.ticket_id,
+            )
 
     # 6. Stability gate: check if new work should be blocked
     gate = RalphWiggumGate(config.governance)

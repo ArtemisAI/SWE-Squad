@@ -3146,3 +3146,183 @@ class TestRunnerModelProbeIntegration:
 
         mock_probe_cls.assert_called_once()
         mock_probe_inst.validate_and_patch_env.assert_called_once()
+
+
+# ======================================================================
+# CodeReviewerAgent
+# ======================================================================
+
+class TestCodeReviewerAgent:
+    """Tests for src.swe_team.code_reviewer.CodeReviewerAgent."""
+
+    def _make_ticket(self, branch: str = "swe-fix/ticket-abc123", repo: str = "ArtemisAI/LinkedAi") -> SWETicket:
+        """Create a minimal IN_REVIEW ticket that passes resolution_audit()."""
+        ticket = SWETicket(
+            title="Test bug fix",
+            description="Something broke in production",
+            severity=TicketSeverity.HIGH,
+            status=TicketStatus.IN_REVIEW,
+            investigation_report="Root cause: connection timeout in database pool. "
+                                 "The pool exhaustion is triggered by long-running queries. "
+                                 "Fix: increase pool size and add query timeout. "
+                                 "This change has been tested in staging with no regressions.",
+            metadata={
+                "branch": branch,
+                "repo": repo,
+                "attempts": [{"result": "success", "branch": branch}],
+            },
+        )
+        return ticket
+
+    def _make_store(self):
+        """Create a simple in-memory mock store."""
+        class MockStore:
+            def __init__(self):
+                self.saved = []
+            def save(self, ticket):
+                self.saved.append(ticket)
+        return MockStore()
+
+    def test_approve_path(self):
+        """On APPROVE response, ticket should transition to RESOLVED."""
+        from src.swe_team.code_reviewer import CodeReviewerAgent
+
+        ticket = self._make_ticket()
+        store = self._make_store()
+
+        # Mock subprocess: push ok, no existing PR, create PR ok, diff ok, claude says APPROVE
+        def fake_run(cmd, **kwargs):
+            result = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+            if cmd[0] == "git" and cmd[1] == "push":
+                result.stdout = ""
+            elif cmd[0] == "gh" and "list" in cmd:
+                result.stdout = "[]"
+            elif cmd[0] == "gh" and "create" in cmd:
+                result.stdout = "https://github.com/ArtemisAI/LinkedAi/pull/42\n"
+            elif cmd[0] == "git" and cmd[1] == "diff":
+                result.stdout = "diff --git a/foo.py b/foo.py\n+x = 1\n"
+            elif cmd[0] == "claude":
+                result.stdout = "APPROVE\nThe fix correctly addresses the root cause."
+            elif cmd[0] == "gh" and "merge" in cmd:
+                result.stdout = ""
+            elif cmd[0] == "gh" and "issue" in cmd:
+                result.stdout = ""
+            return result
+
+        with patch("src.swe_team.code_reviewer.subprocess.run", side_effect=fake_run):
+            reviewer = CodeReviewerAgent(model="sonnet")
+            approved, feedback = reviewer.review(ticket, store, repo_root="/tmp/fake_repo")
+
+        assert approved is True
+        assert "approved" in feedback
+        assert ticket.status == TicketStatus.RESOLVED
+        assert len(store.saved) == 1
+
+    def test_request_changes_bounces_to_development(self):
+        """On REQUEST_CHANGES, ticket should go back to IN_DEVELOPMENT with feedback."""
+        from src.swe_team.code_reviewer import CodeReviewerAgent
+
+        ticket = self._make_ticket()
+        store = self._make_store()
+
+        def fake_run(cmd, **kwargs):
+            result = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+            if cmd[0] == "git" and cmd[1] == "push":
+                result.stdout = ""
+            elif cmd[0] == "gh" and "list" in cmd:
+                result.stdout = "[]"
+            elif cmd[0] == "gh" and "create" in cmd:
+                result.stdout = "https://github.com/ArtemisAI/LinkedAi/pull/7\n"
+            elif cmd[0] == "git" and cmd[1] == "diff":
+                result.stdout = "diff --git a/foo.py b/foo.py\n-x = 1\n+x = 2\n"
+            elif cmd[0] == "claude":
+                result.stdout = "REQUEST_CHANGES\nThe fix introduces a security vulnerability (SQL injection)."
+            elif cmd[0] == "gh" and "close" in cmd:
+                result.stdout = ""
+            return result
+
+        with patch("src.swe_team.code_reviewer.subprocess.run", side_effect=fake_run):
+            reviewer = CodeReviewerAgent(model="sonnet")
+            approved, feedback = reviewer.review(ticket, store, repo_root="/tmp/fake_repo")
+
+        assert approved is False
+        assert "rejected" in feedback
+        assert ticket.status == TicketStatus.IN_DEVELOPMENT
+        assert "review_feedback" in ticket.metadata
+        assert ticket.metadata["review_rejections"] == 1
+        # Feedback stored in last attempt
+        assert ticket.metadata["attempts"][-1].get("review_feedback") is not None
+
+    def test_hitl_after_max_rejections(self):
+        """After max_rejections, needs_hitl should be set and ticket stays in current state."""
+        from src.swe_team.code_reviewer import CodeReviewerAgent
+
+        ticket = self._make_ticket()
+        # Pre-load 2 rejections (one more will hit max of 3)
+        ticket.metadata["review_rejections"] = 2
+        store = self._make_store()
+
+        def fake_run(cmd, **kwargs):
+            result = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+            if cmd[0] == "git" and cmd[1] == "push":
+                result.stdout = ""
+            elif cmd[0] == "gh" and "list" in cmd:
+                result.stdout = "[]"
+            elif cmd[0] == "gh" and "create" in cmd:
+                result.stdout = "https://github.com/ArtemisAI/LinkedAi/pull/8\n"
+            elif cmd[0] == "git" and cmd[1] == "diff":
+                result.stdout = "diff --git a/foo.py b/foo.py\n"
+            elif cmd[0] == "claude":
+                result.stdout = "REQUEST_CHANGES\nStill not safe to merge — missing test coverage."
+            return result
+
+        with patch("src.swe_team.code_reviewer.subprocess.run", side_effect=fake_run):
+            reviewer = CodeReviewerAgent(model="sonnet", max_rejections=3)
+            approved, feedback = reviewer.review(ticket, store, repo_root="/tmp/fake_repo")
+
+        assert approved is False
+        assert "hitl" in feedback
+        assert ticket.metadata.get("needs_hitl") is True
+        assert ticket.metadata["review_rejections"] == 3
+        # Ticket should NOT have been transitioned to IN_DEVELOPMENT — stays for HITL
+        assert ticket.status == TicketStatus.IN_REVIEW
+
+    def test_no_branch_returns_false(self):
+        """If no branch is recorded in metadata, review returns (False, 'no branch recorded')."""
+        from src.swe_team.code_reviewer import CodeReviewerAgent
+
+        ticket = self._make_ticket(branch="")
+        store = self._make_store()
+
+        reviewer = CodeReviewerAgent()
+        approved, feedback = reviewer.review(ticket, store, repo_root="/tmp/fake_repo")
+
+        assert approved is False
+        assert "no branch" in feedback
+
+    def test_push_failure_falls_back_to_local_approve(self):
+        """If push fails, the agent should still review locally and approve."""
+        from src.swe_team.code_reviewer import CodeReviewerAgent
+
+        ticket = self._make_ticket()
+        # Remove repo so no PR creation is attempted either
+        ticket.metadata["repo"] = ""
+        store = self._make_store()
+
+        def fake_run(cmd, **kwargs):
+            result = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+            if cmd[0] == "git" and cmd[1] == "push":
+                result.returncode = 128
+                result.stderr = "fatal: remote error: permission denied"
+            elif cmd[0] == "git" and cmd[1] == "diff":
+                result.stdout = "diff --git a/foo.py b/foo.py\n+x = 1\n"
+            elif cmd[0] == "claude":
+                result.stdout = "APPROVE\nFix looks good."
+            return result
+
+        with patch("src.swe_team.code_reviewer.subprocess.run", side_effect=fake_run):
+            reviewer = CodeReviewerAgent()
+            approved, feedback = reviewer.review(ticket, store, repo_root="/tmp/fake_repo")
+
+        assert approved is True
+        assert ticket.status == TicketStatus.RESOLVED

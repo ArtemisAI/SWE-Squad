@@ -2,7 +2,7 @@
 import logging
 import subprocess
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -28,15 +28,21 @@ def _load_remote_nodes():
 REMOTE_NODES = _load_remote_nodes()
 
 
-def collect_remote_logs(local_dir: str = "logs/remote", timeout: int = 30) -> List[str]:
+def collect_remote_logs(local_dir: str = "logs/remote", timeout: int = 30, nodes: Optional[List[Dict]] = None) -> List[str]:
     """SSH into each worker, rsync their logs to a local directory.
+
+    nodes: list of dicts with keys: name, ssh, log_dir
+           Falls back to REMOTE_NODES (from SWE_REMOTE_NODES env var) if not provided.
 
     Returns list of local directories containing remote logs.
     """
+    effective_nodes = nodes if nodes is not None else REMOTE_NODES
+    if not effective_nodes:
+        return []
     collected: List[str] = []
     local_base = Path(local_dir)
 
-    for node in REMOTE_NODES:
+    for node in effective_nodes:
         node_dir = local_base / node["name"]
         node_dir.mkdir(parents=True, exist_ok=True)
 
