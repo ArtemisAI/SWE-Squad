@@ -42,7 +42,7 @@ src/swe_team/
     distiller.py       — Trajectory distillation: caches successful fixes by fingerprint
     preflight.py       — PreflightCheck: validates git identity, clean tree, env vars
     events.py          — SWE event definitions for A2A dispatch
-    remote_logs.py     — SSH/rsync remote log collection
+    remote_logs.py     — SSH/rsync remote log collection + on-demand worker log fetch
 src/a2a/               — A2A protocol: server, client, dispatch (hub + standalone), adapters
     src/a2a/server.py      — Lightweight A2A HTTP server (standalone mode)
     src/a2a/client.py      — A2A client (hub mode + direct agent mode)
@@ -51,6 +51,10 @@ src/a2a/               — A2A protocol: server, client, dispatch (hub + standal
 scripts/ops/a2a_hub.py     — Standalone A2A hub entry point
 scripts/ops/a2a_request.py — CLI for sending A2A requests to any agent
 scripts/ops/dashboard_data.py — Dashboard metrics generator
+scripts/ops/propagate.sh       — Instant code propagation to all worker nodes via SSH
+scripts/ops/git_push_propagate.sh — git push wrapper that auto-triggers propagation
+scripts/ops/webhook_listener.py — GitHub webhook listener for push-triggered propagation
+config/ssh_workers.conf    — Scoped SSH config for worker access (IdentitiesOnly, dedicated key)
 config/agent-card.json     — SWE Squad A2A agent card
 config/swe_team.yaml   — Runtime configuration (agents, thresholds, log dirs, model tiers)
 config/swe_team/programs/
@@ -82,8 +86,74 @@ crontab.example        — Recommended cron schedules for runner + CLI tools
 | `SWE_MODEL_T1` | Override T1 model (cheap tasks, default: `haiku`) |
 | `SWE_MODEL_T2` | Override T2 model (routine fixes, default: `sonnet`) |
 | `SWE_MODEL_T3` | Override T3 model (critical/orchestration, default: `opus`) |
+| `SWE_SSH_CONFIG` | Path to scoped SSH config (default: `config/ssh_workers.conf`) |
+| `SWE_REMOTE_NODES` | JSON array of worker nodes for remote log collection |
+| `WEBHOOK_PORT` | GitHub webhook listener port (default: `9876`) |
+| `WEBHOOK_SECRET` | HMAC secret for GitHub webhook signature validation |
 
 See `.env.example` for the full list.
+
+## Remote Worker Access & Log Pipeline
+
+SWE-Squad agents can SSH into LinkedAi worker nodes to collect logs, diagnose issues, and propagate code changes.
+
+### SSH Security Model
+
+```
+config/ssh_workers.conf          — Scoped SSH config (IdentitiesOnly yes)
+~/.ssh/swe_workers_linkedai_key  — Dedicated ed25519 key for worker access only
+```
+
+- **Only listed workers are reachable.** The scoped config with `IdentitiesOnly yes` prevents SSH from offering keys to unlisted hosts.
+- **Niobe (primary orchestrator) is explicitly blocked.** The dedicated key is not in Niobe's `authorized_keys`.
+- Workers: `linkedai-browser-2`, `linkedai-bot-2`, `linkedai-hp-laptop` (browser-1 has no logs).
+
+### Remote Log Collection Flow
+
+```
+Every monitor cycle:
+  swe_team_runner.py → collect_remote_logs() → rsync -az -e "ssh -F ssh_workers.conf"
+                                              → logs/remote/{worker-name}/*.log
+                                              → appended to monitor.log_directories
+                                              → MonitorAgent.scan() sees them automatically
+
+During investigation:
+  InvestigatorAgent._fetch_worker_logs(ticket)
+    → maps source_module → worker (e.g., "browser" → linkedai-browser-2)
+    → SSH: fetch last 60 min of logs from that worker
+    → injected as "## Fresh Worker Logs" in investigation prompt
+```
+
+### Instant Code Propagation
+
+```
+Developer pushes fix:
+  git push origin main
+       │
+       ├── scripts/ops/git_push_propagate.sh   (local: push + propagate)
+       │       └── scripts/ops/propagate.sh     (parallel SSH to all workers)
+       │               └── git fetch && git reset --hard origin/main
+       │
+       └── scripts/ops/webhook_listener.py      (port 9876: GitHub push webhook)
+               └── triggers propagate.sh on push to main
+```
+
+- `propagate.sh` syncs all workers in ~4 seconds via parallel SSH.
+- `webhook_listener.py` runs as a systemd user service (`swe-webhook.service`).
+- HMAC-SHA256 signature validation via `WEBHOOK_SECRET` env var.
+
+### Worker Configuration
+
+Workers are configured in `config/swe_team.yaml` under `monitor.remote_workers`:
+
+```yaml
+remote_workers:
+  - name: linkedai-browser-2
+    ssh: "linkedai-browser-2"       # SSH config alias, NOT user@ip
+    log_dir: "~/Projects/LinkedAi/logs"
+```
+
+The `ssh` field must match a `Host` entry in `config/ssh_workers.conf`.
 
 ## Two-System Distinction (CRITICAL — read before touching embeddings.py or investigator.py)
 

@@ -44,7 +44,10 @@ The script:
 | `SWE_GITHUB_ACCOUNT` | Dedicated GitHub bot account |
 | `SWE_GITHUB_REPO` | Target repository (owner/repo) |
 | `GH_TOKEN` | GitHub authentication |
-| `SWE_REMOTE_NODES` | JSON array of SSH worker nodes |
+| `SWE_REMOTE_NODES` | JSON array of SSH worker nodes for remote log collection |
+| `SWE_SSH_CONFIG` | Path to scoped SSH config (default: `config/ssh_workers.conf`) |
+| `WEBHOOK_PORT` | GitHub webhook listener port (default: `9876`) |
+| `WEBHOOK_SECRET` | HMAC secret for webhook signature validation |
 | `SUPABASE_URL` / `SUPABASE_ANON_KEY` | Ticket store backend |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Notifications |
 
@@ -67,3 +70,29 @@ flowchart TD
     style PubRepo fill:#27ae60,stroke:#1e8449,color:#fff
     style VM fill:#9b59b6,stroke:#7d3c98,color:#fff
 ```
+
+## Instant Code Propagation
+
+When code is pushed to `main`, it propagates to all worker nodes immediately:
+
+```mermaid
+flowchart LR
+    Push["git push origin main"] --> Script["git_push_propagate.sh"]
+    Push --> Webhook["webhook_listener.py\n(port 9876)"]
+    Script --> Prop["propagate.sh"]
+    Webhook --> Prop
+    Prop -->|"parallel SSH"| W1["linkedai-browser-2"]
+    Prop -->|"parallel SSH"| W2["linkedai-bot-2"]
+    Prop -->|"parallel SSH"| W3["linkedai-hp-laptop"]
+
+    style Push fill:#4a90d9,stroke:#2c5f8a,color:#fff
+    style Prop fill:#e74c3c,stroke:#c0392b,color:#fff
+    style W1 fill:#27ae60,stroke:#1e8449,color:#fff
+    style W2 fill:#27ae60,stroke:#1e8449,color:#fff
+    style W3 fill:#27ae60,stroke:#1e8449,color:#fff
+```
+
+- **Local push:** `bash scripts/ops/git_push_propagate.sh origin main` — pushes then propagates.
+- **Webhook:** `scripts/ops/webhook_listener.py` listens for GitHub push events (systemd service: `swe-webhook.service`).
+- **Manual:** `bash scripts/ops/propagate.sh --project linkedai` — propagate on demand.
+- **Dry run:** `bash scripts/ops/propagate.sh --dry-run` — show what would run without executing.

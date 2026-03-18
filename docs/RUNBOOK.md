@@ -217,6 +217,85 @@ The commit object survives in the git object store even after local reset. `git 
 
 ---
 
+### 2.10 Remote log collection failures
+
+**Symptom:** `WARNING: rsync from linkedai-* failed` or `Timeout collecting logs from` in `swe_team.log`. Monitor cycle runs but only scans local logs.
+
+**Diagnosis:**
+```bash
+# Check SSH connectivity to all workers
+ssh -F config/ssh_workers.conf linkedai-browser-2 "echo ok"
+ssh -F config/ssh_workers.conf linkedai-bot-2 "echo ok"
+ssh -F config/ssh_workers.conf linkedai-hp-laptop "echo ok"
+
+# Check that log directory exists on the worker
+ssh -F config/ssh_workers.conf linkedai-bot-2 "ls -la ~/Projects/LinkedAi/logs/"
+
+# Check worker reachability via Python
+python3 -c "from src.swe_team.remote_logs import list_available_workers; print(list_available_workers())"
+```
+
+**Common causes:**
+- Worker node is offline or Tailscale is disconnected → `tailscale status` on the worker
+- SSH key not in worker's `authorized_keys` → `ssh-copy-id -i ~/.ssh/swe_workers_linkedai_key.pub agent@<IP>`
+- Log directory doesn't exist on worker (e.g., `linkedai-browser-1` has no `logs/` dir) → exclude from `swe_team.yaml`
+- rsync not installed on worker → `remote_logs.py` auto-falls back to SSH cat
+
+**Prevention:** Only configure workers with verified log directories in `config/swe_team.yaml` under `monitor.remote_workers`. Use SSH config aliases (not raw IPs).
+
+---
+
+### 2.11 Code propagation failures
+
+**Symptom:** Worker running stale code after a push. `propagate.sh` reports `FAIL` for one or more workers.
+
+**Diagnosis:**
+```bash
+# Run propagation manually and check output
+bash scripts/ops/propagate.sh --project linkedai
+
+# Check propagation log
+tail -20 logs/propagate.log
+
+# Verify worker is on the correct commit
+ssh -F config/ssh_workers.conf linkedai-bot-2 "cd ~/Projects/LinkedAi && git log --oneline -3"
+```
+
+**Common causes:**
+- Worker has uncommitted changes → `git reset --hard origin/main` on the worker
+- Worker's git remote is wrong → check `git remote -v` on the worker
+- SSH timeout (worker slow/overloaded) → increase `--timeout` flag
+
+**Fix:** `propagate.sh` runs `git fetch origin main && git reset --hard origin/main` on each worker. If a worker has local changes blocking this, SSH in and resolve manually.
+
+---
+
+### 2.12 Webhook listener down
+
+**Symptom:** Pushes to GitHub don't trigger automatic propagation.
+
+**Diagnosis:**
+```bash
+# Check systemd service
+systemctl --user status swe-webhook.service
+
+# Check if port is listening
+ss -tlnp | grep 9876
+
+# Health check
+curl http://localhost:9876/health
+```
+
+**Fix:**
+```bash
+systemctl --user restart swe-webhook.service
+systemctl --user enable swe-webhook.service  # survive reboots
+```
+
+**Note:** The webhook only receives events from within the Tailscale network. Public GitHub webhooks can't reach Tailscale IPs. For external pushes, use `git_push_propagate.sh` instead.
+
+---
+
 ## 3. Stability Gate Thresholds
 
 The Ralph-Wiggum gate (`ralph_wiggum.py`) blocks new feature work when:
@@ -330,3 +409,6 @@ rm -f /tmp/swe_squad_claude_invoked.lock
 | GitHub sync | `logs/github_sync.log` | GH Issues → Supabase sync (every 5 min) |
 | Cron | `logs/cron.log` | Daily report output |
 | A2A hub | `data/a2a/` | Inter-agent event log |
+| Remote logs | `logs/remote/{worker-name}/` | Logs collected from worker nodes via rsync |
+| Propagation | `logs/propagate.log` | Code propagation results per worker |
+| Webhook | systemd journal | `journalctl --user -u swe-webhook.service` |
