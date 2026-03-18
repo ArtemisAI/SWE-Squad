@@ -947,7 +947,7 @@ def run_cycle(
                             f"**Attempts:** {len(attempts)}/{dev._max_attempts}\n"
                             f"**Last error:** `{attempts[-1].get('error', '?')[:200] if attempts else '?'}`\n\n"
                             f"Escalating to HITL.",
-                            repo=ticket.repo or "",
+                            repo=ticket.metadata.get("repo", ""),
                         )
                 except Exception:
                     logger.exception("Dev agent failed for ticket %s", ticket.ticket_id)

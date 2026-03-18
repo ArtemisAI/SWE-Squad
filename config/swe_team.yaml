@@ -47,8 +47,8 @@ ticket_store_path: "data/swe_team/tickets.json"
 # ---------------------------------------------------------------------------
 governance:
   enabled: true
-  max_open_critical: 20       # Block new FEATURE work if >20 critical bugs open (working down backlog)
-  max_open_high: 50           # Block if >50 high bugs open (loosened — large backlog is normal)
+  max_open_critical: 40       # Raised 2026-03-18 — was 20, permanently blocked at 32 critical
+  max_open_high: 80           # Raised 2026-03-18 — was 50, permanently blocked at 64 high
   max_failing_tests: 0        # Block if any test failures
   require_ci_green: false     # Don't block on CI — CI not configured for LinkedAi yet
   check_interval_hours: 6     # Run stability check every 6 hours
@@ -101,14 +101,14 @@ cycle:
   max_new_tickets_per_cycle: 10
 
   # Max tickets to investigate per cycle (each = 1 Claude CLI call).
-  max_investigations_per_cycle: 3
+  max_investigations_per_cycle: 5
 
   # Max tickets to attempt a fix on per cycle (each = 1+ Claude CLI calls).
-  max_developments_per_cycle: 2
+  max_developments_per_cycle: 4
 
   # Hard cap on concurrent INVESTIGATING tickets across all cycles.
   # New investigations are skipped when this limit is in use.
-  max_open_investigating: 3
+  max_open_investigating: 5
 
 # ---------------------------------------------------------------------------
 # Model Cost Tiers
