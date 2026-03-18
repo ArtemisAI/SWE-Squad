@@ -66,6 +66,33 @@
     font-weight: 600;
   }
 
+  .tabs {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+  }
+
+  .tab-btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: 9999px;
+    padding: 0.4rem 0.9rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .tab-btn.active {
+    background: var(--accent-bg);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
   .grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -228,6 +255,27 @@
     transition: width 0.3s;
   }
 
+  .actions {
+    display: flex;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+  }
+
+  .btn-link {
+    display: inline-block;
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    padding: 0.2rem 0.5rem;
+    font-size: 0.72rem;
+    color: var(--text);
+    background: var(--surface);
+  }
+
+  .btn-link:hover {
+    border-color: var(--accent);
+    text-decoration: none;
+  }
+
   @media (max-width: 640px) {
     body { padding: 1rem; }
     .grid { grid-template-columns: repeat(2, 1fr); }
@@ -245,42 +293,82 @@
   </div>
 </div>
 
-<!-- Summary cards -->
-<div class="grid" id="summary-cards"></div>
-
-<!-- Severity breakdown -->
-<div class="section" id="severity-section">
-  <h2>Open Tickets by Severity</h2>
-  <div class="severity-cards" id="severity-cards"></div>
+<div class="tabs" id="dashboard-tabs">
+  <button class="tab-btn active" data-tab-target="overview">Overview</button>
+  <button class="tab-btn" data-tab-target="open">Open Bugs</button>
+  <button class="tab-btn" data-tab-target="in-progress">WIP Bugs</button>
+  <button class="tab-btn" data-tab-target="closed">Closed Bugs</button>
+  <button class="tab-btn" data-tab-target="actions">Issue Actions</button>
 </div>
 
-<!-- Agent Performance -->
-<div class="section" id="performance-section">
-  <h2>Agent Performance (24h)</h2>
-  <div id="performance-stats"></div>
+<div class="tab-panel active" data-tab-panel="overview">
+  <!-- Summary cards -->
+  <div class="grid" id="summary-cards"></div>
+
+  <!-- Severity breakdown -->
+  <div class="section" id="severity-section">
+    <h2>Open Tickets by Severity</h2>
+    <div class="severity-cards" id="severity-cards"></div>
+  </div>
+
+  <!-- Agent Performance -->
+  <div class="section" id="performance-section">
+    <h2>Agent Performance (24h)</h2>
+    <div id="performance-stats"></div>
+  </div>
+
+  <!-- Last Cycle -->
+  <div class="section" id="cycle-section">
+    <h2>Last Cycle</h2>
+    <div id="cycle-stats"></div>
+  </div>
+
+  <!-- Memory Stats -->
+  <div class="section" id="memory-section">
+    <h2>Semantic Memory</h2>
+    <div id="memory-stats"></div>
+  </div>
+
+  <!-- Recent Activity -->
+  <div class="section" id="activity-section">
+    <h2>Recent Activity</h2>
+    <div id="activity-table"></div>
+  </div>
 </div>
 
-<!-- Last Cycle -->
-<div class="section" id="cycle-section">
-  <h2>Last Cycle</h2>
-  <div id="cycle-stats"></div>
+<div class="tab-panel" data-tab-panel="open">
+  <div class="section">
+    <h2>Open Bugs</h2>
+    <div id="open-bugs-table"></div>
+  </div>
 </div>
 
-<!-- Memory Stats -->
-<div class="section" id="memory-section">
-  <h2>Semantic Memory</h2>
-  <div id="memory-stats"></div>
+<div class="tab-panel" data-tab-panel="in-progress">
+  <div class="section">
+    <h2>Work In Progress Bugs</h2>
+    <div id="in-progress-bugs-table"></div>
+  </div>
 </div>
 
-<!-- Recent Activity -->
-<div class="section" id="activity-section">
-  <h2>Recent Activity</h2>
-  <div id="activity-table"></div>
+<div class="tab-panel" data-tab-panel="closed">
+  <div class="section">
+    <h2>Closed Bugs</h2>
+    <div id="closed-bugs-table"></div>
+  </div>
+</div>
+
+<div class="tab-panel" data-tab-panel="actions">
+  <div class="section">
+    <h2>Issue Actioning (GitHub Sync)</h2>
+    <div id="issue-actions-table"></div>
+  </div>
 </div>
 
 <script>
 // Dashboard data is injected here by the Python renderer
 var DASHBOARD_DATA = __DASHBOARD_DATA__;
+// Keep action tab readable and responsive by rendering a bounded ticket slice.
+var MAX_ACTIONABLE_TICKETS = 100;
 
 function renderDashboard(data) {
   var ts = data.ticket_summary || {};
@@ -288,6 +376,7 @@ function renderDashboard(data) {
   var ms = data.memory_stats || {};
   var lc = data.last_cycle || null;
   var ra = data.recent_activity || [];
+  var tbs = data.tickets_by_state || {};
 
   // Generated timestamp
   var genAt = document.getElementById("generated-at");
@@ -420,6 +509,11 @@ function renderDashboard(data) {
     tbl += '</tbody></table>';
     document.getElementById("activity-table").innerHTML = tbl;
   }
+
+  renderStateTable("open-bugs-table", tbs.open || []);
+  renderStateTable("in-progress-bugs-table", tbs.in_progress || []);
+  renderStateTable("closed-bugs-table", tbs.closed || []);
+  renderActionsTable("issue-actions-table", tbs);
 }
 
 function escHtml(s) {
@@ -430,9 +524,114 @@ function escHtml(s) {
 
 // Initial render
 renderDashboard(DASHBOARD_DATA);
+setupTabs();
 
 // Auto-refresh every 5 minutes (reloads the page)
 setInterval(function() { location.reload(); }, 5 * 60 * 1000);
+
+function renderStateTable(targetId, rows) {
+  var target = document.getElementById(targetId);
+  if (!target) return;
+  if (!rows || rows.length === 0) {
+    target.innerHTML = '<div class="empty-state">No tickets in this bucket</div>';
+    return;
+  }
+
+  var html = '<table><thead><tr>' +
+    '<th>Severity</th><th>Ticket</th><th>Title</th><th>Status</th><th>Assignee</th><th>Updated</th>' +
+    '</tr></thead><tbody>';
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var sev = row.severity || "medium";
+    html += '<tr>' +
+      '<td><span class="severity-badge sev-' + sev + '">' + sev.toUpperCase() + '</span></td>' +
+      '<td><code>' + (row.ticket_id || "").substring(0, 12) + '</code></td>' +
+      '<td>' + escHtml(row.title || "") + '</td>' +
+      '<td>' + escHtml(row.status || "") + '</td>' +
+      '<td>' + escHtml(row.assigned_to || "-") + '</td>' +
+      '<td>' + escHtml(row.updated_at || "") + '</td>' +
+      '</tr>';
+  }
+  html += '</tbody></table>';
+  target.innerHTML = html;
+}
+
+function renderActionsTable(targetId, ticketsByState) {
+  var target = document.getElementById(targetId);
+  if (!target) return;
+  var rows = [];
+  var allBuckets = [
+    ticketsByState.open || [],
+    ticketsByState.in_progress || [],
+    ticketsByState.closed || []
+  ];
+  for (var b = 0; b < allBuckets.length; b++) {
+    for (var r = 0; r < allBuckets[b].length; r++) {
+      rows.push(allBuckets[b][r]);
+      if (rows.length >= MAX_ACTIONABLE_TICKETS) break;
+    }
+    if (rows.length >= MAX_ACTIONABLE_TICKETS) break;
+  }
+  var totalActionable = (ticketsByState.open || []).length +
+    (ticketsByState.in_progress || []).length +
+    (ticketsByState.closed || []).length;
+
+  if (rows.length === 0) {
+    target.innerHTML = '<div class="empty-state">No tickets available for actioning</div>';
+    return;
+  }
+
+  var html = '<table><thead><tr>' +
+    '<th>Ticket</th><th>Status</th><th>GitHub</th><th>Actions</th>' +
+    '</tr></thead><tbody>';
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var actions = row.github_actions || {};
+    if (!actions.view) {
+      html += '<tr>' +
+        '<td><code>' + (row.ticket_id || "").substring(0, 12) + '</code> — ' + escHtml(row.title || "") + '</td>' +
+        '<td>' + escHtml(row.status || "") + '</td>' +
+        '<td>-</td>' +
+        '<td><span class="meta">No GitHub issue linked</span></td>' +
+        '</tr>';
+      continue;
+    }
+    html += '<tr>' +
+      '<td><code>' + (row.ticket_id || "").substring(0, 12) + '</code> — ' + escHtml(row.title || "") + '</td>' +
+      '<td>' + escHtml(row.status || "") + '</td>' +
+      '<td><a href="' + actions.view + '" target="_blank">Issue</a></td>' +
+      '<td><div class="actions">' +
+      '<a class="btn-link" href="' + actions.assign + '" target="_blank">Assign</a>' +
+      '<a class="btn-link" href="' + actions.update + '" target="_blank">Update</a>' +
+      '<a class="btn-link" href="' + actions.comment + '" target="_blank">Comment</a>' +
+      '<a class="btn-link" href="' + actions.link + '" target="_blank">Link</a>' +
+      '</div></td>' +
+      '</tr>';
+  }
+  html += '</tbody></table>';
+  if (totalActionable > MAX_ACTIONABLE_TICKETS) {
+    html += '<div class="meta" style="margin-top:0.75rem;">Showing first ' +
+      MAX_ACTIONABLE_TICKETS + ' of ' + totalActionable + ' actionable tickets.</div>';
+  }
+  target.innerHTML = html;
+}
+
+function setupTabs() {
+  var buttons = document.querySelectorAll(".tab-btn");
+
+  for (var i = 0; i < buttons.length; i++) {
+    buttons[i].addEventListener("click", function() {
+      var target = this.getAttribute("data-tab-target");
+      var activeBtn = document.querySelector(".tab-btn.active");
+      if (activeBtn) activeBtn.classList.remove("active");
+      var activePanel = document.querySelector(".tab-panel.active");
+      if (activePanel) activePanel.classList.remove("active");
+      this.classList.add("active");
+      var panel = document.querySelector('.tab-panel[data-tab-panel="' + target + '"]');
+      if (panel) panel.classList.add("active");
+    });
+  }
+}
 </script>
 </body>
 </html>

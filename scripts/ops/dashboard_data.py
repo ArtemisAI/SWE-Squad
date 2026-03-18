@@ -29,6 +29,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.swe_team.models import SWETicket, TicketSeverity, TicketStatus
 
 logger = logging.getLogger(__name__)
+MAX_WEBUI_TITLE_LENGTH = 120
 
 # Status file path (same as swe_cli.py)
 STATUS_PATH = PROJECT_ROOT / "data" / "swe_team" / "status.json"
@@ -69,6 +70,27 @@ def _ticket_github_url(ticket: SWETicket) -> Optional[str]:
     if issue_num and repo:
         return f"https://github.com/{repo}/issues/{issue_num}"
     return None
+
+
+def _bucket_ticket_status(status: TicketStatus) -> str:
+    """Map lifecycle statuses into WebUI buckets."""
+    if status in {
+        TicketStatus.RESOLVED,
+        TicketStatus.CLOSED,
+        TicketStatus.ROLLED_BACK,
+    }:
+        return "closed"
+    if status in {
+        TicketStatus.INVESTIGATING,
+        TicketStatus.INVESTIGATION_COMPLETE,
+        TicketStatus.IN_DEVELOPMENT,
+        TicketStatus.IN_REVIEW,
+        TicketStatus.TESTING,
+        TicketStatus.DEPLOYING,
+        TicketStatus.MONITORING,
+    }:
+        return "in_progress"
+    return "open"
 
 
 def generate_dashboard_data(
@@ -161,6 +183,40 @@ def generate_dashboard_data(
 
     # Sort by timestamp descending
     recent_activity.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+
+    # ── Ticket lists for WebUI tabs/actioning ───────────────────────────
+    tickets_by_state: Dict[str, List[Dict[str, Any]]] = {
+        "open": [],
+        "in_progress": [],
+        "closed": [],
+    }
+    for t in all_tickets:
+        meta = t.metadata or {}
+        gh_url = _ticket_github_url(t)
+        issue_num = meta.get("github_issue_number") or meta.get("issue_number")
+        issue_num_str = str(issue_num) if issue_num is not None else ""
+        ticket_row = {
+            "ticket_id": t.ticket_id,
+            "title": t.title[:MAX_WEBUI_TITLE_LENGTH],
+            "severity": t.severity.value,
+            "status": t.status.value,
+            "assigned_to": t.assigned_to or "",
+            "updated_at": t.updated_at,
+            "related_tickets": list(t.related_tickets),
+            "github_issue_number": issue_num_str,
+            "github_url": gh_url or "",
+            "github_actions": {
+                "view": gh_url or "",
+                "assign": gh_url or "",
+                "update": f"{gh_url}/edit" if gh_url else "",
+                "comment": f"{gh_url}#new_comment_field" if gh_url else "",
+                "link": f"{gh_url}#event-link-issue" if gh_url else "",
+            },
+        }
+        tickets_by_state[_bucket_ticket_status(t.status)].append(ticket_row)
+
+    for bucket in tickets_by_state.values():
+        bucket.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
 
     # ── Agent performance ──────────────────────────────────────────────
     investigations_24h = 0
@@ -258,6 +314,7 @@ def generate_dashboard_data(
     return {
         "ticket_summary": ticket_summary,
         "recent_activity": recent_activity,
+        "tickets_by_state": tickets_by_state,
         "agent_performance": agent_performance,
         "memory_stats": memory_stats,
         "rate_limit_events_24h": rate_limit_events_24h,

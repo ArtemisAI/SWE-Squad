@@ -240,6 +240,7 @@ class TestGenerateDashboardData:
 
         assert "ticket_summary" in data
         assert "recent_activity" in data
+        assert "tickets_by_state" in data
         assert "agent_performance" in data
         assert "memory_stats" in data
         assert "rate_limit_events_24h" in data
@@ -287,6 +288,38 @@ class TestGenerateDashboardData:
         assert isinstance(recent, list)
         # At least some tickets should appear (the ones with recent timestamps)
         assert len(recent) >= 1
+
+    def test_tickets_by_state_buckets(self, ticket_store, status_file):
+        store, _ = ticket_store
+        with patch("scripts.ops.dashboard_data.STATUS_PATH", status_file):
+            data = generate_dashboard_data(store)
+
+        buckets = data["tickets_by_state"]
+        assert len(buckets["open"]) == 2  # t001 open + t003 triaged
+        assert len(buckets["in_progress"]) == 3  # t002 + t005 + t006
+        assert len(buckets["closed"]) == 1  # t004 resolved
+
+    def test_tickets_by_state_includes_github_actions(self, tmp_dir, status_file):
+        store_path = tmp_dir / "gh_actions_tickets.json"
+        store = TicketStore(str(store_path))
+        now = datetime.now(timezone.utc).isoformat()
+        store.add(SWETicket(
+            ticket_id="gha001",
+            title="GitHub linked ticket",
+            description="test",
+            severity=TicketSeverity.HIGH,
+            status=TicketStatus.OPEN,
+            updated_at=now,
+            metadata={"github_url": "https://github.com/org/repo/issues/77"},
+        ))
+
+        with patch("scripts.ops.dashboard_data.STATUS_PATH", status_file):
+            data = generate_dashboard_data(store)
+
+        row = data["tickets_by_state"]["open"][0]
+        actions = row["github_actions"]
+        assert actions["view"] == "https://github.com/org/repo/issues/77"
+        assert actions["comment"].endswith("#new_comment_field")
 
     def test_recent_activity_sorted_descending(self, ticket_store, status_file):
         store, _ = ticket_store
@@ -703,6 +736,18 @@ class TestRenderDashboardHtml:
         html = render_dashboard_html(data)
         assert "setInterval" in html
         assert "5 * 60 * 1000" in html  # 5 minutes
+
+    def test_html_contains_webui_tabs(self, ticket_store, status_file):
+        store, _ = ticket_store
+        with patch("scripts.ops.dashboard_data.STATUS_PATH", status_file):
+            data = generate_dashboard_data(store)
+
+        html = render_dashboard_html(data)
+        assert "Overview" in html
+        assert "Open Bugs" in html
+        assert "WIP Bugs" in html
+        assert "Closed Bugs" in html
+        assert "Issue Actions" in html
 
     def test_html_severity_classes(self, ticket_store, status_file):
         """HTML includes severity CSS classes."""
