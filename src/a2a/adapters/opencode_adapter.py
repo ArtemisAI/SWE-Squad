@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
 import urllib.request
 from typing import Any, Dict, List, Optional
 
@@ -35,7 +37,7 @@ from src.a2a.adapters.generic_cli_adapter import GenericCLIAdapter
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_OPENCODE_PATH = "/usr/local/bin/opencode"
+_DEFAULT_OPENCODE_PATH = os.environ.get("OPENCODE_CLI_PATH", "") or shutil.which("opencode") or "/usr/local/bin/opencode"
 _DEFAULT_TIMEOUT = 180
 
 # Skills advertised by the OpenCode adapter

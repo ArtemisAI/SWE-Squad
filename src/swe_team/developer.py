@@ -8,6 +8,8 @@ and only keep changes that pass tests and complexity gates.
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 import subprocess
 import sys
 import time
@@ -27,7 +29,7 @@ logger = logging.getLogger(__name__)
 _FallbackAgent = Any
 
 _DEFAULT_PROGRAM_PATH = Path("config/swe_team/programs/fix.md")
-_DEFAULT_CLAUDE_PATH = "/usr/bin/claude"
+_DEFAULT_CLAUDE_PATH = os.environ.get("CLAUDE_CLI_PATH", "") or shutil.which("claude") or "/usr/bin/claude"
 _DEFAULT_MAX_ATTEMPTS = 3
 _BUG_TIMEBOX_SECONDS = 15 * 60
 _FEATURE_TIMEBOX_SECONDS = 30 * 60
@@ -73,6 +75,13 @@ class DeveloperAgent:
 
     def attempt_fix(self, ticket: SWETicket) -> bool:
         """Run the keep/discard loop for *ticket*."""
+        # RBAC: enforce code_generation permission before any fix attempt
+        from src.swe_team.agent_rbac import check_permission
+        allowed, reason = check_permission("claude-code", "code_generation")
+        if not allowed:
+            logger.critical("RBAC blocked code generation: %s", reason)
+            raise RuntimeError(f"RBAC: {reason}")
+
         # Preflight: validate execution context before doing any work
         preflight_result = self._run_preflight()
         if not preflight_result.passed:
@@ -126,6 +135,20 @@ class DeveloperAgent:
                     lambda: self._run_claude(prompt, timeout=self._remaining(deadline), model=model),
                     context=model,
                 )
+
+                # Record token usage (best-effort, never blocks development)
+                try:
+                    from src.swe_team.token_tracker import TokenTracker
+                    tracker = TokenTracker()
+                    tracker.record(
+                        model=model,
+                        input_tokens=_estimate_tokens(prompt),
+                        output_tokens=_estimate_tokens(""),  # developer _run_claude returns None
+                        task="develop",
+                        ticket_id=ticket.ticket_id,
+                    )
+                except Exception:
+                    pass
 
                 tests_ok, test_error = self._run_tests(deadline)
                 if not tests_ok:
@@ -326,6 +349,10 @@ class DeveloperAgent:
         except (KeyError, ValueError) as exc:
             logger.warning("Invalid fix.md template: %s", exc)
             return None
+
+        # Include orchestration plan in fix prompt if available
+        if ticket.metadata.get("orchestration_plan"):
+            prompt += f"\n\n## Orchestration Plan\n{ticket.metadata['orchestration_plan']}\n"
 
         # Ralph Wiggum loop: feed previous failure into the next attempt
         if last_error and attempt > 1:

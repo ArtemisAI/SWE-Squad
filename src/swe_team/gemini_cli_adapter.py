@@ -35,10 +35,12 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
 import shutil
+import tempfile
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -66,14 +68,11 @@ _RATE_LIMIT_KEYWORDS = ("429", "rate limit", "quota", "resource exhausted", "too
 _MAX_RETRIES = 4
 _INITIAL_BACKOFF_SECONDS = 60       # 60s → 120s → 240s → 480s
 _COOLDOWN_SECONDS = 900             # 15 min cooldown after all retries exhausted
-_COOLDOWN_FILE = Path("/tmp/gemini_cli_cooldown.lock")
+_COOLDOWN_FILE = Path(os.environ.get("SWE_DATA_DIR", tempfile.gettempdir())) / "gemini_cli_cooldown.lock"
 
 # Model failover chain — try progressively cheaper/less-limited models
-_MODEL_FAILOVER_CHAIN = [
-    "gemini-3-pro-high",
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
-]
+_DEFAULT_MODELS = ["gemini-2.5-flash-thinking", "gemini-2.5-pro", "gemini-2.5-flash"]
+_MODEL_FAILOVER_CHAIN = json.loads(os.environ.get("GEMINI_MODELS", "null")) or _DEFAULT_MODELS
 
 
 class GeminiCLIAdapter:
@@ -90,9 +89,11 @@ class GeminiCLIAdapter:
         model: str = _DEFAULT_MODEL,
         max_prompt_chars: int = 50_000,  # stay well within context, keep cost low
         skills: Optional[List[str]] = None,
+        models: Optional[List[str]] = None,
     ) -> None:
         self._command = command or os.environ.get("GEMINI_CLI_PATH", _DEFAULT_GEMINI_CMD)
         self._model = model
+        self._models = json.loads(os.environ.get("GEMINI_MODELS", "null")) or models or _DEFAULT_MODELS
         self._max_prompt_chars = max_prompt_chars
         self._name = "gemini-cli"
         self._skills: List[str] = skills or ["investigate", "review", "dashboard", "websearch"]
@@ -183,7 +184,7 @@ class GeminiCLIAdapter:
         # Start with configured model
         chain.append(self._model)
         # Add remaining failover models not already in chain
-        for model in _MODEL_FAILOVER_CHAIN:
+        for model in self._models:
             if model not in chain:
                 chain.append(model)
         return chain

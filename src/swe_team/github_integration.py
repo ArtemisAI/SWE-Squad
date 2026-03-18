@@ -22,6 +22,10 @@ _REPO = os.environ.get("SWE_GITHUB_REPO", "")
 _ESCALATION_ASSIGNEE = os.environ.get("SWE_GITHUB_ACCOUNT", "")
 _TITLE_PREFIX = "[SWE-AUTO]"
 
+_LABEL_TEAM = os.environ.get("SWE_LABEL_TEAM", "swe-team")
+_LABEL_HITL = os.environ.get("SWE_LABEL_HITL", "needs-human-review")
+_LABEL_AUTO = os.environ.get("SWE_LABEL_AUTO", "auto-detected")
+
 
 def create_github_issue(ticket: SWETicket) -> Optional[int]:
     """Create a GitHub issue from a SWE ticket. Returns issue number or None.
@@ -58,7 +62,7 @@ def create_github_issue(ticket: SWETicket) -> Optional[int]:
     body = "\n".join(body_parts)
 
     severity_label = f"severity: {ticket.severity.value}"
-    labels = f"swe-team,auto-detected,{severity_label}"
+    labels = f"{_LABEL_TEAM},{_LABEL_AUTO},{severity_label}"
 
     try:
         result = subprocess.run(
@@ -180,7 +184,7 @@ def escalate_to_human(
     try:
         subprocess.run(
             ["gh", "issue", "edit", str(issue_number), "--repo", target_repo,
-             "--add-label", "needs-human-review"],
+             "--add-label", _LABEL_HITL],
             capture_output=True, text=True, timeout=20,
         )
     except Exception:
@@ -190,7 +194,7 @@ def escalate_to_human(
     try:
         subprocess.run(
             ["gh", "issue", "edit", str(issue_number), "--repo", target_repo,
-             "--remove-label", "swe-team"],
+             "--remove-label", _LABEL_TEAM],
             capture_output=True, text=True, timeout=20,
         )
     except Exception:

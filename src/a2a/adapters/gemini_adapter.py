@@ -19,13 +19,15 @@ Usage::
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 from typing import Any, Dict, List, Optional
 
 from src.a2a.adapters.generic_cli_adapter import GenericCLIAdapter
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_GEMINI_PATH = "/usr/bin/gemini"
+_DEFAULT_GEMINI_PATH = os.environ.get("GEMINI_CLI_PATH", "") or shutil.which("gemini") or "/usr/bin/gemini"
 _DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 _DEFAULT_TIMEOUT = 120
 

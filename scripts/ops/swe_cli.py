@@ -579,6 +579,51 @@ def _report_dashboard() -> int:
         return 1
 
 
+def cmd_roles(args: argparse.Namespace) -> int:
+    """Display RBAC role definitions."""
+    from src.swe_team.agent_rbac import get_rbac_engine
+    engine = get_rbac_engine()
+    roles = engine.list_roles()
+    if not roles:
+        print("No roles defined. Create config/swe_team/roles.yaml")
+        return 0
+    for name, role in roles.items():
+        status = "ENABLED" if role.enabled else "DISABLED"
+        perms = ", ".join(sorted(role.permissions))
+        denies = ", ".join(sorted(role.deny)) if role.deny else "—"
+        print(f"\n[{status}] {name}: {role.description}")
+        print(f"  Permissions: {perms}")
+        print(f"  Deny: {denies}")
+        print(f"  Models: {', '.join(role.models) or '—'}")
+    return 0
+
+
+def cmd_costs(args: argparse.Namespace) -> int:
+    """Show token usage and cost summary."""
+    from src.swe_team.token_tracker import TokenTracker
+    tracker = TokenTracker()
+    summary = tracker.summary()
+
+    if args.json:
+        print(json.dumps(summary, indent=2))
+        return 0
+
+    print(f"Total cost: ${summary['total_cost_usd']:.4f}")
+    print(f"Today's spend: ${summary['daily_spend']:.4f}")
+    print(f"Total records: {summary['total_records']}")
+    print()
+
+    if summary['by_model']:
+        print(f"{'Model':<15} {'Calls':<8} {'Input Tokens':<15} {'Output Tokens':<16} {'Cost'}")
+        print("-" * 70)
+        for model, data in summary['by_model'].items():
+            print(f"{model:<15} {data['calls']:<8} {data['input_tokens']:<15} {data['output_tokens']:<16} ${data['cost_usd']:.4f}")
+    else:
+        print("No token usage recorded yet.")
+
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     """Start the live dashboard web server."""
     from scripts.ops.dashboard_server import main as serve_main
@@ -653,6 +698,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Report type: daily, status, cycle, or dashboard",
     )
     sp_report.set_defaults(func=cmd_report)
+
+    # ── roles ─────────────────────────────────────────────────────────────
+    sp_roles = subparsers.add_parser("roles", help="Display RBAC role definitions")
+    sp_roles.set_defaults(func=cmd_roles)
+
+    # ── costs ─────────────────────────────────────────────────────────────
+    sp_costs = subparsers.add_parser("costs", help="Show token usage and cost summary")
+    sp_costs.add_argument("--json", action="store_true", help="JSON output")
+    sp_costs.set_defaults(func=cmd_costs)
 
     # serve — live dashboard web server
     p_serve = subparsers.add_parser("serve", help="Start live dashboard web server")

@@ -1015,6 +1015,31 @@ def run_cycle(
         )
         for ticket in investigated:
             if ticket.investigation_report and ticket.severity.value in ("critical", "high"):
+                # Opus orchestration for CRITICAL tickets
+                if ticket.severity.value == "critical" and not ticket.metadata.get("orchestration_plan"):
+                    try:
+                        from src.swe_team.orchestrator import OrchestratorAgent
+                        orchestrator = OrchestratorAgent(repo_root=PROJECT_ROOT)
+                        plan = orchestrator.plan(ticket)
+                        ticket.metadata["orchestration_plan"] = plan.to_checklist()
+                        ticket.metadata["orchestration_subtasks"] = len(plan.sub_tasks)
+
+                        # Post plan as GitHub comment
+                        issue_num = ticket.metadata.get("github_issue")
+                        repo = ticket.metadata.get("repo", "")
+                        if issue_num and repo:
+                            comment_on_github_issue(
+                                issue_num,
+                                plan.to_checklist(),
+                                repo=repo,
+                            )
+
+                        store.add(ticket)
+                        logger.info("Opus orchestration plan created for %s: %d sub-tasks",
+                                     ticket.ticket_id, len(plan.sub_tasks))
+                    except Exception:
+                        logger.exception("Orchestration failed for %s — falling back to direct fix", ticket.ticket_id)
+
                 try:
                     fix_ok = dev.attempt_fix(ticket)
                     store.add(ticket)  # persist fix result

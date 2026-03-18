@@ -20,13 +20,32 @@ import os
 import re
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from src.swe_team.config import MonitorConfig
 from src.swe_team.events import SWEEvent, SWEEventType
 from src.swe_team.models import SWETicket, TicketSeverity
 
 logger = logging.getLogger(__name__)
+
+# Default modules detected from file path components
+_DEFAULT_PATH_MODULES: Tuple[str, ...] = (
+    "scraping", "evaluation", "cv_tailoring", "application",
+    "easy_apply", "a2a", "database", "auth", "swe_team",
+)
+
+# Default keyword-to-module mapping for log content detection
+_DEFAULT_CONTENT_MODULE_MAP: List[Tuple[Tuple[str, ...], str]] = [
+    (("scraper", "scraping", "job_scraper", "playwright", "cdp", "selector"), "scraping"),
+    (("apply", "applicant", "recipe", "goose", "submission"), "application"),
+    (("auth", "session", "login", "cookie", "li_at", "chrome"), "auth"),
+    (("evaluat", "scoring", "ko_system", "sbert", "embedding"), "evaluation"),
+    (("enrich", "company_research", "google_jobs"), "scraping"),
+    (("database", "supabase", "asyncpg", "postgresql", "migration"), "database"),
+    (("a2a", "dispatch", "event_handler", "hub"), "a2a"),
+    (("telegram", "notification", "alert"), "notifications"),
+    (("health", "daemon", "monitor"), "infrastructure"),
+]
 
 
 def _severity_from_pattern(pattern: str) -> TicketSeverity:
@@ -78,9 +97,13 @@ class MonitorAgent:
         self,
         config: MonitorConfig,
         known_fingerprints: Optional[Set[str]] = None,
+        known_modules: Optional[Sequence[str]] = None,
     ) -> None:
         self._config = config
         self._known: Set[str] = known_fingerprints or set()
+        self._known_path_modules: Tuple[str, ...] = (
+            tuple(known_modules) if known_modules is not None else _DEFAULT_PATH_MODULES
+        )
         # Compile patterns once
         self._pattern_re = re.compile(
             "|".join(re.escape(p) for p in config.log_patterns)
@@ -187,7 +210,7 @@ class MonitorAgent:
 
             pattern = match.group()
             severity = _severity_from_pattern(pattern)
-            module = _guess_module(str(log_file), line)
+            module = _guess_module(str(log_file), line, path_modules=self._known_path_modules)
 
             ticket = SWETicket(
                 title=f"[{pattern}] {line.strip()[:120]}",
@@ -210,36 +233,38 @@ class MonitorAgent:
 # Helpers
 # ------------------------------------------------------------------
 
-def _guess_module(file_path: str, line: str = "") -> str:
-    """Best-effort guess of the source module from path AND log content."""
-    # First check path components (original logic)
+def _guess_module(
+    file_path: str,
+    line: str = "",
+    *,
+    path_modules: Tuple[str, ...] = _DEFAULT_PATH_MODULES,
+    content_module_map: Optional[List[Tuple[Tuple[str, ...], str]]] = None,
+) -> str:
+    """Best-effort guess of the source module from path AND log content.
+
+    Parameters
+    ----------
+    file_path:
+        The log file path to inspect.
+    line:
+        The matching log line content.
+    path_modules:
+        Tuple of module names to check against path components.
+    content_module_map:
+        List of (keywords, module_name) tuples for content-based detection.
+        Falls back to ``_DEFAULT_CONTENT_MODULE_MAP`` when not provided.
+    """
+    # First check path components
     parts = Path(file_path).parts
-    for known in (
-        "scraping", "evaluation", "cv_tailoring", "application",
-        "easy_apply", "a2a", "database", "auth", "swe_team",
-    ):
+    for known in path_modules:
         if known in parts:
             return known
 
     # Then check log content for module signatures
+    mapping = content_module_map if content_module_map is not None else _DEFAULT_CONTENT_MODULE_MAP
     content = line.lower()
-    if any(kw in content for kw in ("scraper", "scraping", "job_scraper", "playwright", "cdp", "selector")):
-        return "scraping"
-    if any(kw in content for kw in ("apply", "applicant", "recipe", "goose", "submission")):
-        return "application"
-    if any(kw in content for kw in ("auth", "session", "login", "cookie", "li_at", "chrome")):
-        return "auth"
-    if any(kw in content for kw in ("evaluat", "scoring", "ko_system", "sbert", "embedding")):
-        return "evaluation"
-    if any(kw in content for kw in ("enrich", "company_research", "google_jobs")):
-        return "scraping"
-    if any(kw in content for kw in ("database", "supabase", "asyncpg", "postgresql", "migration")):
-        return "database"
-    if any(kw in content for kw in ("a2a", "dispatch", "event_handler", "hub")):
-        return "a2a"
-    if any(kw in content for kw in ("telegram", "notification", "alert")):
-        return "notifications"
-    if any(kw in content for kw in ("health", "daemon", "monitor")):
-        return "infrastructure"
+    for keywords, module_name in mapping:
+        if any(kw in content for kw in keywords):
+            return module_name
 
     return "unknown"

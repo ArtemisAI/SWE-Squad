@@ -356,8 +356,8 @@ class TestShouldRun(unittest.TestCase):
         self.assertFalse(ok)
 
     def test_defers_normal_during_peak(self):
-        # Create a time window where it's always peak
-        tw = TimeWindow(peak_start_hour=0, peak_end_hour=23, peak_days=list(range(7)))
+        # Create a time window where it's always peak (0 <= hour < 24)
+        tw = TimeWindow(peak_start_hour=0, peak_end_hour=24, peak_days=list(range(7)))
         sched = self._make_scheduler(time_window=tw)
         job = self._make_job(
             priority=JobPriority.NORMAL,
@@ -368,7 +368,7 @@ class TestShouldRun(unittest.TestCase):
         self.assertIn("peak", reason)
 
     def test_defers_low_during_peak(self):
-        tw = TimeWindow(peak_start_hour=0, peak_end_hour=23, peak_days=list(range(7)))
+        tw = TimeWindow(peak_start_hour=0, peak_end_hour=24, peak_days=list(range(7)))
         sched = self._make_scheduler(time_window=tw)
         job = self._make_job(
             priority=JobPriority.LOW,
@@ -379,7 +379,7 @@ class TestShouldRun(unittest.TestCase):
         self.assertIn("peak", reason)
 
     def test_critical_ignores_peak(self):
-        tw = TimeWindow(peak_start_hour=0, peak_end_hour=23, peak_days=list(range(7)))
+        tw = TimeWindow(peak_start_hour=0, peak_end_hour=24, peak_days=list(range(7)))
         sched = self._make_scheduler(time_window=tw)
         job = self._make_job(
             priority=JobPriority.CRITICAL,

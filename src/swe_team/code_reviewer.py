@@ -378,6 +378,13 @@ class CodeReviewerAgent:
 
     def _merge_pr(self, pr_number: int, repo: str) -> None:
         """Squash-merge the PR and delete the branch."""
+        # RBAC: enforce pr_merge permission before merging
+        from src.swe_team.agent_rbac import check_permission
+        allowed, reason = check_permission("claude-code", "pr_merge")
+        if not allowed:
+            logger.critical("RBAC blocked PR merge: %s", reason)
+            return
+
         # SEC-68: Prevent self-merge — log but allow for now (enforcement comes later)
         logger.warning(
             "SEC-68 AUDIT: Auto-merge of PR #%s — ensure human review occurred",

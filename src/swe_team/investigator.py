@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -33,7 +34,7 @@ _FallbackAgent = Any
 _DEFAULT_PROGRAM_PATH = Path("config/swe_team/programs/investigate.md")
 _ORCHESTRATE_PROGRAM_PATH = Path("config/swe_team/programs/orchestrate.md")
 _FEATURE_PROGRAM_PATH = Path("config/swe_team/programs/feature.md")
-_DEFAULT_CLAUDE_PATH = "/usr/bin/claude"
+_DEFAULT_CLAUDE_PATH = os.environ.get("CLAUDE_CLI_PATH", "") or shutil.which("claude") or "/usr/bin/claude"
 _DEFAULT_TIMEOUT = 300  # 5 min — LinkedAi codebase is large; 120s was timing out every Sonnet run
 _OPUS_TIMEOUT = 600  # Opus gets 10 min — it orchestrates multiple sub-agents
 _DEFAULT_MAX_PER_CYCLE = 5
@@ -213,6 +214,24 @@ class InvestigatorAgent:
             return False
 
         cost = _parse_cost(stderr) or _parse_cost(stdout)
+
+        # Record token usage (best-effort, never blocks investigation)
+        try:
+            from src.swe_team.token_tracker import TokenTracker
+            tracker = TokenTracker()
+            input_tokens = _estimate_tokens(prompt)
+            output_tokens = _estimate_tokens(stdout)
+            tracker.record(
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                task="investigate",
+                ticket_id=ticket.ticket_id if hasattr(ticket, 'ticket_id') else "",
+                session_id=ticket.metadata.get("trace_id", "") if hasattr(ticket, 'metadata') else "",
+            )
+        except Exception:
+            pass  # Token tracking is best-effort, never blocks
+
         ticket.investigation_report = report
         ticket.transition(TicketStatus.INVESTIGATION_COMPLETE)
         ticket.metadata["investigation"] = {
