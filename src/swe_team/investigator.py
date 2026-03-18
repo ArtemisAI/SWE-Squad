@@ -8,6 +8,7 @@ report to the ticket for downstream development automation.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
 import time
@@ -59,6 +60,7 @@ class InvestigatorAgent:
         rate_limit_config: Optional[object] = None,
         rate_limit_tracker: Optional[RateLimitTracker] = None,
         fallback_agents: Optional[List[_FallbackAgent]] = None,
+        repo_paths: Optional[List[dict]] = None,
     ) -> None:
         self._program_path = Path(program_path)
         self._claude_path = claude_path
@@ -70,6 +72,7 @@ class InvestigatorAgent:
         self._program_cache: Optional[str] = None
         self._model_config = model_config
         self._fallback_agents: List[_FallbackAgent] = fallback_agents or []
+        self._repo_paths: List[dict] = repo_paths or []
 
         # Rate limit backoff
         rl = rate_limit_config
@@ -537,18 +540,33 @@ class InvestigatorAgent:
             return heavy
         return standard
 
-    # Mapping of GitHub repo slug → local clone path
-    _REPO_PATHS: dict[str, Path] = {
-        "ArtemisAI/LinkedAi": Path("/home/agent/Projects/LinkedAi"),
-        "ArtemisAI/SWE-Squad-DEV": Path("/home/agent/SWE-Squad"),
-    }
+    def _get_repo_path(self, repo: str) -> Optional[Path]:
+        """Get local path for a repo from config (swe_team.yaml repos list).
+
+        Lookup order:
+        1. ``repos`` list from SWETeamConfig (loaded from swe_team.yaml)
+        2. ``SWE_REPO_PATH`` environment variable (single-repo fallback)
+        """
+        # Config-driven lookup (repos list from swe_team.yaml, passed via repo_paths)
+        for repo_cfg in self._repo_paths:
+            if repo_cfg.get("name") == repo:
+                path = Path(repo_cfg.get("local_path", ""))
+                if path.is_dir():
+                    return path
+        # Fallback: environment variable
+        env_path = os.environ.get("SWE_REPO_PATH")
+        if env_path:
+            p = Path(env_path)
+            if p.is_dir():
+                return p
+        return None
 
     def _repo_cwd(self, ticket: "SWETicket") -> Optional[Path]:
         """Return the local clone path for the ticket's repo, or None."""
         repo = ticket.metadata.get("repo") or ticket.metadata.get("github_repo")
         if not repo:
             return None
-        path = self._REPO_PATHS.get(repo)
+        path = self._get_repo_path(repo)
         if path and path.is_dir():
             return path
         logger.warning("investigator: repo '%s' not cloned locally — running in SWE-Squad root", repo)

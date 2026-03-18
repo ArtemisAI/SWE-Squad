@@ -19,6 +19,7 @@ from src.swe_team.session import make_session_tag, session_header
 logger = logging.getLogger(__name__)
 
 _REPO = os.environ.get("SWE_GITHUB_REPO", "")
+_ESCALATION_ASSIGNEE = os.environ.get("SWE_GITHUB_ACCOUNT", "")
 _TITLE_PREFIX = "[SWE-AUTO]"
 
 
@@ -129,11 +130,11 @@ def escalate_to_human(
     reason: str,
     repo: str = "",
 ) -> bool:
-    """Escalate a GitHub issue to @ArtemisAI for human intervention.
+    """Escalate a GitHub issue to the configured assignee for human intervention.
 
     - Posts a structured HITL comment
     - Adds the ``needs-human-review`` label
-    - Assigns @ArtemisAI as issue owner
+    - Assigns the configured ``SWE_GITHUB_ACCOUNT`` user as issue owner
     - Removes the ``swe-team`` label so the squad stops iterating
 
     Returns True if all steps succeeded.
@@ -143,6 +144,9 @@ def escalate_to_human(
         logger.warning("escalate_to_human: no repo configured, skipping")
         return False
 
+    assignee = _ESCALATION_ASSIGNEE
+    mention = f"@{assignee}" if assignee else "the repository owner"
+
     comment = (
         "## 🙋 Human Intervention Required\n\n"
         f"**Ticket:** `{ticket_id}`\n\n"
@@ -150,7 +154,7 @@ def escalate_to_human(
         "SWE-Squad has determined this issue **cannot be resolved automatically** "
         "because it requires access to external accounts, credentials, infrastructure, "
         "or a compliance/policy decision outside the agent's authority.\n\n"
-        "**Action required from @ArtemisAI:**\n"
+        f"**Action required from {mention}:**\n"
         f"{reason}\n\n"
         "Once resolved, please add a comment describing the action taken and close or "
         "re-label this issue so the pipeline can resume.\n\n"
@@ -192,17 +196,18 @@ def escalate_to_human(
     except Exception:
         pass
 
-    # 4. Assign to ArtemisAI
-    try:
-        subprocess.run(
-            ["gh", "issue", "edit", str(issue_number), "--repo", target_repo,
-             "--add-assignee", "ArtemisAI"],
-            capture_output=True, text=True, timeout=20,
-        )
-    except Exception:
-        pass
+    # 4. Assign to configured escalation user
+    if assignee:
+        try:
+            subprocess.run(
+                ["gh", "issue", "edit", str(issue_number), "--repo", target_repo,
+                 "--add-assignee", assignee],
+                capture_output=True, text=True, timeout=20,
+            )
+        except Exception:
+            pass
 
-    logger.info("Escalated issue #%d to human:ArtemisAI | %s", issue_number, reason[:80])
+    logger.info("Escalated issue #%d to human:%s | %s", issue_number, assignee or "unset", reason[:80])
     return ok
 
 

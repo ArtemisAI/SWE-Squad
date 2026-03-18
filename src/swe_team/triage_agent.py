@@ -12,13 +12,15 @@ HITL Detection
 Before routing to an investigator, triage checks for patterns that are
 inherently un-automatable (external account access, credential rotation,
 CAPTCHA, regulatory decisions, etc.).  These tickets are flagged with
-``metadata["needs_hitl"] = True`` and assigned to ``human:ArtemisAI``
-so the automation pipeline skips them and GitHub surfaces the escalation.
+``metadata["needs_hitl"] = True`` and assigned to the configured HITL
+assignee (``SWE_HITL_ASSIGNEE`` env var, default ``ArtemisAI``) so the
+automation pipeline skips them and GitHub surfaces the escalation.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Dict, List, Optional, Tuple
 
@@ -104,7 +106,7 @@ class TriageAgent:
     """Classifies and routes tickets to the right SWE sub-team.
 
     Triage rules (in order):
-    1. HITL detection → flag and assign to human:ArtemisAI (skip automation)
+    1. HITL detection → flag and assign to human:{SWE_HITL_ASSIGNEE} (skip automation)
     2. Already-flagged tickets (needs_hitl in metadata) → reassert assignment
     3. CRITICAL tickets → first available investigator (any speciality)
     4. Module-specific tickets → specialised investigator if available
@@ -112,11 +114,11 @@ class TriageAgent:
     """
 
     AGENT_NAME = "swe_triage"
-    HUMAN_ASSIGNEE = "human:ArtemisAI"
-
     def __init__(self, config: SWETeamConfig) -> None:
         self._config = config
         self._investigators = config.get_agents_by_role(AgentRole.INVESTIGATOR)
+        _assignee = os.environ.get("SWE_HITL_ASSIGNEE", "ArtemisAI")
+        self.HUMAN_ASSIGNEE = f"human:{_assignee}"
 
     # ------------------------------------------------------------------
     # Public API
@@ -140,9 +142,10 @@ class TriageAgent:
             ticket.assigned_to = self.HUMAN_ASSIGNEE
             ticket.transition(TicketStatus.TRIAGED)
             logger.warning(
-                "HITL escalation: ticket %s (%s) → human:ArtemisAI | %s",
+                "HITL escalation: ticket %s (%s) → %s | %s",
                 ticket.ticket_id,
                 ticket.severity.value,
+                self.HUMAN_ASSIGNEE,
                 reason,
             )
             return ticket

@@ -1,0 +1,86 @@
+# Agent Role Definitions — RBAC enforcement for SWE-Squad
+# Deny-by-default: unlisted permissions are denied
+# Explicit deny wins over any grant
+
+roles:
+  claude-code:
+    description: "Primary coding and orchestration agent"
+    enabled: true
+    permissions:
+      - code_generation
+      - code_review
+      - pr_create
+      - pr_merge
+      - investigation
+      - orchestration
+      - commit
+      - branch_create
+      - triage
+      - summarization
+      - search
+      - dashboard
+    models: [haiku, sonnet, opus]
+    merge_policy:
+      cooldown_minutes: 30
+      require_human_approval: true
+      self_merge: false
+
+  gemini-cli:
+    description: "Investigation and summarization agent (read-only)"
+    enabled: true
+    permissions:
+      - investigation
+      - summarization
+      - triage
+      - search
+      - dashboard
+      - websearch
+    deny:
+      - code_generation
+      - pr_create
+      - pr_merge
+      - commit
+      - branch_create
+      - code_review
+    models: [gemini-2.5-flash-thinking, gemini-2.5-pro]
+
+  openclaw:
+    description: "Communication relay — messaging only"
+    enabled: true
+    permissions:
+      - messaging
+      - notification
+      - user_interaction
+      - ticket_intake
+    deny:
+      - code_generation
+      - code_review
+      - pr_create
+      - pr_merge
+      - commit
+      - investigation
+      - orchestration
+    models: []
+
+  opencode:
+    description: "Auxiliary agent (disabled by default)"
+    enabled: false
+    permissions:
+      - investigation
+      - code_review
+    deny:
+      - pr_merge
+      - orchestration
+    models: [deepseek-coder]
+
+overrides:
+  - rule: "LOW/MEDIUM bugs can be investigated by gemini-cli"
+    condition:
+      severity: [low, medium]
+      task: investigation
+    allow_agents: [gemini-cli]
+  - rule: "Only claude-code generates code"
+    condition:
+      task: [code_generation, commit, pr_create, pr_merge]
+    allow_agents: [claude-code]
+    enforce: strict

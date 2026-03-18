@@ -18,8 +18,8 @@ Usage::
 
     # Direct mode (original API)
     client = A2AClient()
-    card = client.discover("http://100.96.188.64:18790")
-    result = client.send_task("http://100.96.188.64:18790",
+    card = client.discover("http://your-hub-host:18790")
+    result = client.send_task("http://your-hub-host:18790",
                               skill_id="investigate_ticket",
                               payload={"ticket_id": "gh-17"})
 

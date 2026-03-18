@@ -123,12 +123,19 @@ def fetch_worker_logs(
     since_minutes: int = 60,
     max_lines: int = 500,
     log_pattern: str = "*.log",
+    log_dir: Optional[str] = None,
     timeout: int = 20,
 ) -> Optional[str]:
     """Fetch recent log lines from a specific worker on demand.
 
     Used by InvestigatorAgent during root-cause analysis to pull fresh logs
     from a particular worker rather than relying on the last monitor scan.
+
+    Args:
+        worker_name: SSH alias of the worker (must match ssh_workers.conf).
+        log_dir: Remote log directory. If not provided, looks up the worker
+                 in REMOTE_NODES config, then falls back to SWE_REMOTE_LOG_DIR
+                 env var, then ``~/logs``.
 
     Returns combined log tail as a string, or None on failure.
     """
@@ -137,9 +144,19 @@ def fetch_worker_logs(
         logger.warning("No SSH config found — cannot fetch worker logs")
         return None
 
+    # Resolve log directory: explicit param > config > env > default
+    effective_log_dir = log_dir
+    if not effective_log_dir:
+        for node in REMOTE_NODES:
+            if node.get("ssh") == worker_name or node.get("name") == worker_name:
+                effective_log_dir = node.get("log_dir")
+                break
+    if not effective_log_dir:
+        effective_log_dir = os.environ.get("SWE_REMOTE_LOG_DIR", "~/logs")
+
     # Build SSH command to tail recent logs on the remote
     remote_cmd = (
-        f"find ~/Projects/LinkedAi/logs -name '{log_pattern}' "
+        f"find {effective_log_dir} -name '{log_pattern}' "
         f"-mmin -{since_minutes} -type f "
         f"-exec tail -n {max_lines} {{}} + 2>/dev/null | tail -n {max_lines}"
     )

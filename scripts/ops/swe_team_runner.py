@@ -965,6 +965,7 @@ def run_cycle(
             rate_limit_config=config.rate_limits,
             rate_limit_tracker=rate_limit_tracker,
             fallback_agents=fallback_agents,
+            repo_paths=config.repos,
         )
         try:
             investigated = investigator.investigate_batch(
