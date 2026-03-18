@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, List, Optional, Tuple, Union
 
 from src.swe_team.governance import check_fix_complexity
+from src.swe_team.model_boundary import enforce_code_generation_boundary
 from src.swe_team.models import SWETicket, TicketStatus
 from src.swe_team.preflight import PreflightCheck
 from src.swe_team.rate_limiter import ExponentialBackoff, RateLimitExhausted, RateLimitTracker
@@ -119,6 +120,7 @@ class DeveloperAgent:
                 deadline = time.monotonic() + timebox
 
                 model = self._select_model(ticket)
+                enforce_code_generation_boundary(model, task="develop")
                 logger.info("Dev attempt %d for %s (model=%s)", attempt_num + 1, ticket.ticket_id, model)
                 self._backoff.execute(
                     lambda: self._run_claude(prompt, timeout=self._remaining(deadline), model=model),

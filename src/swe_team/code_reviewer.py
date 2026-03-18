@@ -378,6 +378,11 @@ class CodeReviewerAgent:
 
     def _merge_pr(self, pr_number: int, repo: str) -> None:
         """Squash-merge the PR and delete the branch."""
+        # SEC-68: Prevent self-merge — log but allow for now (enforcement comes later)
+        logger.warning(
+            "SEC-68 AUDIT: Auto-merge of PR #%s — ensure human review occurred",
+            pr_number,
+        )
         try:
             result = subprocess.run(
                 [

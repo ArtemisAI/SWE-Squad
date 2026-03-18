@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Iterable, List, Optional
 
 from src.swe_team.embeddings import embed_ticket
+from src.swe_team.model_boundary import validate_model_for_task
 from src.swe_team.remote_logs import fetch_worker_logs
 from src.swe_team.github_integration import comment_on_issue
 from src.swe_team.models import SWETicket, TicketSeverity, TicketStatus, TicketType
@@ -247,6 +248,16 @@ class InvestigatorAgent:
         for agent in self._fallback_agents:
             agent_name = getattr(agent, "_name", getattr(agent, "name", "unknown"))
             try:
+                # SEC-68: Fallback agents (non-Claude) are only allowed for
+                # read-only tasks like investigation — never for code generation
+                allowed, reason = validate_model_for_task(agent_name, "investigate")
+                if not allowed:
+                    logger.warning(
+                        "SEC-68: Fallback agent %s blocked for investigation: %s",
+                        agent_name, reason,
+                    )
+                    continue
+
                 # Check availability if the method exists
                 if hasattr(agent, "is_available") and not agent.is_available():
                     logger.info("Fallback agent %s not available, skipping", agent_name)
