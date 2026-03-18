@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from src.swe_team.models import SWETicket
 
@@ -140,7 +140,72 @@ def extract_memory_facts(ticket: SWETicket) -> str:
             max_tokens=300,
         )
         content = (resp.choices[0].message.content or "").strip()
+        # Cache facts in ticket metadata for edge extraction
+        if content:
+            ticket.metadata["memory_facts"] = content
         return content or _ticket_text(ticket)
     except Exception as exc:
         logger.warning("extract_memory_facts failed (non-fatal): %s", exc)
         return _ticket_text(ticket)
+
+
+# ---------------------------------------------------------------------------
+# Knowledge graph edge extraction — see knowledge_store.py
+# ---------------------------------------------------------------------------
+
+
+def extract_edges_from_ticket(
+    ticket: SWETicket,
+    similar_tickets: list[dict[str, Any]] | None = None,
+    *,
+    similarity_edge_threshold: float = 0.80,
+) -> list["KnowledgeEdge"]:
+    """Extract knowledge graph edges from a resolved ticket.
+
+    Called after embedding + similarity search. Creates:
+    - 'similar' edges for matches above threshold
+    - 'touches_module' edge if source_module is known
+
+    Returns edges (caller is responsible for persisting them).
+    Best-effort — returns empty list on failure.
+    """
+    from src.swe_team.models import KnowledgeEdge, EdgeType
+
+    edges: list[KnowledgeEdge] = []
+
+    # Similar ticket edges
+    if similar_tickets:
+        for match in similar_tickets:
+            raw_sim = float(match.get("raw_similarity", match.get("similarity", 0)))
+            if raw_sim >= similarity_edge_threshold:
+                target_id = str(match.get("ticket_id", ""))
+                if target_id and target_id != ticket.ticket_id:
+                    edges.append(KnowledgeEdge(
+                        source_id=ticket.ticket_id,
+                        target_id=target_id,
+                        edge_type=EdgeType.SIMILAR,
+                        confidence=raw_sim,
+                        discovered_by="embedding",
+                    ))
+
+    # Module edge
+    module = ticket.source_module
+    if not module:
+        # Try to extract from memory facts
+        facts = ticket.metadata.get("memory_facts", "")
+        if "Affected module:" in facts:
+            for line in facts.split("\n"):
+                if line.strip().startswith("Affected module:"):
+                    module = line.split(":", 1)[1].strip()
+                    break
+
+    if module and module.lower() not in ("unknown", "none", ""):
+        edges.append(KnowledgeEdge(
+            source_id=ticket.ticket_id,
+            target_id=module,
+            edge_type=EdgeType.TOUCHES_MODULE,
+            confidence=1.0,
+            discovered_by="fact_extraction",
+        ))
+
+    return edges

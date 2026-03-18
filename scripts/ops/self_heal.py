@@ -259,6 +259,59 @@ def clear_false_regressions() -> list[str]:
         return []
 
 
+# ── Tier 1: PR health check ──────────────────────────────────────────────────
+
+def check_pr_health() -> list[str]:
+    """Tier 1: Check for stale and conflicting PRs.
+
+    Returns list of alert messages (empty = all healthy).
+    """
+    alerts: list[str] = []
+    try:
+        from src.swe_team.knowledge_store import KnowledgeGraphStore
+        from src.swe_team.models import EdgeType
+    except ImportError:
+        return alerts
+
+    try:
+        team_id = os.environ.get("SWE_TEAM_ID", "default")
+        store = KnowledgeGraphStore(team_id=team_id)
+
+        open_prs = store.list_open_prs()
+        if not open_prs:
+            return alerts
+
+        now = _now()
+
+        for pr in open_prs:
+            # Stale PR check (>48h without review)
+            try:
+                created = datetime.fromisoformat(pr.created_at.replace("Z", "+00:00"))
+                age = now - created
+                if age > timedelta(hours=48) and pr.review_status == "pending":
+                    msg = f"Stale PR: {pr.pr_id} ({pr.title[:50]}) — open {age.days}d without review"
+                    alerts.append(msg)
+                    logger.warning(msg)
+            except (ValueError, TypeError):
+                pass
+
+            # Conflict check
+            try:
+                edges = store.get_edges(pr.pr_id, edge_type=EdgeType.CONFLICTS_WITH)
+                if edges:
+                    targets = [e.target_id if e.source_id == pr.pr_id else e.source_id for e in edges]
+                    msg = f"PR conflict: {pr.pr_id} conflicts with {', '.join(targets[:3])}"
+                    alerts.append(msg)
+                    logger.warning(msg)
+            except Exception:
+                pass
+
+    except Exception:
+        logger.warning("PR health check failed (non-fatal)", exc_info=True)
+
+    return alerts
+
+
 # ── Tier 2 detection: log error rate ─────────────────────────────────────────
 
 def count_recent_errors() -> tuple[int, list[str]]:
@@ -396,6 +449,14 @@ def main() -> None:
     fixed_reg = clear_false_regressions()
     if fixed_reg:
         actions_taken.append(f"cleared_false_regressions:{len(fixed_reg)}")
+
+    # ── Tier 1: PR health ─────────────────────────────────────────────────────
+    pr_alerts = check_pr_health()
+    if pr_alerts:
+        actions_taken.append(f"pr_health_alerts:{len(pr_alerts)}")
+        notify("\n".join(pr_alerts))
+    else:
+        logger.info("PR health: all healthy")
 
     # ── Tier 2 detection: log errors ─────────────────────────────────────────
     error_count, error_lines = count_recent_errors()
