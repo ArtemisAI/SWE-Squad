@@ -45,11 +45,17 @@ logger = logging.getLogger("pr_sync")
 
 
 def _run_gh(args: List[str], timeout: int = 30) -> Optional[str]:
-    """Run a gh CLI command and return stdout, or None on failure."""
+    """Run a gh CLI command and return stdout, or None on failure.
+
+    Strips GH_TOKEN from the subprocess env so ``gh`` falls through to its
+    keyring / ``gh auth`` credential store. This avoids stale PATs loaded
+    by dotenv from poisoning API calls.
+    """
+    env = {k: v for k, v in os.environ.items() if k != "GH_TOKEN"}
     try:
         result = subprocess.run(
             ["gh"] + args,
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, text=True, timeout=timeout, env=env,
         )
         if result.returncode == 0:
             return result.stdout.strip()

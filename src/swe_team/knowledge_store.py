@@ -108,9 +108,6 @@ class KnowledgeGraphStore:
         """
         row = edge.to_dict()
         row["team_id"] = self._team_id
-        # Ensure metadata is serialised for JSONB
-        if isinstance(row.get("metadata"), dict):
-            row["metadata"] = json.dumps(row["metadata"])
 
         headers = {
             "Prefer": "resolution=merge-duplicates,return=representation",
@@ -186,17 +183,26 @@ class KnowledgeGraphStore:
             return 0
 
     def create_edges_batch(self, edges: List[KnowledgeEdge]) -> int:
-        """Upsert multiple edges in a single request. Returns count created."""
+        """Upsert multiple edges in a single request. Returns count created.
+
+        Deduplicates by (source_id, target_id, edge_type) within the batch
+        to avoid Postgres "ON CONFLICT DO UPDATE cannot affect row a second
+        time" errors when the same edge appears twice.
+        """
         if not edges:
             return 0
 
-        rows = []
+        # Deduplicate: keep the highest-confidence edge per key
+        seen: Dict[tuple, Dict[str, Any]] = {}
         for edge in edges:
             row = edge.to_dict()
             row["team_id"] = self._team_id
-            if isinstance(row.get("metadata"), dict):
-                row["metadata"] = json.dumps(row["metadata"])
-            rows.append(row)
+            key = (row["source_id"], row["target_id"], row["edge_type"])
+            existing = seen.get(key)
+            if existing is None or row.get("confidence", 0) > existing.get("confidence", 0):
+                seen[key] = row
+
+        rows = list(seen.values())
 
         headers = {
             "Prefer": "resolution=merge-duplicates,return=representation",
@@ -223,10 +229,6 @@ class KnowledgeGraphStore:
         """
         row = pr.to_dict()
         row["team_id"] = self._team_id
-        # Serialise list/dict fields for JSONB columns
-        for key in ("files_changed", "ticket_ids", "metadata"):
-            if isinstance(row.get(key), (list, dict)):
-                row[key] = json.dumps(row[key])
 
         headers = {
             "Prefer": "resolution=merge-duplicates,return=representation",
@@ -302,8 +304,6 @@ class KnowledgeGraphStore:
         """Insert or update a code module."""
         row = module.to_dict()
         row["team_id"] = self._team_id
-        if isinstance(row.get("metadata"), dict):
-            row["metadata"] = json.dumps(row["metadata"])
 
         headers = {
             "Prefer": "resolution=merge-duplicates,return=representation",
@@ -382,10 +382,6 @@ class KnowledgeGraphStore:
         """
         row = cluster.to_dict()
         row["team_id"] = self._team_id
-        # Serialise list/dict fields for JSONB columns
-        for key in ("ticket_ids", "metadata"):
-            if isinstance(row.get(key), (list, dict)):
-                row[key] = json.dumps(row[key])
 
         headers = {
             "Prefer": "resolution=merge-duplicates,return=representation",
@@ -425,7 +421,7 @@ class KnowledgeGraphStore:
             "team_id": f"eq.{self._team_id}",
         }
         body = {
-            "ticket_ids": json.dumps(updated_ids),
+            "ticket_ids": updated_ids,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
