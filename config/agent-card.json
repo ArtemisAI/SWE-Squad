@@ -1,7 +1,7 @@
 {
   "name": "SWE-Squad",
   "description": "Autonomous SWE team — monitor, triage, investigate, fix",
-  "url": "http://localhost:18790",
+  "url": "http://artemisai:18791",
   "version": "0.3.0",
   "skills": [
     {

@@ -94,16 +94,14 @@ def setup_agent_registry(config) -> AgentRegistry:
     """
     from src.a2a.client import A2AClient
 
-    discovery_urls = []
-    hub_url = getattr(config, "a2a_hub_url", "")
-    if hub_url:
-        discovery_urls.append(hub_url)
+    hub_url = getattr(config, "a2a_hub_url", "") or None
 
     client = A2AClient(timeout=10)
     registry = AgentRegistry(
         ttl_seconds=600,
-        discovery_urls=discovery_urls,
+        discovery_urls=[],   # hub discovery goes through hub_url, not discovery_urls
         a2a_client=client,
+        hub_url=hub_url,     # enables hub mode: register + discover via /v1/agents
     )
 
     # Register local adapters if available
