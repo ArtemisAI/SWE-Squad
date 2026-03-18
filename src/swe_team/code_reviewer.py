@@ -250,10 +250,10 @@ class CodeReviewerAgent:
             )
             return None
         except subprocess.TimeoutExpired:
-            logger.warning("CodeReviewer: claude timed out — defaulting to APPROVE")
+            logger.warning("CodeReviewer: claude timed out — defaulting to REJECT (fail-secure)")
             return None
         except FileNotFoundError:
-            logger.warning("CodeReviewer: claude CLI not found — defaulting to APPROVE")
+            logger.warning("CodeReviewer: claude CLI not found — defaulting to REJECT (fail-secure)")
             return None
         except Exception:
             logger.exception("CodeReviewer: unexpected error calling claude")
@@ -263,14 +263,14 @@ class CodeReviewerAgent:
     def _parse_response(response: str | None) -> Tuple[bool, str]:
         """Parse claude response. Returns (approved, reasoning).
 
-        On timeout/parse error → default APPROVE to keep pipeline moving.
+        On timeout/parse error → default REJECT (fail-secure, SEC-68).
         """
         if response is None:
-            return True, "timeout/unavailable — defaulting to approve"
+            return False, "SEC-68: timeout/unavailable — defaulting to REJECT (fail-secure)"
 
         lines = response.strip().splitlines()
         if not lines:
-            return True, "empty response — defaulting to approve"
+            return False, "SEC-68: empty response — defaulting to REJECT (fail-secure)"
 
         first_line = lines[0].strip().upper()
         reasoning = " ".join(lines[1:]).strip() if len(lines) > 1 else ""
@@ -280,12 +280,12 @@ class CodeReviewerAgent:
         if "APPROVE" in first_line:
             return True, reasoning
 
-        # Could not parse decision — default approve
+        # Could not parse decision — default REJECT (fail-secure, SEC-68)
         logger.warning(
-            "CodeReviewer: could not parse decision from first line %r — defaulting to APPROVE",
+            "CodeReviewer: could not parse decision from first line %r — defaulting to REJECT (fail-secure)",
             lines[0],
         )
-        return True, f"parse error (raw: {lines[0][:80]}) — defaulting to approve"
+        return False, f"SEC-68: unparseable response — defaulting to REJECT (fail-secure)"
 
     def _handle_approve(
         self,

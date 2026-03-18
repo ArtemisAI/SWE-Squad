@@ -31,7 +31,6 @@ _EMBEDDING_FALLBACKS = [
 ]
 _EXTRACTION_FALLBACKS = [
     "gemini-2.5-flash-thinking",  # proven working
-    "kimi-k2.5:cloud",            # 1M context, good for long logs
     "qwen3-coder:30b",            # code-aware, reliable
     "qwen3:8b",                   # lightweight fallback
     "deepseek-r1:14b",            # strong reasoning fallback
@@ -39,21 +38,18 @@ _EXTRACTION_FALLBACKS = [
 ]
 _T1_FALLBACKS = [                 # cheap/fast tasks via BASE_LLM proxy
     "gemini-2.5-flash-thinking",
-    "kimi-k2.5:cloud",
     "qwen3:8b",
     "qwen3:4b",
     "gemini-3-flash",             # last resort
 ]
 _T2_FALLBACKS = [                 # standard tasks via BASE_LLM proxy
     "gemini-2.5-flash-thinking",
-    "kimi-k2.5:cloud",
     "qwen3-coder:30b",
     "deepseek-r1:14b",
     "gemini-3-flash",
 ]
 _T3_FALLBACKS = [                 # heavy/critical tasks via BASE_LLM proxy
     "gemini-2.5-pro",
-    "kimi-k2.5:cloud",
     "gemini-3-pro-high",
     "claude-opus-4-6",
     "deepseek-v3.1:671b-cloud",

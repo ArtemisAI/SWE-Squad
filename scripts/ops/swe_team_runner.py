@@ -46,6 +46,7 @@ from src.swe_team.notifier import (
     notify_status,
     aggregate_daily_costs,
 )
+from src.swe_team.session import make_session_tag, log_session_start, log_session_end
 from src.swe_team.github_integration import create_github_issue, find_existing_issue, escalate_to_human, claim_issue
 from src.swe_team.events import SWEEvent
 from src.swe_team.creative_agent import CreativeAgent
@@ -582,6 +583,9 @@ def run_cycle(
     creative: bool = False,
 ) -> Dict[str, Any]:
     """Run one monitor -> triage -> gate cycle."""
+    session_tag = make_session_tag(cycle=True)
+    log_session_start(session_tag)
+
     # Rate limit tracker — shared across investigator and developer within this cycle
     rate_limit_tracker = RateLimitTracker()
 
@@ -1201,6 +1205,7 @@ def run_cycle(
         blockers=blockers_summary,
     )
 
+    log_session_end(session_tag)
     return result
 
 

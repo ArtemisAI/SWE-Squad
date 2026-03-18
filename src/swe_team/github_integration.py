@@ -14,6 +14,7 @@ import subprocess
 from typing import List, Optional
 
 from src.swe_team.models import SWETicket, TicketSeverity
+from src.swe_team.session import make_session_tag, session_header
 
 logger = logging.getLogger(__name__)
 
@@ -245,8 +246,11 @@ def claim_issue(
     if not target_repo:
         return None
 
+    tag = make_session_tag(issue_number=issue_number, ticket_id=ticket_id)
+    header = session_header(tag)
     checklist_md = "\n".join(f"- [ ] {item}" for item in checklist)
     body = (
+        f"{header}\n"
         f"## 🤖 SWE-Squad — Working on this\n\n"
         f"| | |\n|---|---|\n"
         f"| **Ticket** | `{ticket_id}` |\n"

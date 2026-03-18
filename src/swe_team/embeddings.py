@@ -76,13 +76,13 @@ def embed_ticket(ticket: SWETicket) -> Optional[list[float]]:
 #                       via subprocess. NOT the same as BASE_LLM.
 #                       Do NOT call claude CLI from within library code.
 
-_DEFAULT_EXTRACTION_MODEL = "kimi-k2.5:cloud"
+_DEFAULT_EXTRACTION_MODEL = "gemini-3-flash"
 
 
 def extract_memory_facts(ticket: SWETicket) -> str:
     """Distil a resolved ticket into a compact normalised memory fact.
 
-    Uses a cheap T1 model (default: gemini-3-flash) via the BASE_LLM proxy
+    Uses a cheap T1 model (gemini-3-flash) via the BASE_LLM proxy
     to strip noise from raw ticket text before embedding, following the
     mem0 pattern of structured fact extraction.
 
