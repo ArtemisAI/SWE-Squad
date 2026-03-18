@@ -1,5 +1,12 @@
-"""Collect logs from remote worker machines via SSH."""
+"""Collect logs from remote worker machines via SSH.
+
+SSH access is scoped via a dedicated config file (SWE_SSH_CONFIG env var or
+``config/ssh_workers.conf`` relative to the project root).  The config uses
+``IdentitiesOnly yes`` with a project-specific key so the runner can ONLY
+reach explicitly listed worker nodes — never the primary orchestrator.
+"""
 import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -11,12 +18,24 @@ logger = logging.getLogger(__name__)
 # configure in swe_team.yaml under monitor.remote_nodes.
 #
 # Example:
-#   [{"name": "worker-1", "ssh": "agent@10.0.0.1", "log_dir": "~/project/logs"}]
+#   [{"name": "worker-1", "ssh": "linkedai-browser-1", "log_dir": "~/Projects/LinkedAi/logs"}]
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+def _ssh_config_path() -> Optional[str]:
+    """Return path to the scoped SSH config, or None if not found."""
+    explicit = os.environ.get("SWE_SSH_CONFIG")
+    if explicit and Path(explicit).is_file():
+        return explicit
+    default = _PROJECT_ROOT / "config" / "ssh_workers.conf"
+    if default.is_file():
+        return str(default)
+    return None
+
 
 def _load_remote_nodes():
     """Load remote node config from env var or return empty default."""
     import json
-    import os
     raw = os.environ.get("SWE_REMOTE_NODES", "")
     if raw:
         try:
@@ -46,13 +65,18 @@ def collect_remote_logs(local_dir: str = "logs/remote", timeout: int = 30, nodes
         node_dir = local_base / node["name"]
         node_dir.mkdir(parents=True, exist_ok=True)
 
+        ssh_conf = _ssh_config_path()
+        ssh_base = "ssh"
+        if ssh_conf:
+            ssh_base = f"ssh -F {ssh_conf}"
+
         try:
             # Use rsync over SSH to pull logs (only *.log files, skip huge files)
             result = subprocess.run(
                 [
                     "rsync", "-az", "--include=*.log", "--exclude=*",
                     "--max-size=10M", "--timeout=15",
-                    "-e", "ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
+                    "-e", ssh_base,
                     f"{node['ssh']}:{node['log_dir']}/",
                     str(node_dir) + "/",
                 ],
@@ -69,12 +93,15 @@ def collect_remote_logs(local_dir: str = "logs/remote", timeout: int = 30, nodes
         except FileNotFoundError:
             # rsync not installed, fall back to SSH cat
             try:
+                ssh_cmd = ["ssh"]
+                if ssh_conf:
+                    ssh_cmd.extend(["-F", ssh_conf])
+                ssh_cmd.append(node["ssh"])
+                ssh_cmd.append(
+                    f"find {node['log_dir']} -name '*.log' -mmin -180 -exec cat {{}} \\;"
+                )
                 result = subprocess.run(
-                    [
-                        "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
-                        node["ssh"],
-                        f"find {node['log_dir']} -name '*.log' -mmin -180 -exec cat {{}} \\;",
-                    ],
+                    ssh_cmd,
                     capture_output=True, text=True, timeout=timeout,
                 )
                 if result.returncode == 0 and result.stdout:
