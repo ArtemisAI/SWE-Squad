@@ -122,29 +122,53 @@ class GeminiCLIAdapter:
             "gemini-cli: delegating to Gemini CLI (model=%s, prompt_chars=%d)",
             self._model, len(prompt),
         )
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-            if result.returncode != 0:
-                logger.warning(
-                    "gemini-cli: exited with rc=%d: %s",
-                    result.returncode,
-                    (result.stderr or "")[:500],
+        max_retries = 3
+        backoff = 15  # seconds
+
+        for attempt in range(max_retries):
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
                 )
+                stderr = (result.stderr or "")[:500]
+
+                # Detect rate limiting (429 / quota / rate limit in stderr)
+                if result.returncode != 0 and any(
+                    kw in stderr.lower()
+                    for kw in ("429", "rate limit", "quota", "resource exhausted", "too many requests")
+                ):
+                    wait = backoff * (2 ** attempt)
+                    logger.warning(
+                        "gemini-cli: rate limited (attempt %d/%d) — retrying in %ds: %s",
+                        attempt + 1, max_retries, wait, stderr[:200],
+                    )
+                    if attempt < max_retries - 1:
+                        import time
+                        time.sleep(wait)
+                        continue
+                    logger.warning("gemini-cli: rate limit exhausted after %d attempts", max_retries)
+                    return None
+
+                if result.returncode != 0:
+                    logger.warning(
+                        "gemini-cli: exited with rc=%d: %s",
+                        result.returncode, stderr,
+                    )
+                    return None
+
+                output = (result.stdout or "").strip()
+                if not output:
+                    logger.warning("gemini-cli: returned empty output")
+                    return None
+                logger.info("gemini-cli: success (%d chars returned)", len(output))
+                return output
+            except subprocess.TimeoutExpired:
+                logger.warning("gemini-cli: timed out after %ds", timeout)
                 return None
-            output = (result.stdout or "").strip()
-            if not output:
-                logger.warning("gemini-cli: returned empty output")
+            except Exception as exc:
+                logger.warning("gemini-cli: unexpected error: %s", exc)
                 return None
-            logger.info("gemini-cli: success (%d chars returned)", len(output))
-            return output
-        except subprocess.TimeoutExpired:
-            logger.warning("gemini-cli: timed out after %ds", timeout)
-            return None
-        except Exception as exc:
-            logger.warning("gemini-cli: unexpected error: %s", exc)
-            return None
+        return None
