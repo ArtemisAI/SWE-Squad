@@ -17,6 +17,12 @@ Gemini CLI is subject to Google data retention policies.
 The adapter blocks prompts containing: password, secret, token, api_key, credential.
 Never send proprietary source code or PII through this adapter.
 
+## Rate limit handling
+Gemini has per-model rate limits. On 429/quota errors:
+1. Exponential backoff: 60s → 120s → 240s → 480s (4 retries)
+2. Model failover: gemini-3-pro-high → gemini-2.5-pro → gemini-2.5-flash
+3. Cooldown: after exhausting all retries, 15-min cooldown before next invocation
+
 ## Skills
 Declared skills: investigate, review, dashboard, websearch
 Skill routing: swe_team.yaml fallback_agents[gemini-cli].skills
@@ -33,6 +39,8 @@ import logging
 import os
 import subprocess
 import shutil
+import time
+from pathlib import Path
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
@@ -51,7 +59,21 @@ _UNSAFE_KEYWORDS = [
 ]
 
 _DEFAULT_GEMINI_CMD = "/usr/bin/gemini"
-_DEFAULT_MODEL = "gemini-2.5-flash-thinking"
+_DEFAULT_MODEL = "gemini-3-pro-high"
+
+# Rate limit constants
+_RATE_LIMIT_KEYWORDS = ("429", "rate limit", "quota", "resource exhausted", "too many requests")
+_MAX_RETRIES = 4
+_INITIAL_BACKOFF_SECONDS = 60       # 60s → 120s → 240s → 480s
+_COOLDOWN_SECONDS = 900             # 15 min cooldown after all retries exhausted
+_COOLDOWN_FILE = Path("/tmp/gemini_cli_cooldown.lock")
+
+# Model failover chain — try progressively cheaper/less-limited models
+_MODEL_FAILOVER_CHAIN = [
+    "gemini-3-pro-high",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+]
 
 
 class GeminiCLIAdapter:
@@ -80,19 +102,37 @@ class GeminiCLIAdapter:
         return skill in self._skills
 
     def is_available(self) -> bool:
-        """Return True if gemini CLI is installed and reachable."""
+        """Return True if gemini CLI is installed, reachable, and not in cooldown."""
         cmd = shutil.which(self._command) or (
             self._command if os.path.isfile(self._command) else None
         )
         if not cmd:
             logger.debug("gemini-cli: command not found at %s", self._command)
             return False
+
+        # Check cooldown
+        if _COOLDOWN_FILE.exists():
+            age = time.time() - _COOLDOWN_FILE.stat().st_mtime
+            if age < _COOLDOWN_SECONDS:
+                remaining = int(_COOLDOWN_SECONDS - age)
+                logger.info(
+                    "gemini-cli: in cooldown (%ds remaining) — skipping",
+                    remaining,
+                )
+                return False
+            # Cooldown expired — remove lock
+            _COOLDOWN_FILE.unlink(missing_ok=True)
+
         return True
 
-    def invoke(self, prompt: str, timeout: int = 120) -> Optional[str]:
-        """Run the prompt through Gemini CLI and return the response.
+    def invoke(self, prompt: str, timeout: int = 180) -> Optional[str]:
+        """Run the prompt through Gemini CLI with rate limit handling.
 
-        Truncates prompt to max_prompt_chars to avoid quota burn on huge inputs.
+        On rate limit (429/quota):
+        1. Exponential backoff: 60s, 120s, 240s, 480s
+        2. Model failover: try cheaper models in the chain
+        3. Cooldown: 15-min lock after exhausting all options
+
         Returns None on failure.
         """
         if not self.is_available():
@@ -116,16 +156,49 @@ class GeminiCLIAdapter:
             )
             prompt = prompt[:self._max_prompt_chars] + "\n\n[... truncated for context limit ...]"
 
-        cmd = [self._command, "-p", prompt]
+        # Build model failover chain starting from configured model
+        models_to_try = self._build_failover_chain()
 
-        logger.info(
-            "gemini-cli: delegating to Gemini CLI (model=%s, prompt_chars=%d)",
-            self._model, len(prompt),
+        for model in models_to_try:
+            result = self._invoke_with_retries(prompt, model, timeout)
+            if result is not None:
+                return result
+            # Model exhausted retries — try next model
+            logger.warning(
+                "gemini-cli: model %s exhausted — trying next in failover chain",
+                model,
+            )
+
+        # All models exhausted — enter cooldown
+        logger.warning(
+            "gemini-cli: all models and retries exhausted — entering %ds cooldown",
+            _COOLDOWN_SECONDS,
         )
-        max_retries = 3
-        backoff = 15  # seconds
+        _COOLDOWN_FILE.touch()
+        return None
 
-        for attempt in range(max_retries):
+    def _build_failover_chain(self) -> List[str]:
+        """Build ordered list of models to try, starting from the configured model."""
+        chain = []
+        # Start with configured model
+        chain.append(self._model)
+        # Add remaining failover models not already in chain
+        for model in _MODEL_FAILOVER_CHAIN:
+            if model not in chain:
+                chain.append(model)
+        return chain
+
+    def _invoke_with_retries(
+        self, prompt: str, model: str, timeout: int
+    ) -> Optional[str]:
+        """Try a single model with exponential backoff on rate limits."""
+        cmd = [self._command, "-p", prompt, "--model", model]
+
+        for attempt in range(_MAX_RETRIES):
+            logger.info(
+                "gemini-cli: invoking (model=%s, attempt=%d/%d, prompt_chars=%d)",
+                model, attempt + 1, _MAX_RETRIES, len(prompt),
+            )
             try:
                 result = subprocess.run(
                     cmd,
@@ -135,40 +208,51 @@ class GeminiCLIAdapter:
                 )
                 stderr = (result.stderr or "")[:500]
 
-                # Detect rate limiting (429 / quota / rate limit in stderr)
+                # Detect rate limiting
                 if result.returncode != 0 and any(
-                    kw in stderr.lower()
-                    for kw in ("429", "rate limit", "quota", "resource exhausted", "too many requests")
+                    kw in stderr.lower() for kw in _RATE_LIMIT_KEYWORDS
                 ):
-                    wait = backoff * (2 ** attempt)
+                    wait = _INITIAL_BACKOFF_SECONDS * (2 ** attempt)
                     logger.warning(
-                        "gemini-cli: rate limited (attempt %d/%d) — retrying in %ds: %s",
-                        attempt + 1, max_retries, wait, stderr[:200],
+                        "gemini-cli: rate limited on %s (attempt %d/%d) — "
+                        "backing off %ds: %s",
+                        model, attempt + 1, _MAX_RETRIES, wait, stderr[:200],
                     )
-                    if attempt < max_retries - 1:
-                        import time
+                    if attempt < _MAX_RETRIES - 1:
                         time.sleep(wait)
                         continue
-                    logger.warning("gemini-cli: rate limit exhausted after %d attempts", max_retries)
+                    # Last retry exhausted for this model
                     return None
 
+                # Non-rate-limit failure
                 if result.returncode != 0:
                     logger.warning(
-                        "gemini-cli: exited with rc=%d: %s",
-                        result.returncode, stderr,
+                        "gemini-cli: %s exited with rc=%d: %s",
+                        model, result.returncode, stderr,
                     )
                     return None
 
+                # Success
                 output = (result.stdout or "").strip()
                 if not output:
-                    logger.warning("gemini-cli: returned empty output")
+                    logger.warning("gemini-cli: %s returned empty output", model)
                     return None
-                logger.info("gemini-cli: success (%d chars returned)", len(output))
+
+                logger.info(
+                    "gemini-cli: success (model=%s, %d chars returned)",
+                    model, len(output),
+                )
                 return output
+
             except subprocess.TimeoutExpired:
-                logger.warning("gemini-cli: timed out after %ds", timeout)
+                logger.warning(
+                    "gemini-cli: %s timed out after %ds", model, timeout
+                )
                 return None
             except Exception as exc:
-                logger.warning("gemini-cli: unexpected error: %s", exc)
+                logger.warning(
+                    "gemini-cli: %s unexpected error: %s", model, exc
+                )
                 return None
+
         return None
