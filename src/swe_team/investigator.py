@@ -125,6 +125,33 @@ class InvestigatorAgent:
             self._record_failure(ticket, started_at, "Prompt template missing")
             return False
 
+        # Gemini routing: skip Claude CLI entirely, use fallback agents directly
+        if model == "gemini":
+            logger.info(
+                "Routing ticket %s to Gemini fallback agents (severity=%s)",
+                ticket.ticket_id, ticket.severity.value,
+            )
+            start = time.monotonic()
+            result = self._try_fallback_agents(prompt, ticket)
+            duration_s = time.monotonic() - start
+            if result and result.strip():
+                ticket.investigation_report = result.strip()
+                ticket.transition(TicketStatus.INVESTIGATION_COMPLETE)
+                ticket.metadata["investigation"] = {
+                    "started_at": started_at,
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                    "duration_s": round(duration_s, 2),
+                    "cost_usd": None,
+                    "model": "gemini",
+                    "status": "complete",
+                    "fallback_agent": ticket.metadata.get("fallback_agent_used", "gemini-cli"),
+                }
+                notify_investigation_summary(ticket)
+                return True
+            else:
+                self._record_failure(ticket, started_at, "Gemini investigation returned empty")
+                return False
+
         cwd = self._repo_cwd(ticket)
         logger.info(
             "Investigating ticket %s via Claude CLI (model=%s, cwd=%s)",
@@ -242,7 +269,10 @@ class InvestigatorAgent:
         return None
 
     def _eligible(self, ticket: SWETicket) -> bool:
-        if ticket.severity not in (TicketSeverity.CRITICAL, TicketSeverity.HIGH):
+        if ticket.severity not in (TicketSeverity.CRITICAL, TicketSeverity.HIGH, TicketSeverity.MEDIUM):
+            return False
+        # UMBRELLA / tracking issues are not actionable bugs
+        if "UMBRELLA" in (ticket.title or "").upper():
             return False
         if ticket.investigation_report:
             return False
@@ -423,10 +453,15 @@ class InvestigatorAgent:
         return text
 
     def _select_model(self, ticket: SWETicket) -> str:
-        """Select model from config tiers: t1_heavy for CRITICAL/regressions, t2_standard otherwise.
+        """Select model tier based on severity, attempt count, and timeout history.
 
-        After 2+ investigation timeouts on the heavy tier (Opus), fall back to
-        the standard tier (Sonnet) which is faster and less likely to timeout.
+        Routing:
+        - MEDIUM/LOW → "gemini" (routed to fallback agents, free 1M context)
+        - HIGH → Sonnet (t2_standard)
+        - CRITICAL, first attempt → Sonnet (t2_standard) — try cheap first
+        - CRITICAL, retry after Sonnet failure → Opus (t1_heavy) escalation
+        - CRITICAL, 2+ timeouts → Sonnet fallback (GH #41 fix preserved)
+        - Regressions → Opus (t1_heavy)
         """
         heavy = self._model_config.t1_heavy if self._model_config else "opus"
         standard = self._model_config.t2_standard if self._model_config else "sonnet"
@@ -440,12 +475,24 @@ class InvestigatorAgent:
             )
             return standard
 
-        if ticket.severity == TicketSeverity.CRITICAL:
-            return heavy
-        # Regressions always route to heavy tier
+        # Regressions always route to heavy tier (regardless of severity)
         if ticket.metadata.get("is_regression"):
             return heavy
-        # Escalate to heavy tier if a previous investigation failed
+
+        # MEDIUM (and LOW, though _eligible blocks LOW) → Gemini fallback
+        if ticket.severity == TicketSeverity.MEDIUM:
+            return "gemini"
+
+        if ticket.severity == TicketSeverity.CRITICAL:
+            # Escalate to Opus only on retry (prior investigation failed)
+            inv = ticket.metadata.get("investigation", {})
+            if inv.get("status") == "failed":
+                return heavy
+            # First attempt: use Sonnet (cheaper, faster)
+            return standard
+
+        # HIGH → Sonnet (standard tier)
+        # Also handles escalation for HIGH after failure
         inv = ticket.metadata.get("investigation", {})
         if inv.get("status") == "failed":
             return heavy

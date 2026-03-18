@@ -2525,8 +2525,8 @@ class TestRegressionRouting:
         model = investigator._select_model(ticket)
         assert model == "opus"
 
-    def test_non_regression_medium_uses_sonnet(self):
-        """Normal MEDIUM tickets use sonnet."""
+    def test_non_regression_medium_uses_gemini(self):
+        """Normal MEDIUM tickets route to Gemini fallback agents."""
         investigator = InvestigatorAgent(timeout_seconds=5)
         ticket = SWETicket(
             title="Normal bug",
@@ -2534,7 +2534,7 @@ class TestRegressionRouting:
             severity=TicketSeverity.MEDIUM,
         )
         model = investigator._select_model(ticket)
-        assert model == "sonnet"
+        assert model == "gemini"
 
     def test_regression_context_in_prompt(self):
         """Regression tickets include regression context in the prompt."""

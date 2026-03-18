@@ -94,7 +94,7 @@ monitor:
 cycle:
   # Only pick up tickets at this severity or higher each cycle.
   # Values: low | medium | high | critical
-  severity_filter: "high"
+  severity_filter: "medium"
 
   # Max new tickets to triage in a single cycle (highest severity first).
   # Remaining tickets are deferred to the next cycle.
