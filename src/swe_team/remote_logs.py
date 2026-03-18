@@ -115,3 +115,98 @@ def collect_remote_logs(local_dir: str = "logs/remote", timeout: int = 30, nodes
             logger.exception("Error collecting logs from %s", node["name"])
 
     return collected
+
+
+def fetch_worker_logs(
+    worker_name: str,
+    *,
+    since_minutes: int = 60,
+    max_lines: int = 500,
+    log_pattern: str = "*.log",
+    timeout: int = 20,
+) -> Optional[str]:
+    """Fetch recent log lines from a specific worker on demand.
+
+    Used by InvestigatorAgent during root-cause analysis to pull fresh logs
+    from a particular worker rather than relying on the last monitor scan.
+
+    Returns combined log tail as a string, or None on failure.
+    """
+    ssh_conf = _ssh_config_path()
+    if not ssh_conf:
+        logger.warning("No SSH config found — cannot fetch worker logs")
+        return None
+
+    # Build SSH command to tail recent logs on the remote
+    remote_cmd = (
+        f"find ~/Projects/LinkedAi/logs -name '{log_pattern}' "
+        f"-mmin -{since_minutes} -type f "
+        f"-exec tail -n {max_lines} {{}} + 2>/dev/null | tail -n {max_lines}"
+    )
+
+    ssh_cmd = ["ssh", "-F", ssh_conf, worker_name, remote_cmd]
+
+    try:
+        result = subprocess.run(
+            ssh_cmd, capture_output=True, text=True, timeout=timeout,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            logger.info(
+                "Fetched %d bytes of logs from %s (last %d min)",
+                len(result.stdout), worker_name, since_minutes,
+            )
+            return result.stdout
+        logger.warning(
+            "No recent logs from %s (rc=%d)", worker_name, result.returncode,
+        )
+        return None
+    except subprocess.TimeoutExpired:
+        logger.warning("Timeout fetching logs from %s", worker_name)
+        return None
+    except Exception:
+        logger.exception("Failed to fetch logs from %s", worker_name)
+        return None
+
+
+def list_available_workers(timeout: int = 10) -> List[Dict[str, str]]:
+    """Return list of reachable workers from ssh_workers.conf.
+
+    Each entry has keys: name, reachable (bool), hostname.
+    Used for health checks and investigator worker selection.
+    """
+    ssh_conf = _ssh_config_path()
+    if not ssh_conf:
+        return []
+
+    # Parse hosts from the SSH config
+    conf_path = Path(ssh_conf)
+    if not conf_path.is_file():
+        return []
+
+    workers: List[Dict[str, str]] = []
+    current_host = None
+    current_hostname = None
+    for line in conf_path.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Host ") and "*" not in stripped:
+            if current_host:
+                workers.append({"name": current_host, "hostname": current_hostname or ""})
+            current_host = stripped.split()[1]
+            current_hostname = None
+        elif stripped.startswith("HostName ") and current_host:
+            current_hostname = stripped.split()[1]
+    if current_host:
+        workers.append({"name": current_host, "hostname": current_hostname or ""})
+
+    # Probe reachability
+    for w in workers:
+        try:
+            result = subprocess.run(
+                ["ssh", "-F", ssh_conf, w["name"], "echo ok"],
+                capture_output=True, text=True, timeout=timeout,
+            )
+            w["reachable"] = str(result.returncode == 0)
+        except Exception:
+            w["reachable"] = "False"
+
+    return workers

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Iterable, List, Optional
 
 from src.swe_team.embeddings import embed_ticket
+from src.swe_team.remote_logs import fetch_worker_logs
 from src.swe_team.github_integration import comment_on_issue
 from src.swe_team.models import SWETicket, TicketSeverity, TicketStatus
 from src.swe_team.notifier import notify_investigation_summary
@@ -258,6 +259,10 @@ class InvestigatorAgent:
         if not template:
             return None
         error_log = ticket.error_log or "No error log provided."
+        # Pull fresh logs from the source worker if identified
+        worker_logs = self._fetch_worker_logs(ticket)
+        if worker_logs:
+            error_log = f"{error_log}\n\n## Fresh Worker Logs\n{worker_logs}"
         similar_context = self._semantic_memory_context(ticket)
         if similar_context:
             error_log = f"{error_log}\n\n{similar_context}"
@@ -271,6 +276,57 @@ class InvestigatorAgent:
         except (KeyError, ValueError) as exc:
             logger.warning("Invalid investigate.md template: %s", exc)
             return None
+
+    # Worker name aliases keyed by common source_module patterns
+    _MODULE_WORKER_MAP: dict[str, list[str]] = {
+        "browser": ["linkedai-browser-2"],
+        "scraper": ["linkedai-bot-2", "linkedai-hp-laptop"],
+        "enricher": ["linkedai-hp-laptop"],
+        "orchestrator": ["linkedai-hp-laptop"],
+        "bot": ["linkedai-bot-2"],
+        "linkedin": ["linkedai-browser-2"],
+        "google_jobs": ["linkedai-bot-2"],
+    }
+
+    def _fetch_worker_logs(self, ticket: SWETicket) -> Optional[str]:
+        """Pull fresh logs from workers relevant to this ticket.
+
+        Uses ticket metadata (source_worker) or source_module to identify
+        which worker(s) to query. Returns combined log text or None.
+        """
+        # Explicit worker in ticket metadata takes priority
+        worker = ticket.metadata.get("source_worker")
+        workers_to_check: list[str] = [worker] if worker else []
+
+        # Fall back to module-based mapping
+        if not workers_to_check and ticket.source_module:
+            module_lower = ticket.source_module.lower()
+            for pattern, worker_names in self._MODULE_WORKER_MAP.items():
+                if pattern in module_lower:
+                    workers_to_check.extend(worker_names)
+                    break
+
+        if not workers_to_check:
+            return None
+
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        unique_workers = []
+        for w in workers_to_check:
+            if w not in seen:
+                seen.add(w)
+                unique_workers.append(w)
+
+        parts: list[str] = []
+        for w in unique_workers[:3]:  # cap at 3 workers
+            try:
+                logs = fetch_worker_logs(w, since_minutes=60, max_lines=300)
+                if logs:
+                    parts.append(f"### {w}\n```\n{logs[-8000:]}\n```")
+            except Exception:
+                logger.warning("Failed to fetch logs from worker %s", w, exc_info=True)
+
+        return "\n\n".join(parts) if parts else None
 
     @staticmethod
     def _build_regression_context(ticket: SWETicket) -> str:

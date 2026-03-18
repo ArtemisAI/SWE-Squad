@@ -56,56 +56,57 @@ Unlike single-agent coding tools, SWE Squad operates as a **coordinated team** w
 
 ```mermaid
 flowchart TD
-    subgraph entry ["Entry Point"]
-        Runner(["fa:fa-play SWE Squad Runner\ncron / daemon / one-shot"])
+    subgraph entry [" Entry Point "]
+        Runner(["SWE Squad Runner\ncron / daemon / one-shot"])
     end
 
-    subgraph ingest ["Ingestion Layer"]
+    subgraph ingest [" Ingestion Layer "]
         direction LR
-        Monitor["fa:fa-file-alt Monitor Agent\nLog scanning & fingerprinting"]
-        GitHub["fa:fa-github GitHub Fetch\nAssigned issues"]
-        Remote["fa:fa-server Remote Logs\nSSH / rsync collection"]
+        Monitor["Monitor Agent\nLog scan + fingerprint"]
+        GitHub["GitHub Fetch\nAssigned issues"]
+        Remote["Remote Logs\nSSH / rsync"]
     end
 
-    subgraph analysis ["Analysis & Routing"]
-        Triage["fa:fa-balance-scale Triage Agent\nSeverity classification & routing"]
-        Distiller["fa:fa-bolt Trajectory Distiller\nCached fix replay"]
-        Investigator["fa:fa-microscope Investigator Agent\nRoot-cause via Claude CLI"]
-        Notifier["fa:fa-bell Notifier\nTelegram alerts"]
+    subgraph analysis [" Analysis & Routing "]
+        Triage["Triage Agent\nSeverity + routing"]
+        Distiller["Trajectory Distiller\nCached fix replay"]
+        Investigator["Investigator\nRoot-cause analysis"]
+        Notifier["Notifier\nTelegram alerts"]
     end
 
-    subgraph resolution ["Resolution"]
-        Developer["fa:fa-wrench Developer Agent\nKeep / discard fix loop"]
+    subgraph resolution [" Resolution "]
+        Developer["Developer Agent\nKeep / discard fix loop"]
     end
 
-    subgraph governance ["Governance & Output"]
+    subgraph governance [" Governance & Output "]
         direction LR
-        Ralph["fa:fa-shield-alt Ralph Wiggum Gate\nStability-first enforcement"]
-        Creative["fa:fa-lightbulb Creative Agent\nProactive proposals"]
-        A2A["fa:fa-network-wired A2A Dispatch\nInter-agent event bus"]
+        Ralph{"Ralph Wiggum Gate\nStable?"}
+        Creative["Creative Agent\nProactive proposals"]
+        A2A["A2A Dispatch\nInter-agent events"]
     end
 
     Runner --> Monitor & GitHub & Remote
     Monitor & GitHub & Remote --> Triage
-    Triage --> Distiller & Investigator
-    Triage -.->|alerts| Notifier
-    Distiller & Investigator --> Developer
+    Triage -->|"classify"| Distiller & Investigator
+    Triage -.->|"alert"| Notifier
+    Distiller & Investigator -->|"fix attempt"| Developer
     Developer --> Ralph
     Ralph -->|"stable"| Creative
-    Ralph --> A2A
+    Ralph -->|"emit events"| A2A
 
-    classDef entryNode fill:#6366f1,stroke:#4338ca,color:#fff,stroke-width:2px
+    classDef entryNode fill:#6366f1,stroke:#4338ca,color:#fff,stroke-width:2px,rx:12
     classDef ingestNode fill:#10b981,stroke:#059669,color:#fff,stroke-width:1.5px
     classDef analysisNode fill:#f59e0b,stroke:#d97706,color:#fff,stroke-width:1.5px
     classDef resolveNode fill:#ef4444,stroke:#dc2626,color:#fff,stroke-width:2px
-    classDef gateNode fill:#8b5cf6,stroke:#7c3aed,color:#fff,stroke-width:1.5px
+    classDef gateNode fill:#8b5cf6,stroke:#7c3aed,color:#fff,stroke-width:2px
     classDef outputNode fill:#06b6d4,stroke:#0891b2,color:#fff,stroke-width:1.5px
+    classDef notifyNode fill:#f97316,stroke:#ea580c,color:#fff,stroke-width:1.5px
     classDef subgraphBox fill:transparent,stroke:#e5e7eb,stroke-width:1px,color:#6b7280
 
     class Runner entryNode
     class Monitor,GitHub,Remote ingestNode
     class Triage,Distiller,Investigator analysisNode
-    class Notifier analysisNode
+    class Notifier notifyNode
     class Developer resolveNode
     class Ralph gateNode
     class Creative,A2A outputNode
@@ -118,28 +119,28 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    Start(["fa:fa-ticket-alt New Ticket"]):::startNode --> Cache{"fa:fa-database Trajectory\ncache hit?"}:::decisionNode
+    Start(["New Ticket"]):::startNode --> Cache{"Trajectory\ncache hit?"}:::decisionNode
 
-    Cache -->|"cache hit"| Replay["fa:fa-bolt Replay cached fix\nzero cost, instant"]:::cacheNode
-    Replay --> Tests0{"fa:fa-vial Tests?"}:::testNode
-    Tests0 -->|"pass"| Keep0(["fa:fa-check KEEP — commit"]):::successNode
+    Cache -->|"hit — free"| Replay["Replay cached fix\nzero cost"]:::cacheNode
+    Replay --> Tests0{"Tests\npass?"}:::testNode
+    Tests0 -->|"pass"| Keep0(["KEEP — commit"]):::successNode
 
-    Cache -->|"cache miss"| A1
+    Cache -->|"miss"| A1
 
-    subgraph attempts ["Escalating Fix Attempts"]
-        A1["fa:fa-code Attempt 1\nSonnet — routine fix"]:::sonnetNode
-        A1 --> Tests1{"fa:fa-vial Tests?"}:::testNode
-        Tests1 -->|"pass"| Keep1(["fa:fa-check KEEP"]):::successNode
-        Tests1 -->|"fail"| A2["fa:fa-code Attempt 2\nSonnet — with error context"]:::sonnetNode
-        A2 --> Tests2{"fa:fa-vial Tests?"}:::testNode
-        Tests2 -->|"pass"| Keep2(["fa:fa-check KEEP"]):::successNode
-        Tests2 -->|"fail"| A3["fa:fa-brain Attempt 3\nOpus — orchestrates sub-agents"]:::opusNode
-        A3 --> Tests3{"fa:fa-vial Tests?"}:::testNode
-        Tests3 -->|"pass"| Keep3(["fa:fa-check KEEP"]):::successNode
+    subgraph attempts [" Escalating Fix Attempts "]
+        A1["Attempt 1 — Sonnet\nRoutine fix"]:::sonnetNode
+        A1 --> Tests1{"Tests\npass?"}:::testNode
+        Tests1 -->|"pass"| Keep1(["KEEP"]):::successNode
+        Tests1 -->|"fail"| A2["Attempt 2 — Sonnet\n+ error context"]:::sonnetNode
+        A2 --> Tests2{"Tests\npass?"}:::testNode
+        Tests2 -->|"pass"| Keep2(["KEEP"]):::successNode
+        Tests2 -->|"fail"| A3["Attempt 3 — Opus\nOrchestrates sub-agents"]:::opusNode
+        A3 --> Tests3{"Tests\npass?"}:::testNode
+        Tests3 -->|"pass"| Keep3(["KEEP"]):::successNode
         Tests3 -->|"fail"| HITL
     end
 
-    HITL(["fa:fa-user HITL Escalation\nHuman notified via Telegram"]):::failNode
+    HITL(["HITL Escalation\nTelegram notification"]):::failNode
 
     Tests0 -->|"fail"| A1
 
@@ -151,6 +152,9 @@ flowchart TD
     classDef opusNode fill:#ef4444,stroke:#dc2626,color:#fff,stroke-width:2px
     classDef successNode fill:#10b981,stroke:#059669,color:#fff,stroke-width:2px
     classDef failNode fill:#ef4444,stroke:#dc2626,color:#fff,stroke-width:2px
+    classDef subgraphBox fill:transparent,stroke:#e5e7eb,stroke-width:1px,color:#6b7280
+
+    class attempts subgraphBox
 ```
 
 Each attempt runs on a **git branch**. Tests pass = commit. Tests fail = `git reset --hard` (auto-revert). No broken code ever reaches main.
@@ -171,33 +175,33 @@ SWE Squad routes to the cheapest model that can handle the job:
 
 ```mermaid
 flowchart LR
-    Ticket(["fa:fa-ticket-alt Incoming\nTicket"]):::startNode --> Cached{"fa:fa-database Cached\nfix?"}:::decisionNode
+    Ticket(["Incoming Ticket"]):::startNode --> Cached{"Cached\nfix?"}:::decisionNode
 
-    Cached -->|"hit — free"| Replay(["fa:fa-bolt Replay\nzero cost"]):::cacheNode
-    Cached -->|"miss"| Severity{"fa:fa-balance-scale Severity?"}:::decisionNode
+    Cached -->|"hit — free"| Replay(["Replay\nzero cost"]):::cacheNode
+    Cached -->|"miss"| Severity{"Severity?"}:::decisionNode
 
-    subgraph tiers ["Model Tiers"]
+    subgraph tiers [" Model Tiers "]
         direction TB
-        T1["fa:fa-feather T1 · Haiku\nEmbeddings, triage\n$ · 30s timeout"]:::t1Node
-        T2["fa:fa-code T2 · Sonnet\nInvestigation + fix\n$$ · 2 min timeout"]:::t2Node
-        T3["fa:fa-brain T3 · Opus\nOrchestrator only\n$$$ · 10 min timeout"]:::t3Node
+        T1["T1 Haiku\nEmbeddings, triage\n$ — 30s"]:::t1Node
+        T2["T2 Sonnet\nInvestigation + fix\n$$ — 2 min"]:::t2Node
+        T3["T3 Opus\nOrchestrator only\n$$$ — 10 min"]:::t3Node
     end
 
     Severity -->|"LOW / MEDIUM"| T1
     Severity -->|"HIGH"| T2
-    Severity -->|"CRITICAL / regression"| T3
-    T2 -->|"2 failures → escalate"| T3
+    Severity -->|"CRITICAL"| T3
+    T2 -->|"2 failures"| T3
 
-    subgraph fallback ["Fallback Chain"]
+    subgraph fallback [" Fallback Chain "]
         direction LR
-        Claude["fa:fa-terminal Claude Code\nprimary"]:::claudeNode
-        Gemini["fa:fa-robot Gemini CLI\nT2 fallback"]:::geminiNode
-        OpenCode["fa:fa-laptop-code OpenCode\nT3 fallback"]:::opencodeNode
+        Claude["Claude Code\nprimary"]:::claudeNode
+        Gemini["Gemini CLI\nfallback"]:::geminiNode
+        OpenCode["OpenCode\nlast resort"]:::opencodeNode
         Claude -->|"rate limited"| Gemini -->|"unavailable"| OpenCode
     end
 
-    T2 -.-> Claude
-    T3 -.-> Claude
+    T2 -.->|"dispatch"| Claude
+    T3 -.->|"dispatch"| Claude
 
     classDef startNode fill:#6366f1,stroke:#4338ca,color:#fff,stroke-width:2px
     classDef decisionNode fill:#f59e0b,stroke:#d97706,color:#fff,stroke-width:2px
@@ -208,6 +212,9 @@ flowchart LR
     classDef claudeNode fill:#8b5cf6,stroke:#7c3aed,color:#fff,stroke-width:1.5px
     classDef geminiNode fill:#f59e0b,stroke:#d97706,color:#fff,stroke-width:1.5px
     classDef opencodeNode fill:#14b8a6,stroke:#0d9488,color:#fff,stroke-width:1.5px
+    classDef subgraphBox fill:transparent,stroke:#e5e7eb,stroke-width:1px,color:#6b7280
+
+    class tiers,fallback subgraphBox
 ```
 
 ---
@@ -333,30 +340,30 @@ SWE Squad learns from resolved tickets. When an investigator starts on a new tic
 
 ```mermaid
 flowchart TD
-    subgraph store ["fa:fa-download Storage Pipeline — on ticket resolved"]
-        Resolved(["fa:fa-check-circle Ticket Resolved"]):::successNode
-        Extract["fa:fa-brain extract_memory_facts()\ngemini-3-flash via BASE_LLM\nStructured: root cause, fix, module, tags"]:::extractNode
-        Embed["fa:fa-vector-square embed_ticket()\nbge-m3 · 1024 dimensions"]:::embedNode
-        Dedup{"fa:fa-code-branch Cosine\n> 0.92?"}:::decisionNode
-        StoreDB[("fa:fa-database Supabase\npgvector")]:::dbNode
-        Merge["fa:fa-compress-arrows-alt Merge\nRicher content wins"]:::mergeNode
+    subgraph store [" Storage Pipeline — on ticket resolved "]
+        Resolved(["Ticket Resolved"]):::successNode
+        Extract["extract_memory_facts\ngemini-3-flash via BASE_LLM\nroot cause, fix, module, tags"]:::extractNode
+        Embed["embed_ticket\nbge-m3 — 1024 dim"]:::embedNode
+        Dedup{"Cosine\n> 0.92?"}:::decisionNode
+        StoreDB[("Supabase\npgvector")]:::dbNode
+        Merge["Merge\nRicher content wins"]:::mergeNode
 
-        Resolved --> Extract --> Embed --> Dedup
-        Dedup -->|"new memory"| StoreDB
-        Dedup -->|"near-duplicate"| Merge --> StoreDB
+        Resolved -->|"extract facts"| Extract -->|"embed"| Embed -->|"dedup check"| Dedup
+        Dedup -->|"new"| StoreDB
+        Dedup -->|"duplicate"| Merge -->|"update"| StoreDB
     end
 
-    subgraph retrieve ["fa:fa-upload Retrieval Pipeline — on next investigation"]
-        NewTicket(["fa:fa-ticket-alt New Ticket"]):::startNode
-        Search["fa:fa-search find_similar()\nTop-5 · cosine >= 0.75 · 180-day TTL\nConfidence-weighted ranking"]:::searchNode
-        Inject["fa:fa-syringe Inject context\n## Semantic Memory"]:::injectNode
-        Investigate["fa:fa-microscope Investigation\nPrompt"]:::investigateNode
-        Hit["fa:fa-chart-line record_memory_hit()\nconfidence +0.1 · max 2.0"]:::hitNode
+    subgraph retrieve [" Retrieval Pipeline — on next investigation "]
+        NewTicket(["New Ticket"]):::startNode
+        Search["find_similar\nTop-5 — cosine >= 0.75\n180-day TTL — confidence-weighted"]:::searchNode
+        Inject["Inject context\nSemantic Memory section"]:::injectNode
+        Investigate["Investigation\nPrompt"]:::investigateNode
+        Hit["record_memory_hit\nconfidence +0.1 — max 2.0"]:::hitNode
 
         NewTicket --> Search
-        Search --> StoreDB
-        StoreDB --> Inject --> Investigate
-        Investigate --> Hit --> StoreDB
+        Search -->|"query"| StoreDB
+        StoreDB -->|"matches"| Inject -->|"augment"| Investigate
+        Investigate -->|"feedback"| Hit -->|"boost"| StoreDB
     end
 
     classDef successNode fill:#10b981,stroke:#059669,color:#fff,stroke-width:2px
@@ -370,6 +377,9 @@ flowchart TD
     classDef injectNode fill:#8b5cf6,stroke:#7c3aed,color:#fff,stroke-width:1.5px
     classDef investigateNode fill:#ef4444,stroke:#dc2626,color:#fff,stroke-width:2px
     classDef hitNode fill:#14b8a6,stroke:#0d9488,color:#fff,stroke-width:1.5px
+    classDef subgraphBox fill:transparent,stroke:#e5e7eb,stroke-width:1px,color:#6b7280
+
+    class store,retrieve subgraphBox
 ```
 
 1. **Fact extraction** — when a ticket is resolved, `gemini-3-flash` (via BASE_LLM proxy) distils the investigation report into a compact structured fact: root cause, fix applied, affected module, and error/fix tags
@@ -392,34 +402,39 @@ Multiple SWE Squads can operate independently on the same infrastructure:
 
 ```mermaid
 flowchart LR
-    subgraph alpha ["Squad Alpha"]
-        AlphaSquad["fa:fa-users Squad Alpha\nteam_id: alpha"]:::alphaNode
-        RepoA["fa:fa-github Repo A\n@bot-alpha"]:::alphaNode
-        AlphaSquad --> RepoA
+    subgraph alpha [" Squad Alpha "]
+        AlphaSquad["Squad Alpha\nteam_id: alpha"]:::alphaNode
+        RepoA["Repo A\n@bot-alpha"]:::alphaRepoNode
+        AlphaSquad -->|"monitors"| RepoA
     end
 
-    subgraph beta ["Squad Beta"]
-        BetaSquad["fa:fa-users Squad Beta\nteam_id: beta"]:::betaNode
-        RepoB["fa:fa-github Repo B\n@bot-beta"]:::betaNode
-        BetaSquad --> RepoB
+    subgraph beta [" Squad Beta "]
+        BetaSquad["Squad Beta\nteam_id: beta"]:::betaNode
+        RepoB["Repo B\n@bot-beta"]:::betaRepoNode
+        BetaSquad -->|"monitors"| RepoB
     end
 
-    subgraph shared ["Shared Infrastructure"]
-        Supabase[("fa:fa-database Supabase\npgvector + tickets")]:::dbNode
-        Memory["fa:fa-brain Semantic Memory\nCross-team patterns"]:::memoryNode
-        Hub["fa:fa-network-wired A2A Hub\nInter-agent events"]:::hubNode
+    subgraph shared [" Shared Infrastructure "]
+        Supabase[("Supabase\npgvector + tickets")]:::dbNode
+        Memory["Semantic Memory\nCross-team patterns"]:::memoryNode
+        Hub["A2A Hub\nInter-agent events"]:::hubNode
         Supabase --- Memory
         Supabase --- Hub
     end
 
-    AlphaSquad <--> Supabase
-    BetaSquad <--> Supabase
+    AlphaSquad <-->|"tickets"| Supabase
+    BetaSquad <-->|"tickets"| Supabase
 
     classDef alphaNode fill:#3b82f6,stroke:#2563eb,color:#fff,stroke-width:1.5px
+    classDef alphaRepoNode fill:#60a5fa,stroke:#3b82f6,color:#fff,stroke-width:1.5px
     classDef betaNode fill:#ef4444,stroke:#dc2626,color:#fff,stroke-width:1.5px
+    classDef betaRepoNode fill:#f87171,stroke:#ef4444,color:#fff,stroke-width:1.5px
     classDef dbNode fill:#3ecf8e,stroke:#2da66e,color:#fff,stroke-width:2px
     classDef memoryNode fill:#8b5cf6,stroke:#7c3aed,color:#fff,stroke-width:1.5px
     classDef hubNode fill:#f59e0b,stroke:#d97706,color:#fff,stroke-width:1.5px
+    classDef subgraphBox fill:transparent,stroke:#e5e7eb,stroke-width:1px,color:#6b7280
+
+    class alpha,beta,shared subgraphBox
 ```
 
 Each squad:
