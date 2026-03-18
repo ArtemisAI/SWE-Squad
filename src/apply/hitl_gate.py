@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
+from src.apply.char_guard import measure_and_warn
 from src.apply.field_classifier import FieldClassification, classify_field
 
 
@@ -74,6 +75,7 @@ def check_fields(
     job_id: str,
     fields: List[dict],
     classifier: Optional[Callable[[str, str], FieldClassification]] = None,
+    ats_platform: Optional[str] = None,
 ) -> HITLGateResult:
     """Run EEO classification on every field and split into safe vs blocked.
 
@@ -89,6 +91,12 @@ def check_fields(
                     ``(field_name: str, field_label: str)`` and return a
                     :class:`FieldClassification`.  Defaults to the standard
                     :func:`~src.apply.field_classifier.classify_field`.
+        ats_platform: Optional ATS platform identifier (e.g. ``"workday"``,
+                      ``"greenhouse"``).  When provided and a field dict
+                      contains a ``"value"`` key, truncation risk is assessed
+                      via :func:`~src.apply.char_guard.measure_and_warn` and
+                      ``char_count`` / ``truncation_risk`` are populated on
+                      blocked :class:`HITLReviewRequest` items.
 
     Returns:
         A :class:`HITLGateResult` with ``safe_fields``, ``blocked_fields``,
@@ -106,8 +114,21 @@ def check_fields(
     for f in fields:
         name = f["name"]
         label = f["label"]
+        value = f.get("value")
 
         classification = _classify(name, label)
+
+        # Assess truncation risk when we have both a value and an ATS platform.
+        char_count: Optional[int] = None
+        truncation_risk = False
+        if value is not None and ats_platform is not None:
+            field_type = f.get("field_type", "default")
+            maxlength = f.get("maxlength")
+            warning = measure_and_warn(
+                name, value, ats_platform, field_type, maxlength,
+            )
+            char_count = warning.intended_len
+            truncation_risk = warning.truncated
 
         if classification.is_eeo:
             blocked.append(
@@ -116,6 +137,8 @@ def check_fields(
                     field_name=name,
                     field_label=label,
                     matched_keyword=classification.matched_keyword or "",
+                    char_count=char_count,
+                    truncation_risk=truncation_risk,
                 )
             )
         else:

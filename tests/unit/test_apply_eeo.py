@@ -204,3 +204,83 @@ class TestHITLGate:
         assert blocked_names & safe_names == set()
         # Union covers all inputs
         assert blocked_names | safe_names == all_input_names
+
+
+class TestHITLGateTruncation:
+    """GH-188: truncation risk is populated when ats_platform is provided."""
+
+    def test_truncation_risk_populated_on_blocked_field(self) -> None:
+        """Blocked field with value exceeding ATS limit gets truncation_risk=True."""
+        fields = [
+            {
+                "name": "q_gender",
+                "label": "Gender",
+                "value": "x" * 50000,  # exceeds workday default 32000
+            },
+        ]
+        result = check_fields("job_trunc", fields, ats_platform="workday")
+        assert len(result.blocked_fields) == 1
+        req = result.blocked_fields[0]
+        assert req.char_count == 50000
+        assert req.truncation_risk is True
+
+    def test_no_truncation_when_under_limit(self) -> None:
+        """Blocked field with short value has truncation_risk=False."""
+        fields = [
+            {
+                "name": "q_race",
+                "label": "Race",
+                "value": "Asian",
+            },
+        ]
+        result = check_fields("job_ok", fields, ats_platform="workday")
+        assert len(result.blocked_fields) == 1
+        req = result.blocked_fields[0]
+        assert req.char_count == 5
+        assert req.truncation_risk is False
+
+    def test_no_truncation_without_ats_platform(self) -> None:
+        """Without ats_platform, char_count and truncation_risk stay at defaults."""
+        fields = [
+            {
+                "name": "q_gender",
+                "label": "Gender",
+                "value": "x" * 50000,
+            },
+        ]
+        result = check_fields("job_noats", fields)
+        req = result.blocked_fields[0]
+        assert req.char_count is None
+        assert req.truncation_risk is False
+
+    def test_no_truncation_without_value(self) -> None:
+        """Without a value key, char_count stays None."""
+        fields = [{"name": "q_gender", "label": "Gender"}]
+        result = check_fields("job_noval", fields, ats_platform="workday")
+        req = result.blocked_fields[0]
+        assert req.char_count is None
+        assert req.truncation_risk is False
+
+    def test_safe_fields_unaffected(self) -> None:
+        """Safe fields are still dicts — truncation only tracked on blocked."""
+        fields = [
+            {"name": "first_name", "label": "First Name", "value": "x" * 50000},
+        ]
+        result = check_fields("job_safe", fields, ats_platform="workday")
+        assert result.all_clear is True
+        assert len(result.safe_fields) == 1
+
+    def test_maxlength_override(self) -> None:
+        """DOM maxlength override is respected for truncation check."""
+        fields = [
+            {
+                "name": "q_veteran",
+                "label": "Veteran Status",
+                "value": "x" * 200,
+                "maxlength": 100,
+            },
+        ]
+        result = check_fields("job_ml", fields, ats_platform="workday")
+        req = result.blocked_fields[0]
+        assert req.truncation_risk is True
+        assert req.char_count == 200

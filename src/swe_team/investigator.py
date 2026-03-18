@@ -18,7 +18,7 @@ from typing import Any, Iterable, List, Optional
 from src.swe_team.embeddings import embed_ticket
 from src.swe_team.remote_logs import fetch_worker_logs
 from src.swe_team.github_integration import comment_on_issue
-from src.swe_team.models import SWETicket, TicketSeverity, TicketStatus
+from src.swe_team.models import SWETicket, TicketSeverity, TicketStatus, TicketType
 from src.swe_team.notifier import notify_investigation_summary
 from src.swe_team.rate_limiter import ExponentialBackoff, RateLimitExhausted, RateLimitTracker
 from src.swe_team.supabase_store import SupabaseTicketStore
@@ -30,6 +30,7 @@ _FallbackAgent = Any
 
 _DEFAULT_PROGRAM_PATH = Path("config/swe_team/programs/investigate.md")
 _ORCHESTRATE_PROGRAM_PATH = Path("config/swe_team/programs/orchestrate.md")
+_FEATURE_PROGRAM_PATH = Path("config/swe_team/programs/feature.md")
 _DEFAULT_CLAUDE_PATH = "/usr/bin/claude"
 _DEFAULT_TIMEOUT = 300  # 5 min — LinkedAi codebase is large; 120s was timing out every Sonnet run
 _OPUS_TIMEOUT = 600  # Opus gets 10 min — it orchestrates multiple sub-agents
@@ -112,9 +113,13 @@ class InvestigatorAgent:
 
         model = self._select_model(ticket)
 
+        # Feature/enhancement tickets get the feature prompt, not bug investigation
+        if hasattr(ticket, 'ticket_type') and ticket.ticket_type in (TicketType.FEATURE, TicketType.ENHANCEMENT):
+            prompt = self._build_feature_prompt(ticket)
+            timeout = self._timeout
         # Opus gets the orchestration program (full lifecycle with sub-agents)
         # Sonnet gets the investigation-only program
-        if model == "opus":
+        elif model == "opus":
             prompt = self._build_orchestration_prompt(ticket)
             timeout = _OPUS_TIMEOUT
         else:
@@ -401,6 +406,29 @@ class InvestigatorAgent:
             )
         except (KeyError, ValueError) as exc:
             logger.warning("Invalid orchestrate.md template: %s", exc)
+            return self._build_prompt(ticket)
+
+    def _build_feature_prompt(self, ticket: SWETicket) -> Optional[str]:
+        """Build the feature/enhancement investigation prompt."""
+        template = self._load_program(_FEATURE_PROGRAM_PATH)
+        if not template:
+            # Fall back to investigation program if feature.md is missing
+            return self._build_prompt(ticket)
+        description = ticket.description or ""
+        similar_context = self._semantic_memory_context(ticket)
+        if similar_context:
+            description = f"{description}\n\n{similar_context}"
+        try:
+            return template.format(
+                ticket_id=ticket.ticket_id,
+                title=ticket.title,
+                ticket_type=ticket.ticket_type.value,
+                source_module=ticket.source_module or "unknown",
+                description=description,
+                investigation_report=ticket.investigation_report or "No prior investigation.",
+            )
+        except (KeyError, ValueError) as exc:
+            logger.warning("Invalid feature.md template: %s", exc)
             return self._build_prompt(ticket)
 
     def _semantic_memory_context(self, ticket: SWETicket) -> str:

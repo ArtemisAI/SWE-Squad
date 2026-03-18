@@ -317,7 +317,7 @@ class TestProgressLog:
 
 
 class TestInvestigatorModelSelection:
-    def test_critical_uses_t1_heavy(self):
+    def test_critical_first_attempt_uses_t2_standard(self):
         from src.swe_team.investigator import InvestigatorAgent
 
         mc = ModelConfig(t1_heavy="my-opus", t2_standard="my-sonnet")
@@ -326,6 +326,20 @@ class TestInvestigatorModelSelection:
             title="Critical bug",
             description="desc",
             severity=TicketSeverity.CRITICAL,
+        )
+        # First attempt: Sonnet (cheap first), escalates to Opus on retry
+        assert agent._select_model(ticket) == "my-sonnet"
+
+    def test_critical_retry_escalates_to_t1_heavy(self):
+        from src.swe_team.investigator import InvestigatorAgent
+
+        mc = ModelConfig(t1_heavy="my-opus", t2_standard="my-sonnet")
+        agent = InvestigatorAgent(model_config=mc)
+        ticket = SWETicket(
+            title="Critical bug",
+            description="desc",
+            severity=TicketSeverity.CRITICAL,
+            metadata={"investigation": {"status": "failed"}},
         )
         assert agent._select_model(ticket) == "my-opus"
 
@@ -363,7 +377,8 @@ class TestInvestigatorModelSelection:
             description="desc",
             severity=TicketSeverity.CRITICAL,
         )
-        assert agent._select_model(ticket) == "opus"
+        # First attempt: Sonnet (cheap first)
+        assert agent._select_model(ticket) == "sonnet"
 
 
 class TestDeveloperModelSelection:

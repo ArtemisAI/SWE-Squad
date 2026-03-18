@@ -626,6 +626,140 @@ class TestTriageAgent:
         assert len(events) == 1
         assert events[0].event == SWEEventType.TRIAGE_COMPLETE
 
+    def test_hitl_captcha_ticket(self):
+        """Tickets mentioning CAPTCHA are flagged for human intervention."""
+        ticket = SWETicket(
+            ticket_id="hitl-captcha-001",
+            title="CAPTCHA blocking hard apply — no retry",
+            severity=TicketSeverity.HIGH,
+            status=TicketStatus.OPEN,
+            description="reCAPTCHA is blocking the application submission.",
+            source_module="easy_apply",
+        )
+        agent = TriageAgent(self._make_config())
+        result = agent.triage(ticket)
+        assert result.metadata.get("needs_hitl")
+        assert result.assigned_to == "human:ArtemisAI"
+
+    def test_hitl_already_flagged_in_metadata(self):
+        """Tickets already flagged needs_hitl in metadata are routed to human."""
+        ticket = SWETicket(
+            ticket_id="hitl-meta-001",
+            title="Some previously escalated issue",
+            severity=TicketSeverity.HIGH,
+            status=TicketStatus.OPEN,
+            description="Normal description",
+            source_module="unknown",
+            metadata={"needs_hitl": True, "hitl_reason": "Previously escalated"},
+        )
+        agent = TriageAgent(self._make_config())
+        result = agent.triage(ticket)
+        assert result.metadata.get("needs_hitl")
+        assert result.assigned_to == "human:ArtemisAI"
+
+    def test_hitl_chronic_failure(self):
+        """Tickets with >= 3 consecutive failed attempts are escalated to human."""
+        ticket = SWETicket(
+            ticket_id="hitl-chronic-001",
+            title="Recurring fix failure",
+            severity=TicketSeverity.HIGH,
+            status=TicketStatus.OPEN,
+            description="Some bug",
+            source_module="unknown",
+            metadata={
+                "attempts": [
+                    {"success": False, "error": "timeout"},
+                    {"success": False, "error": "timeout"},
+                    {"success": False, "error": "timeout"},
+                ]
+            },
+        )
+        agent = TriageAgent(self._make_config())
+        result = agent.triage(ticket)
+        assert result.metadata.get("needs_hitl")
+        assert result.assigned_to == "human:ArtemisAI"
+
+    def test_normal_ticket_not_hitl(self):
+        """Normal bug tickets are routed to an investigator, not flagged HITL."""
+        ticket = SWETicket(
+            ticket_id="normal-001",
+            title="KeyError in data processor",
+            severity=TicketSeverity.HIGH,
+            status=TicketStatus.OPEN,
+            description="Traceback shows KeyError at line 42",
+            source_module="database",
+        )
+        agent = TriageAgent(self._make_config())
+        result = agent.triage(ticket)
+        assert not result.metadata.get("needs_hitl")
+        assert result.assigned_to != "human:ArtemisAI"
+
+    def test_hitl_api_key_401(self):
+        """API key 401 errors are escalated to human for credential rotation."""
+        ticket = SWETicket(
+            ticket_id="hitl-401-001",
+            title="LLM proxy API keys all returning 401 — pipeline broken",
+            severity=TicketSeverity.HIGH,
+            status=TicketStatus.OPEN,
+            description="All requests to proxy return 401 Unauthorized. API keys expired.",
+            source_module="a2a",
+        )
+        agent = TriageAgent(self._make_config())
+        result = agent.triage(ticket)
+        assert result.metadata.get("needs_hitl")
+        assert result.assigned_to == "human:ArtemisAI"
+
+    def test_classify_bug_with_error_log(self):
+        """Tickets with an error log are classified as BUG."""
+        from src.swe_team.models import TicketType
+        config = self._make_config()
+        ticket = SWETicket(
+            ticket_id="type-bug-001",
+            title="Something broke",
+            description="",
+            severity=TicketSeverity.HIGH,
+            status=TicketStatus.OPEN,
+            error_log="Traceback (most recent call last):\n  File 'app.py'\nKeyError: 'user_id'",
+        )
+        agent = TriageAgent(config)
+        result = agent.triage(ticket)
+        assert result.ticket_type == TicketType.BUG, f"Expected BUG, got {result.ticket_type}"
+
+    def test_classify_feature_request(self):
+        """Tickets asking to add a feature are classified as FEATURE."""
+        from src.swe_team.models import TicketType
+        config = self._make_config()
+        ticket = SWETicket(
+            ticket_id="type-feat-001",
+            title="Add LinkedIn messaging automation",
+            severity=TicketSeverity.MEDIUM,
+            status=TicketStatus.OPEN,
+            description="Please add ability to send connection requests automatically.",
+        )
+        agent = TriageAgent(config)
+        result = agent.triage(ticket)
+        assert result.ticket_type == TicketType.FEATURE, f"Expected FEATURE, got {result.ticket_type}"
+
+    def test_classify_infrastructure(self):
+        """Infrastructure/deploy tasks are classified as INFRASTRUCTURE."""
+        from src.swe_team.models import TicketType
+        config = self._make_config()
+        ticket = SWETicket(
+            ticket_id="type-infra-001",
+            title="Deploy new VM for browser automation",
+            severity=TicketSeverity.MEDIUM,
+            status=TicketStatus.OPEN,
+            description="Set up new VM with docker container for scraping.",
+        )
+        agent = TriageAgent(config)
+        result = agent.triage(ticket)
+        assert result.ticket_type == TicketType.INFRASTRUCTURE, f"Expected INFRASTRUCTURE, got {result.ticket_type}"
+
+    def test_needs_info_status_exists(self):
+        """NEEDS_INFO and BLOCKED are valid ticket statuses."""
+        assert TicketStatus.NEEDS_INFO.value == "needs_info"
+        assert TicketStatus.BLOCKED.value == "blocked"
+
 
 # ======================================================================
 # Ralph-Wiggum Gate
@@ -3067,7 +3201,9 @@ class TestModelProbeValidateAndPatch:
         probe = ModelProbe(api_url="http://fake/v1", api_key="key")
         probe._available = ["mxbai-embed-large", "gemini-3-flash"]  # bge-m3 missing
 
-        with patch.dict(os.environ, {"EMBEDDING_MODEL": "bge-m3"}, clear=False):
+        with patch.dict(os.environ, {"EMBEDDING_MODEL": "bge-m3"}, clear=False), \
+             patch("src.swe_team.model_probe.probe_embedding_model", side_effect=lambda m, *a, **k: m in probe._available), \
+             patch("src.swe_team.model_probe.probe_chat_model", side_effect=lambda m, *a, **k: m in probe._available):
             patches = probe.validate_and_patch_env()
             assert "EMBEDDING_MODEL" in patches
             assert patches["EMBEDDING_MODEL"] == "mxbai-embed-large"
@@ -3079,7 +3215,9 @@ class TestModelProbeValidateAndPatch:
         probe = ModelProbe(api_url="http://fake/v1", api_key="key")
         probe._available = ["bge-m3", "gemini-3-flash"]
 
-        with patch.dict(os.environ, {"EMBEDDING_MODEL": "bge-m3", "EXTRACTION_MODEL": "gemini-3-flash"}, clear=False):
+        with patch.dict(os.environ, {"EMBEDDING_MODEL": "bge-m3", "EXTRACTION_MODEL": "gemini-3-flash"}, clear=False), \
+             patch("src.swe_team.model_probe.probe_embedding_model", side_effect=lambda m, *a, **k: m in probe._available), \
+             patch("src.swe_team.model_probe.probe_chat_model", side_effect=lambda m, *a, **k: m in probe._available):
             patches = probe.validate_and_patch_env()
 
         assert patches == {}

@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import threading
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from pathlib import Path
@@ -45,7 +46,7 @@ from src.swe_team.notifier import (
     notify_status,
     aggregate_daily_costs,
 )
-from src.swe_team.github_integration import create_github_issue, find_existing_issue
+from src.swe_team.github_integration import create_github_issue, find_existing_issue, escalate_to_human, claim_issue
 from src.swe_team.events import SWEEvent
 from src.swe_team.creative_agent import CreativeAgent
 from src.swe_team.distiller import TrajectoryDistiller
@@ -767,7 +768,24 @@ def run_cycle(
                     except Exception:
                         logger.exception("Failed to persist GitHub metadata for %s", ticket.ticket_id)
 
-    # 4. Trajectory distiller: attempt deterministic fixes before investigation
+    # 4b. HITL escalation — tickets triage flagged as needing human action
+    if not dry_run:
+        for ticket in triaged:
+            if ticket.metadata.get("needs_hitl"):
+                issue_num = ticket.metadata.get("github_issue")
+                repo = ticket.metadata.get("repo", "")
+                reason = ticket.metadata.get("hitl_reason", "Requires human intervention")
+                if issue_num:
+                    try:
+                        escalate_to_human(issue_num, ticket.ticket_id, reason, repo=repo)
+                    except Exception:
+                        logger.exception("escalate_to_human failed for %s", ticket.ticket_id)
+                logger.warning(
+                    "HITL ticket %s excluded from automation queue | %s",
+                    ticket.ticket_id, reason[:80],
+                )
+
+    # 5. Trajectory distiller: attempt deterministic fixes before investigation
     automated: List[SWETicket] = []
     if triaged and not dry_run:
         distiller = TrajectoryDistiller(repo_root=PROJECT_ROOT)
@@ -790,6 +808,7 @@ def run_cycle(
             and t.ticket_id not in triaged_ids
             and t.ticket_id not in automated_ids
             and _SEV_RANK.get(t.severity.value, 0) >= sev_floor
+            and not t.metadata.get("needs_hitl")  # skip tickets awaiting human action
         ]
         # Sort highest severity first
         stored_open.sort(key=lambda t: _SEV_RANK.get(t.severity.value, 0), reverse=True)
@@ -862,6 +881,54 @@ def run_cycle(
                     )
                 else:
                     logger.warning("gemini-cli configured but not found — skipping")
+
+        # Claim each ticket on GitHub before investigation starts
+        for ticket in pending_investigation[:investigate_limit]:
+            issue_num = ticket.metadata.get("github_issue")
+            repo = ticket.metadata.get("repo", "")
+            if issue_num:
+                trace_id = str(uuid.uuid4())[:8]
+                ticket_type = getattr(ticket, 'ticket_type', None)
+                type_str = ticket_type.value if ticket_type else "unknown"
+
+                # Build checklist based on ticket type
+                if type_str in ("feature", "enhancement"):
+                    checklist = [
+                        "Understand the feature request",
+                        "Read existing source module code",
+                        "Design implementation approach",
+                        "Implement the feature",
+                        "Write/update tests",
+                        "Run test suite",
+                        "Create PR",
+                    ]
+                else:
+                    checklist = [
+                        "Read error logs and stack trace",
+                        "Identify affected source files",
+                        "Find root cause",
+                        "Produce investigation report",
+                        "Attempt automated fix",
+                        "Run test suite",
+                        "Create PR",
+                    ]
+
+                try:
+                    comment_id = claim_issue(
+                        issue_number=issue_num,
+                        ticket_id=ticket.ticket_id,
+                        trace_id=trace_id,
+                        ticket_type=type_str,
+                        checklist=checklist,
+                        repo=repo,
+                    )
+                    if comment_id:
+                        ticket.metadata["progress_comment_id"] = comment_id
+                        ticket.metadata["trace_id"] = trace_id
+                        store.add(ticket)
+                        logger.info("Claimed GH#%d for ticket %s (trace=%s)", issue_num, ticket.ticket_id, trace_id)
+                except Exception:
+                    logger.exception("claim_issue failed for %s — continuing", ticket.ticket_id)
 
         investigator = InvestigatorAgent(
             store=store,

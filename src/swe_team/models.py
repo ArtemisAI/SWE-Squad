@@ -31,6 +31,8 @@ class TicketStatus(enum.Enum):
     """Lifecycle states of an SWE ticket."""
     OPEN = "open"
     TRIAGED = "triaged"
+    NEEDS_INFO = "needs_info"
+    BLOCKED = "blocked"
     ACKNOWLEDGED = "acknowledged"
     INVESTIGATING = "investigating"
     INVESTIGATION_COMPLETE = "investigation_complete"
@@ -42,6 +44,19 @@ class TicketStatus(enum.Enum):
     RESOLVED = "resolved"
     ROLLED_BACK = "rolled_back"
     CLOSED = "closed"
+
+
+class TicketType(str, enum.Enum):
+    """Classification of what kind of work this ticket requires."""
+    BUG = "bug"
+    FEATURE = "feature"
+    ENHANCEMENT = "enhancement"
+    INFRASTRUCTURE = "infrastructure"
+    DOCUMENTATION = "documentation"
+    QUESTION = "question"
+    SECURITY = "security"
+    REGRESSION = "regression"
+    UNKNOWN = "unknown"
 
 
 class AgentRole(enum.Enum):
@@ -85,6 +100,7 @@ class SWETicket:
     )
     assigned_to: Optional[str] = None
     labels: List[str] = field(default_factory=list)
+    ticket_type: TicketType = field(default_factory=lambda: TicketType.UNKNOWN)
     source_module: Optional[str] = None
     error_log: Optional[str] = None
     related_tickets: List[str] = field(default_factory=list)
@@ -108,6 +124,7 @@ class SWETicket:
             "updated_at": self.updated_at,
             "assigned_to": self.assigned_to,
             "labels": self.labels,
+            "ticket_type": self.ticket_type.value,
             "source_module": self.source_module,
             "error_log": self.error_log,
             "related_tickets": self.related_tickets,
@@ -135,6 +152,7 @@ class SWETicket:
             ),
             assigned_to=data.get("assigned_to"),
             labels=data.get("labels", []),
+            ticket_type=TicketType(data.get("ticket_type", "unknown")),
             source_module=data.get("source_module"),
             error_log=data.get("error_log"),
             related_tickets=data.get("related_tickets", []),
