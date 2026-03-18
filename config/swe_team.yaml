@@ -139,7 +139,7 @@ fallback_agents:
   - name: "gemini-cli"
     command: "/usr/bin/gemini"
     args_template: ["-p", "{prompt}"]
-    default_model: "gemini-2.5-flash-thinking"   # proven working; 1M context window
+    default_model: "gemini-3-pro-high"   # proven working; 1M context window
     enabled: true                                 # ACTIVE — installed at /usr/bin/gemini
     priority: 50
     timeout: 180          # Gemini can be slow on large prompts

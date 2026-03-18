@@ -76,7 +76,7 @@ def embed_ticket(ticket: SWETicket) -> Optional[list[float]]:
 #                       via subprocess. NOT the same as BASE_LLM.
 #                       Do NOT call claude CLI from within library code.
 
-_DEFAULT_EXTRACTION_MODEL = "gemini-3-flash"
+_DEFAULT_EXTRACTION_MODEL = "kimi-k2.5:cloud"
 
 
 def extract_memory_facts(ticket: SWETicket) -> str:
