@@ -162,7 +162,10 @@ class InvestigatorAgent:
             ticket.metadata["rate_limited_at"] = datetime.now(timezone.utc).isoformat()
             self._send_rate_limit_alert(ticket, exc)
             return False
-        except (subprocess.TimeoutExpired, OSError, RuntimeError) as exc:
+        except subprocess.TimeoutExpired as exc:
+            self._record_timeout(ticket, started_at, timeout, model)
+            return False
+        except (OSError, RuntimeError) as exc:
             self._record_failure(ticket, started_at, str(exc))
             return False
 
@@ -364,9 +367,23 @@ class InvestigatorAgent:
         return text
 
     def _select_model(self, ticket: SWETicket) -> str:
-        """Select model from config tiers: t1_heavy for CRITICAL/regressions, t2_standard otherwise."""
+        """Select model from config tiers: t1_heavy for CRITICAL/regressions, t2_standard otherwise.
+
+        After 2+ investigation timeouts on the heavy tier (Opus), fall back to
+        the standard tier (Sonnet) which is faster and less likely to timeout.
+        """
         heavy = self._model_config.t1_heavy if self._model_config else "opus"
         standard = self._model_config.t2_standard if self._model_config else "sonnet"
+
+        # After 2 timeouts on heavy tier, fall back to standard (Sonnet)
+        timeout_count = ticket.metadata.get("investigation_timeout_count", 0)
+        if timeout_count >= 2:
+            logger.info(
+                "Ticket %s has %d investigation timeouts — falling back to %s",
+                ticket.ticket_id, timeout_count, standard,
+            )
+            return standard
+
         if ticket.severity == TicketSeverity.CRITICAL:
             return heavy
         # Regressions always route to heavy tier
@@ -461,6 +478,46 @@ class InvestigatorAgent:
         }
         logger.warning(
             "Investigation failed for ticket %s: %s", ticket.ticket_id, error
+        )
+
+    _MAX_INVESTIGATION_TIMEOUTS = 3
+
+    def _record_timeout(
+        self, ticket: SWETicket, started_at: str, timeout: int, model: str
+    ) -> None:
+        """Handle subprocess timeout: increment counter, write stub report if terminal.
+
+        After ``_MAX_INVESTIGATION_TIMEOUTS`` total timeouts the ticket gets a
+        stub investigation report so it stops being re-picked by ``_eligible``.
+        Before that threshold the report is left empty so the next cycle can
+        retry (with Sonnet fallback after 2 Opus timeouts — see ``_select_model``).
+        """
+        count = ticket.metadata.get("investigation_timeout_count", 0) + 1
+        ticket.metadata["investigation_timeout_count"] = count
+
+        stub = (
+            f"Investigation timed out after {timeout}s (model={model}, "
+            f"attempt {count}) — requires manual investigation or Sonnet fallback"
+        )
+
+        # After max timeouts, write the stub so the ticket stops looping
+        if count >= self._MAX_INVESTIGATION_TIMEOUTS:
+            ticket.investigation_report = stub
+
+        ticket.transition(TicketStatus.TRIAGED)
+        ticket.metadata["investigation"] = {
+            "started_at": started_at,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "duration_s": float(timeout),
+            "cost_usd": None,
+            "model": model,
+            "status": "timeout",
+            "error": f"subprocess.TimeoutExpired after {timeout}s",
+            "timeout_count": count,
+        }
+        logger.warning(
+            "Investigation timed out for ticket %s (model=%s, timeout=%ds, count=%d)",
+            ticket.ticket_id, model, timeout, count,
         )
 
 
