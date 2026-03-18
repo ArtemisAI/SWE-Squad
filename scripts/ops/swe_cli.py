@@ -579,6 +579,14 @@ def _report_dashboard() -> int:
         return 1
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    """Start the live dashboard web server."""
+    from scripts.ops.dashboard_server import main as serve_main
+    sys.argv = ["dashboard_server", "--port", str(args.port), "--host", args.host]
+    serve_main()
+    return 0
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CLI entry point
 # ══════════════════════════════════════════════════════════════════════════════
@@ -645,6 +653,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Report type: daily, status, cycle, or dashboard",
     )
     sp_report.set_defaults(func=cmd_report)
+
+    # serve — live dashboard web server
+    p_serve = subparsers.add_parser("serve", help="Start live dashboard web server")
+    p_serve.add_argument("--port", type=int, default=8080, help="HTTP port (default: 8080)")
+    p_serve.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
+    p_serve.set_defaults(func=cmd_serve)
 
     return parser
 

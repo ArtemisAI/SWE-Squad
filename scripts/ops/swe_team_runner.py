@@ -53,6 +53,7 @@ from src.swe_team.distiller import TrajectoryDistiller
 from src.swe_team.preflight import PreflightCheck
 from src.swe_team.model_probe import ModelProbe
 from src.swe_team.rate_limiter import RateLimitTracker
+from src.swe_team.graph_scoring import priority_score
 from src.a2a.adapters.swe_team import dispatch_swe_events, SWETeamAdapter
 from src.a2a.server import A2AServer
 from src.swe_team.agent_registry import AgentRegistry
@@ -810,8 +811,30 @@ def run_cycle(
             and _SEV_RANK.get(t.severity.value, 0) >= sev_floor
             and not t.metadata.get("needs_hitl")  # skip tickets awaiting human action
         ]
-        # Sort highest severity first
-        stored_open.sort(key=lambda t: _SEV_RANK.get(t.severity.value, 0), reverse=True)
+        # Sort by graph-aware priority score if knowledge store is available,
+        # otherwise fall back to severity rank
+        try:
+            from src.swe_team.graph_scoring import priority_score
+            kg_store = None
+            if isinstance(store, SupabaseTicketStore):
+                try:
+                    from src.swe_team.knowledge_store import KnowledgeGraphStore
+                    kg_store = KnowledgeGraphStore(
+                        supabase_url=os.environ.get("SUPABASE_URL", ""),
+                        supabase_key=os.environ.get("SUPABASE_ANON_KEY", ""),
+                        team_id=config.team_id,
+                    )
+                except Exception:
+                    pass
+            stored_open.sort(
+                key=lambda t: priority_score(t, graph_store=kg_store),
+                reverse=True,
+            )
+            if kg_store:
+                logger.info("Backlog sorted by graph-aware priority score (KnowledgeGraphStore active)")
+        except Exception:
+            logger.debug("Graph scoring unavailable — falling back to severity sort", exc_info=True)
+            stored_open.sort(key=lambda t: _SEV_RANK.get(t.severity.value, 0), reverse=True)
         if stored_open:
             logger.info(
                 "Backlog pickup: %d existing OPEN/TRIAGED ticket(s) eligible for investigation",

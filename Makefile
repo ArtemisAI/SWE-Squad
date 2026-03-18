@@ -3,6 +3,12 @@
 test:
 	python3 -m pytest tests/ -v --tb=short
 
+e2e:
+	python3 -m pytest tests/e2e/ -v --tb=short
+
+smoke:
+	SWE_E2E_REAL=1 python3 -m pytest tests/e2e/ -v --tb=short -k "real"
+
 lint:
 	@command -v ruff >/dev/null 2>&1 && ruff check src/ scripts/ tests/ || echo "ruff not installed — skipping lint"
 
