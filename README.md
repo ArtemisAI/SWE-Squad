@@ -54,77 +54,106 @@ Unlike single-agent coding tools, SWE Squad operates as a **coordinated team** w
 
 ## Architecture
 
-```
-                    ┌─────────────────────────────────────┐
-                    │         SWE Squad Runner             │
-                    │     (cron / daemon / one-shot)       │
-                    └──────────────┬──────────────────────┘
-                                   │
-          ┌────────────────────────┼────────────────────────┐
-          ▼                        ▼                        ▼
-   ┌──────────────┐      ┌────────────────┐      ┌────────────────┐
-   │   Monitor    │      │  GitHub Fetch   │      │  Remote Logs   │
-   │  Agent       │      │  (assigned      │      │  (SSH/rsync)   │
-   │  (log scan)  │      │   issues)       │      │                │
-   └──────┬───────┘      └───────┬────────┘      └────────┬───────┘
-          │                      │                         │
-          └──────────────────────┼─────────────────────────┘
-                                 ▼
-                    ┌────────────────────────┐
-                    │     Triage Agent       │
-                    │  (severity + routing)  │
-                    └───────────┬────────────┘
-                                │
-               ┌────────────────┼────────────────┐
-               ▼                ▼                ▼
-     ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-     │  Trajectory  │  │ Investigator │  │   Notifier   │
-     │  Distiller   │  │    Agent     │  │  (Telegram)  │
-     │ (cache hit?) │  │ (Claude CLI) │  │              │
-     └──────┬───────┘  └──────┬───────┘  └──────────────┘
-            │                 │
-            │    ┌────────────┘
-            ▼    ▼
-     ┌──────────────────┐
-     │  Developer Agent  │
-     │  (keep/discard    │
-     │   fix loop)       │
-     └────────┬─────────┘
-              │
-              ▼
-     ┌──────────────────┐      ┌──────────────────┐
-     │  Ralph Wiggum    │      │  Creative Agent   │
-     │  Stability Gate  │─────▶│  (proposals,      │
-     │  (bugs first)    │      │   only if stable) │
-     └────────┬─────────┘      └──────────────────┘
-              │
-              ▼
-     ┌──────────────────┐
-     │  A2A Dispatch    │
-     │  (event bus)     │
-     └──────────────────┘
+```mermaid
+flowchart TD
+    subgraph entry ["Entry Point"]
+        Runner(["fa:fa-play SWE Squad Runner\ncron / daemon / one-shot"])
+    end
+
+    subgraph ingest ["Ingestion Layer"]
+        direction LR
+        Monitor["fa:fa-file-alt Monitor Agent\nLog scanning & fingerprinting"]
+        GitHub["fa:fa-github GitHub Fetch\nAssigned issues"]
+        Remote["fa:fa-server Remote Logs\nSSH / rsync collection"]
+    end
+
+    subgraph analysis ["Analysis & Routing"]
+        Triage["fa:fa-balance-scale Triage Agent\nSeverity classification & routing"]
+        Distiller["fa:fa-bolt Trajectory Distiller\nCached fix replay"]
+        Investigator["fa:fa-microscope Investigator Agent\nRoot-cause via Claude CLI"]
+        Notifier["fa:fa-bell Notifier\nTelegram alerts"]
+    end
+
+    subgraph resolution ["Resolution"]
+        Developer["fa:fa-wrench Developer Agent\nKeep / discard fix loop"]
+    end
+
+    subgraph governance ["Governance & Output"]
+        direction LR
+        Ralph["fa:fa-shield-alt Ralph Wiggum Gate\nStability-first enforcement"]
+        Creative["fa:fa-lightbulb Creative Agent\nProactive proposals"]
+        A2A["fa:fa-network-wired A2A Dispatch\nInter-agent event bus"]
+    end
+
+    Runner --> Monitor & GitHub & Remote
+    Monitor & GitHub & Remote --> Triage
+    Triage --> Distiller & Investigator
+    Triage -.->|alerts| Notifier
+    Distiller & Investigator --> Developer
+    Developer --> Ralph
+    Ralph -->|"stable"| Creative
+    Ralph --> A2A
+
+    classDef entryNode fill:#6366f1,stroke:#4338ca,color:#fff,stroke-width:2px
+    classDef ingestNode fill:#10b981,stroke:#059669,color:#fff,stroke-width:1.5px
+    classDef analysisNode fill:#f59e0b,stroke:#d97706,color:#fff,stroke-width:1.5px
+    classDef resolveNode fill:#ef4444,stroke:#dc2626,color:#fff,stroke-width:2px
+    classDef gateNode fill:#8b5cf6,stroke:#7c3aed,color:#fff,stroke-width:1.5px
+    classDef outputNode fill:#06b6d4,stroke:#0891b2,color:#fff,stroke-width:1.5px
+    classDef subgraphBox fill:transparent,stroke:#e5e7eb,stroke-width:1px,color:#6b7280
+
+    class Runner entryNode
+    class Monitor,GitHub,Remote ingestNode
+    class Triage,Distiller,Investigator analysisNode
+    class Notifier analysisNode
+    class Developer resolveNode
+    class Ralph gateNode
+    class Creative,A2A outputNode
+    class entry,ingest,analysis,resolution,governance subgraphBox
 ```
 
 ---
 
 ## How the Fix Loop Works
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  Attempt 1 (Sonnet)                                             │
-│  try fix → run tests → FAIL → capture error message             │
-├─────────────────────────────────────────────────────────────────┤
-│  Attempt 2 (Sonnet)                                             │
-│  try fix WITH previous error context → run tests → FAIL         │
-├─────────────────────────────────────────────────────────────────┤
-│  Attempt 3 (Opus)                                               │
-│  escalate → orchestrate sub-agents → run tests → PASS → KEEP   │
-├─────────────────────────────────────────────────────────────────┤
-│  All 3 fail? → HITL escalation via Telegram                    │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    Start(["fa:fa-ticket-alt New Ticket"]):::startNode --> Cache{"fa:fa-database Trajectory\ncache hit?"}:::decisionNode
+
+    Cache -->|"cache hit"| Replay["fa:fa-bolt Replay cached fix\nzero cost, instant"]:::cacheNode
+    Replay --> Tests0{"fa:fa-vial Tests?"}:::testNode
+    Tests0 -->|"pass"| Keep0(["fa:fa-check KEEP — commit"]):::successNode
+
+    Cache -->|"cache miss"| A1
+
+    subgraph attempts ["Escalating Fix Attempts"]
+        A1["fa:fa-code Attempt 1\nSonnet — routine fix"]:::sonnetNode
+        A1 --> Tests1{"fa:fa-vial Tests?"}:::testNode
+        Tests1 -->|"pass"| Keep1(["fa:fa-check KEEP"]):::successNode
+        Tests1 -->|"fail"| A2["fa:fa-code Attempt 2\nSonnet — with error context"]:::sonnetNode
+        A2 --> Tests2{"fa:fa-vial Tests?"}:::testNode
+        Tests2 -->|"pass"| Keep2(["fa:fa-check KEEP"]):::successNode
+        Tests2 -->|"fail"| A3["fa:fa-brain Attempt 3\nOpus — orchestrates sub-agents"]:::opusNode
+        A3 --> Tests3{"fa:fa-vial Tests?"}:::testNode
+        Tests3 -->|"pass"| Keep3(["fa:fa-check KEEP"]):::successNode
+        Tests3 -->|"fail"| HITL
+    end
+
+    HITL(["fa:fa-user HITL Escalation\nHuman notified via Telegram"]):::failNode
+
+    Tests0 -->|"fail"| A1
+
+    classDef startNode fill:#6366f1,stroke:#4338ca,color:#fff,stroke-width:2px
+    classDef decisionNode fill:#f59e0b,stroke:#d97706,color:#fff,stroke-width:2px
+    classDef cacheNode fill:#8b5cf6,stroke:#7c3aed,color:#fff,stroke-width:1.5px
+    classDef testNode fill:#64748b,stroke:#475569,color:#fff,stroke-width:1.5px
+    classDef sonnetNode fill:#3b82f6,stroke:#2563eb,color:#fff,stroke-width:1.5px
+    classDef opusNode fill:#ef4444,stroke:#dc2626,color:#fff,stroke-width:2px
+    classDef successNode fill:#10b981,stroke:#059669,color:#fff,stroke-width:2px
+    classDef failNode fill:#ef4444,stroke:#dc2626,color:#fff,stroke-width:2px
 ```
 
-Each attempt runs on a **git branch**. Tests pass → commit. Tests fail → `git reset --hard` (auto-revert). No broken code ever reaches main.
+Each attempt runs on a **git branch**. Tests pass = commit. Tests fail = `git reset --hard` (auto-revert). No broken code ever reaches main.
 
 ---
 
@@ -139,6 +168,47 @@ SWE Squad routes to the cheapest model that can handle the job:
 | CRITICAL bugs | **Opus** | $$$ | 10 min |
 | After 2 failed Sonnet attempts | **Opus** | $$$ | 10 min |
 | Deterministic replay (cached) | **None** | Free | < 1s |
+
+```mermaid
+flowchart LR
+    Ticket(["fa:fa-ticket-alt Incoming\nTicket"]):::startNode --> Cached{"fa:fa-database Cached\nfix?"}:::decisionNode
+
+    Cached -->|"hit — free"| Replay(["fa:fa-bolt Replay\nzero cost"]):::cacheNode
+    Cached -->|"miss"| Severity{"fa:fa-balance-scale Severity?"}:::decisionNode
+
+    subgraph tiers ["Model Tiers"]
+        direction TB
+        T1["fa:fa-feather T1 · Haiku\nEmbeddings, triage\n$ · 30s timeout"]:::t1Node
+        T2["fa:fa-code T2 · Sonnet\nInvestigation + fix\n$$ · 2 min timeout"]:::t2Node
+        T3["fa:fa-brain T3 · Opus\nOrchestrator only\n$$$ · 10 min timeout"]:::t3Node
+    end
+
+    Severity -->|"LOW / MEDIUM"| T1
+    Severity -->|"HIGH"| T2
+    Severity -->|"CRITICAL / regression"| T3
+    T2 -->|"2 failures → escalate"| T3
+
+    subgraph fallback ["Fallback Chain"]
+        direction LR
+        Claude["fa:fa-terminal Claude Code\nprimary"]:::claudeNode
+        Gemini["fa:fa-robot Gemini CLI\nT2 fallback"]:::geminiNode
+        OpenCode["fa:fa-laptop-code OpenCode\nT3 fallback"]:::opencodeNode
+        Claude -->|"rate limited"| Gemini -->|"unavailable"| OpenCode
+    end
+
+    T2 -.-> Claude
+    T3 -.-> Claude
+
+    classDef startNode fill:#6366f1,stroke:#4338ca,color:#fff,stroke-width:2px
+    classDef decisionNode fill:#f59e0b,stroke:#d97706,color:#fff,stroke-width:2px
+    classDef cacheNode fill:#10b981,stroke:#059669,color:#fff,stroke-width:2px
+    classDef t1Node fill:#94a3b8,stroke:#64748b,color:#fff,stroke-width:1.5px
+    classDef t2Node fill:#3b82f6,stroke:#2563eb,color:#fff,stroke-width:1.5px
+    classDef t3Node fill:#ef4444,stroke:#dc2626,color:#fff,stroke-width:2px
+    classDef claudeNode fill:#8b5cf6,stroke:#7c3aed,color:#fff,stroke-width:1.5px
+    classDef geminiNode fill:#f59e0b,stroke:#d97706,color:#fff,stroke-width:1.5px
+    classDef opencodeNode fill:#14b8a6,stroke:#0d9488,color:#fff,stroke-width:1.5px
+```
 
 ---
 
@@ -261,10 +331,51 @@ SWE Squad learns from resolved tickets. When an investigator starts on a new tic
 
 ### How it works
 
+```mermaid
+flowchart TD
+    subgraph store ["fa:fa-download Storage Pipeline — on ticket resolved"]
+        Resolved(["fa:fa-check-circle Ticket Resolved"]):::successNode
+        Extract["fa:fa-brain extract_memory_facts()\ngemini-3-flash via BASE_LLM\nStructured: root cause, fix, module, tags"]:::extractNode
+        Embed["fa:fa-vector-square embed_ticket()\nbge-m3 · 1024 dimensions"]:::embedNode
+        Dedup{"fa:fa-code-branch Cosine\n> 0.92?"}:::decisionNode
+        StoreDB[("fa:fa-database Supabase\npgvector")]:::dbNode
+        Merge["fa:fa-compress-arrows-alt Merge\nRicher content wins"]:::mergeNode
+
+        Resolved --> Extract --> Embed --> Dedup
+        Dedup -->|"new memory"| StoreDB
+        Dedup -->|"near-duplicate"| Merge --> StoreDB
+    end
+
+    subgraph retrieve ["fa:fa-upload Retrieval Pipeline — on next investigation"]
+        NewTicket(["fa:fa-ticket-alt New Ticket"]):::startNode
+        Search["fa:fa-search find_similar()\nTop-5 · cosine >= 0.75 · 180-day TTL\nConfidence-weighted ranking"]:::searchNode
+        Inject["fa:fa-syringe Inject context\n## Semantic Memory"]:::injectNode
+        Investigate["fa:fa-microscope Investigation\nPrompt"]:::investigateNode
+        Hit["fa:fa-chart-line record_memory_hit()\nconfidence +0.1 · max 2.0"]:::hitNode
+
+        NewTicket --> Search
+        Search --> StoreDB
+        StoreDB --> Inject --> Investigate
+        Investigate --> Hit --> StoreDB
+    end
+
+    classDef successNode fill:#10b981,stroke:#059669,color:#fff,stroke-width:2px
+    classDef startNode fill:#6366f1,stroke:#4338ca,color:#fff,stroke-width:2px
+    classDef extractNode fill:#f59e0b,stroke:#d97706,color:#fff,stroke-width:1.5px
+    classDef embedNode fill:#8b5cf6,stroke:#7c3aed,color:#fff,stroke-width:1.5px
+    classDef decisionNode fill:#f59e0b,stroke:#d97706,color:#fff,stroke-width:2px
+    classDef dbNode fill:#3ecf8e,stroke:#2da66e,color:#fff,stroke-width:2px
+    classDef mergeNode fill:#f97316,stroke:#ea580c,color:#fff,stroke-width:1.5px
+    classDef searchNode fill:#3b82f6,stroke:#2563eb,color:#fff,stroke-width:1.5px
+    classDef injectNode fill:#8b5cf6,stroke:#7c3aed,color:#fff,stroke-width:1.5px
+    classDef investigateNode fill:#ef4444,stroke:#dc2626,color:#fff,stroke-width:2px
+    classDef hitNode fill:#14b8a6,stroke:#0d9488,color:#fff,stroke-width:1.5px
+```
+
 1. **Fact extraction** — when a ticket is resolved, `gemini-3-flash` (via BASE_LLM proxy) distils the investigation report into a compact structured fact: root cause, fix applied, affected module, and error/fix tags
 2. **Embedding** — the structured fact is embedded with `bge-m3` (1024-dim) and stored in Supabase pgvector
 3. **Deduplication** — before storing, a 0.92-threshold cosine check prevents near-duplicate memories; richer content wins on merge
-4. **Retrieval** — at investigation time, the top-5 most similar memories (≥0.75 cosine, ≤180 days old) are injected into the investigation prompt
+4. **Retrieval** — at investigation time, the top-5 most similar memories (>=0.75 cosine, <=180 days old) are injected into the investigation prompt
 5. **Confidence** — each time a memory is used, its `memory_confidence` score increases (+0.1, max 2.0); confidence-weighted ranking surfaces proven memories over stale ones
 
 ### Requirements
@@ -279,11 +390,36 @@ SWE Squad learns from resolved tickets. When an investigator starts on a new tic
 
 Multiple SWE Squads can operate independently on the same infrastructure:
 
-```
-Squad Alpha (team_id: "alpha")  ──▶  Supabase  ◀──  Squad Beta (team_id: "beta")
-     │                                                    │
-     ▼                                                    ▼
-  Repo A (issues assigned to @bot-alpha)            Repo B (issues assigned to @bot-beta)
+```mermaid
+flowchart LR
+    subgraph alpha ["Squad Alpha"]
+        AlphaSquad["fa:fa-users Squad Alpha\nteam_id: alpha"]:::alphaNode
+        RepoA["fa:fa-github Repo A\n@bot-alpha"]:::alphaNode
+        AlphaSquad --> RepoA
+    end
+
+    subgraph beta ["Squad Beta"]
+        BetaSquad["fa:fa-users Squad Beta\nteam_id: beta"]:::betaNode
+        RepoB["fa:fa-github Repo B\n@bot-beta"]:::betaNode
+        BetaSquad --> RepoB
+    end
+
+    subgraph shared ["Shared Infrastructure"]
+        Supabase[("fa:fa-database Supabase\npgvector + tickets")]:::dbNode
+        Memory["fa:fa-brain Semantic Memory\nCross-team patterns"]:::memoryNode
+        Hub["fa:fa-network-wired A2A Hub\nInter-agent events"]:::hubNode
+        Supabase --- Memory
+        Supabase --- Hub
+    end
+
+    AlphaSquad <--> Supabase
+    BetaSquad <--> Supabase
+
+    classDef alphaNode fill:#3b82f6,stroke:#2563eb,color:#fff,stroke-width:1.5px
+    classDef betaNode fill:#ef4444,stroke:#dc2626,color:#fff,stroke-width:1.5px
+    classDef dbNode fill:#3ecf8e,stroke:#2da66e,color:#fff,stroke-width:2px
+    classDef memoryNode fill:#8b5cf6,stroke:#7c3aed,color:#fff,stroke-width:1.5px
+    classDef hubNode fill:#f59e0b,stroke:#d97706,color:#fff,stroke-width:1.5px
 ```
 
 Each squad:

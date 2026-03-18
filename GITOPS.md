@@ -50,22 +50,20 @@ The script:
 
 ## Architecture Diagram
 
-```
-DEV folder (SWE-Squad/)
-  │
-  │  git push origin main → SWE-Squad-DEV (private)
-  │
-  │  ./scripts/ops/sync_public.sh --push
-  │         │
-  │         │  rsync → squash → secret scan → push
-  │         ▼
-  │  Public folder (SWE-Squad-Public/)
-  │         │
-  │         │  git push origin main → SWE-Squad (public)
-  │         ▼
-  │  https://github.com/ArtemisAI/SWE-Squad
-  │
-  │  rsync (deploy to sandbox, no git remotes)
-  │         ▼
-  └──► VM SWE-Squad-1 (agent sandbox, local git only)
+```mermaid
+flowchart TD
+    DEV["DEV folder\n(SWE-Squad/)"] -->|"git push origin main"| DEVRepo[("SWE-Squad-DEV\n(private repo)")]
+
+    DEV -->|"sync_public.sh --push"| Sync["rsync + squash\n+ secret scan"]
+    Sync --> Public["Public folder\n(SWE-Squad-Public/)"]
+    Public -->|"git push origin main"| PubRepo[("SWE-Squad\n(public repo)")]
+
+    DEV -->|"rsync (no git remotes)"| VM["VM SWE-Squad-1\n(agent sandbox,\nlocal git only)"]
+
+    style DEV fill:#4a90d9,stroke:#2c5f8a,color:#fff
+    style DEVRepo fill:#e74c3c,stroke:#c0392b,color:#fff
+    style Sync fill:#f39c12,stroke:#d68910,color:#fff
+    style Public fill:#27ae60,stroke:#1e8449,color:#fff
+    style PubRepo fill:#27ae60,stroke:#1e8449,color:#fff
+    style VM fill:#9b59b6,stroke:#7d3c98,color:#fff
 ```
