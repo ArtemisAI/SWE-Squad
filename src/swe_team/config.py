@@ -352,6 +352,23 @@ class MemoryConfig:
 
 
 # ---------------------------------------------------------------------------
+# Job scheduler settings
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SchedulerConfig:
+    """Job scheduler configuration."""
+    enabled: bool = False
+    tick_interval_seconds: int = 30
+    max_workers: int = 3
+    job_store_path: str = "data/swe_team/jobs.json"
+    peak_start_hour: int = 13
+    peak_end_hour: int = 19
+    peak_days: str = "0,1,2,3,4"
+    default_jobs: list = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # Top-level SWE team configuration
 # ---------------------------------------------------------------------------
 
@@ -367,6 +384,7 @@ class SWETeamConfig:
     rate_limits: RateLimitConfig = field(default_factory=RateLimitConfig)
     cycle: CycleConfig = field(default_factory=CycleConfig)
     fallback_agents: List[FallbackAgentConfig] = field(default_factory=list)
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     repos: List[Dict[str, Any]] = field(default_factory=list)
     ticket_store_path: str = "data/swe_team/tickets.json"
     a2a_hub_url: str = "http://localhost:18790"
@@ -452,6 +470,20 @@ def load_config(path: Optional[str] = None) -> SWETeamConfig:
     else:
         logger.info("SWE team config %s not found — using defaults", p)
         config = SWETeamConfig()
+
+    # Scheduler section
+    sched_raw = raw.get("scheduler", {}) if p.is_file() else {}
+    if sched_raw:
+        config.scheduler = SchedulerConfig(
+            enabled=sched_raw.get("enabled", False),
+            tick_interval_seconds=sched_raw.get("tick_interval_seconds", 30),
+            max_workers=sched_raw.get("max_workers", 3),
+            job_store_path=sched_raw.get("job_store_path", "data/swe_team/jobs.json"),
+            peak_start_hour=sched_raw.get("peak_start_hour", 13),
+            peak_end_hour=sched_raw.get("peak_end_hour", 19),
+            peak_days=str(sched_raw.get("peak_days", "0,1,2,3,4")),
+            default_jobs=sched_raw.get("default_jobs", []),
+        )
 
     # Environment variable overrides
     env_enabled = os.environ.get("SWE_TEAM_ENABLED")

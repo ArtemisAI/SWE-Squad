@@ -1272,6 +1272,41 @@ def daemon_loop(
     cycles_run = 0
     limit_msg = f", max_cycles={max_cycles}" if max_cycles else ""
     logger.info("SWE Team daemon starting (interval=%ds%s)", interval_seconds, limit_msg)
+
+    # Start job scheduler if enabled
+    _scheduler = None
+    if config.scheduler.enabled:
+        try:
+            from src.swe_team.scheduler import JobScheduler, JobStore, TimeWindow, ScheduledJob, ScheduleType, JobPriority
+            job_store = JobStore(Path(config.scheduler.job_store_path))
+            time_window = TimeWindow(
+                peak_start_hour=config.scheduler.peak_start_hour,
+                peak_end_hour=config.scheduler.peak_end_hour,
+                peak_days=[int(d) for d in config.scheduler.peak_days.split(",")],
+            )
+            _scheduler = JobScheduler(
+                store=job_store,
+                time_window=time_window,
+                max_workers=config.scheduler.max_workers,
+                tick_interval=config.scheduler.tick_interval_seconds,
+            )
+            # Seed default jobs if store is empty
+            if not job_store.load_all() and config.scheduler.default_jobs:
+                for jdef in config.scheduler.default_jobs:
+                    job = ScheduledJob(
+                        name=jdef.get("name", ""),
+                        schedule_type=ScheduleType(jdef.get("schedule_type", "cron")),
+                        cron_expression=jdef.get("cron_expression", ""),
+                        priority=JobPriority(jdef.get("priority", "normal")),
+                        instructions=jdef.get("instructions", ""),
+                        respect_peak_hours=jdef.get("respect_peak_hours", True),
+                    )
+                    _scheduler.add_job(job)
+            _scheduler.start()
+            logger.info("Job scheduler started (%d jobs)", len(job_store.load_all()))
+        except Exception:
+            logger.exception("Failed to start scheduler — continuing without it")
+
     try:
         while not shutdown.is_set():
             try:
@@ -1299,6 +1334,8 @@ def daemon_loop(
             if shutdown.wait(timeout=interval_seconds):
                 break
     finally:
+        if _scheduler:
+            _scheduler.stop()
         signal.signal(signal.SIGTERM, prev_sigterm)
         signal.signal(signal.SIGINT, prev_sigint)
     logger.info("SWE Team daemon stopped after %d cycle(s)", cycles_run)
@@ -1340,6 +1377,7 @@ def main() -> None:
         metavar="N",
         help="Stop daemon after N cycles (default: run forever). Useful for cron launchers.",
     )
+    parser.add_argument("--scheduler", action="store_true", help="Enable job scheduler")
     parser.add_argument(
         "--a2a",
         action="store_true",
@@ -1359,6 +1397,10 @@ def main() -> None:
     if not config.enabled:
         logger.info("SWE team disabled (enabled=false). Set SWE_TEAM_ENABLED=true to activate.")
         return
+
+    # --scheduler flag overrides config
+    if args.scheduler:
+        config.scheduler.enabled = True
 
     logger.info("=== SWE Team Runner starting ===")
 

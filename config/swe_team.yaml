@@ -284,3 +284,29 @@ agents:
     max_concurrent_tasks: 1
     enabled: true
     node: "primary"
+
+# Job Scheduler
+scheduler:
+  enabled: true
+  tick_interval_seconds: 30
+  max_workers: 3
+  peak_start_hour: 13   # UTC (8 AM ET)
+  peak_end_hour: 19     # UTC (2 PM ET)
+  peak_days: "0,1,2,3,4"
+  default_jobs:
+    - name: "SWE monitoring cycle"
+      schedule_type: "cron"
+      cron_expression: "*/30 * * * *"
+      priority: "critical"
+      instructions: "run_cycle"
+      respect_peak_hours: false
+    - name: "Daily summary report"
+      schedule_type: "cron"
+      cron_expression: "0 8 * * *"
+      priority: "normal"
+      instructions: "daily_summary"
+    - name: "PR sync to knowledge graph"
+      schedule_type: "cron"
+      cron_expression: "*/5 * * * *"
+      priority: "low"
+      instructions: "pr_sync"
