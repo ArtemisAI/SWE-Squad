@@ -5,15 +5,16 @@ Every SWE-Squad operation (investigation, development, review) gets a
 unique session tag for end-to-end tracing across logs, GitHub comments,
 commits, and the Claude Code console.
 
-Format: SWE-SQUAD-{TYPE}-{ID}
-  - SWE-SQUAD-ISSUE#42      — working on GitHub issue #42
-  - SWE-SQUAD-TICKET-a1b2c3  — working on ticket a1b2c3 (no GH issue)
-  - SWE-SQUAD-CYCLE-20260318T1300 — routine monitoring cycle
+Format: SWE-SQUAD-{TYPE}-{ID} [trace:{uuid8}]
+  - SWE-SQUAD-ISSUE#42 [trace:...]      — working on GitHub issue #42
+  - SWE-SQUAD-TICKET-a1b2c3 [trace:...] — working on ticket a1b2c3 (no GH issue)
+  - SWE-SQUAD-CYCLE-20260318T1300 [trace:...] — routine monitoring cycle
+
+The [trace:...] suffix is always appended for end-to-end correlation.
 """
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 from datetime import datetime, timezone
 from typing import Optional

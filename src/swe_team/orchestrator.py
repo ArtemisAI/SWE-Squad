@@ -10,16 +10,14 @@ SEC-68 compliant: only Claude models for code generation.
 """
 from __future__ import annotations
 
-import json
 import logging
-import os
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
-from src.swe_team.models import SWETicket, TicketSeverity
+from src.swe_team.models import SWETicket
 from src.swe_team.session import make_session_tag
 from src.swe_team.github_integration import update_github_comment
 
@@ -70,7 +68,7 @@ class OrchestratorAgent:
         repo_root: Optional[Path] = None,
         model: str = "opus",
     ):
-        import shutil
+        import shutil, os
         self._claude_path = claude_path or os.environ.get("CLAUDE_CLI_PATH", "") or shutil.which("claude") or "/usr/bin/claude"
         self._repo_root = repo_root or Path.cwd()
         self._model = model
@@ -98,7 +96,12 @@ class OrchestratorAgent:
                 timeout=120,
                 cwd=str(self._repo_root),
             )
+            if result.returncode != 0:
+                logger.error("Orchestrator plan CLI failed (exit %d): %s", result.returncode, result.stderr[:500])
+                raise RuntimeError(f"Claude CLI failed (exit {result.returncode}): {result.stderr[:500]}")
             raw = result.stdout.strip()
+        except RuntimeError:
+            raise
         except Exception as exc:
             logger.error("Orchestrator plan failed: %s", exc)
             raw = ""
@@ -112,15 +115,18 @@ class OrchestratorAgent:
         from src.swe_team.model_boundary import enforce_code_generation_boundary
 
         # Validate model boundary for code tasks
-        if any(w in task.description.lower() for w in ["implement", "fix", "write", "create", "modify"]):
+        if task.files_to_modify or _is_code_gen_task(task.description):
             enforce_code_generation_boundary(task.model, task="develop")
 
         files_context = ""
         for f in task.files_to_read[:5]:
             fpath = self._repo_root / f
-            if fpath.exists():
-                content = fpath.read_text()[:3000]
-                files_context += f"\n### {f}\n```\n{content}\n```\n"
+            if fpath.is_file():
+                try:
+                    content = fpath.read_text()[:3000]
+                    files_context += f"\n### {f}\n```\n{content}\n```\n"
+                except UnicodeDecodeError:
+                    logger.warning("Skipping binary/undecodable file: %s", f)
 
         prompt = (
             f"You are working on sub-task: {task.description}\n"
@@ -143,7 +149,12 @@ class OrchestratorAgent:
                 timeout=300,
                 cwd=str(self._repo_root),
             )
+            if result.returncode != 0:
+                logger.error("Sub-task %s CLI failed (exit %d): %s", task.id, result.returncode, result.stderr[:500])
+                raise RuntimeError(f"Claude CLI failed (exit {result.returncode}): {result.stderr[:500]}")
             return result.stdout.strip()
+        except RuntimeError:
+            raise
         except Exception as exc:
             logger.error("Sub-task %s failed: %s", task.id, exc)
             return ""
@@ -202,9 +213,9 @@ class OrchestratorAgent:
                     if p.upper().startswith("MODEL:"):
                         model = p.split(":", 1)[1].strip().lower()
                     elif p.upper().startswith("READ:"):
-                        read_files = [f.strip() for f in p.split(":", 1)[1].split(",")]
+                        read_files = [f.strip() for f in p.split(":", 1)[1].split(",") if f.strip()]
                     elif p.upper().startswith("MODIFY:"):
-                        modify_files = [f.strip() for f in p.split(":", 1)[1].split(",")]
+                        modify_files = [f.strip() for f in p.split(":", 1)[1].split(",") if f.strip()]
                 plan.sub_tasks.append(SubTask(
                     id=str(task_count),
                     description=desc,
@@ -221,3 +232,10 @@ class OrchestratorAgent:
             plan.sub_tasks = [SubTask(id="1", description="Investigate and fix", model="sonnet")]
 
         return plan
+
+
+def _is_code_gen_task(description: str) -> bool:
+    """Return True if the task description suggests code generation work."""
+    keywords = ["implement", "fix", "write", "create", "modify"]
+    desc_lower = description.lower()
+    return any(w in desc_lower for w in keywords)
