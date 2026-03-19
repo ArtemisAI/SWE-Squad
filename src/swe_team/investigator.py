@@ -35,8 +35,9 @@ _DEFAULT_PROGRAM_PATH = Path("config/swe_team/programs/investigate.md")
 _ORCHESTRATE_PROGRAM_PATH = Path("config/swe_team/programs/orchestrate.md")
 _FEATURE_PROGRAM_PATH = Path("config/swe_team/programs/feature.md")
 _DEFAULT_CLAUDE_PATH = os.environ.get("CLAUDE_CLI_PATH", "") or shutil.which("claude") or "/usr/bin/claude"
-_DEFAULT_TIMEOUT = 300  # 5 min — LinkedAi codebase is large; 120s was timing out every Sonnet run
-_OPUS_TIMEOUT = 600  # Opus gets 10 min — it orchestrates multiple sub-agents
+_DEFAULT_TIMEOUT = int(os.environ.get("SWE_INVESTIGATION_TIMEOUT", 300))
+_OPUS_TIMEOUT = int(os.environ.get("SWE_OPUS_TIMEOUT", 600))
+_FALLBACK_MODEL = os.environ.get("SWE_FALLBACK_MODEL", "gemini")
 _DEFAULT_MAX_PER_CYCLE = 5
 _SEMANTIC_INVESTIGATION_CHARS = 400
 _SEMANTIC_FIX_CHARS = 200
@@ -136,7 +137,7 @@ class InvestigatorAgent:
             return False
 
         # Gemini routing: skip Claude CLI entirely, use fallback agents directly
-        if model == "gemini":
+        if model == _FALLBACK_MODEL:
             logger.info(
                 "Routing ticket %s to Gemini fallback agents (severity=%s)",
                 ticket.ticket_id, ticket.severity.value,
@@ -152,7 +153,7 @@ class InvestigatorAgent:
                     "completed_at": datetime.now(timezone.utc).isoformat(),
                     "duration_s": round(duration_s, 2),
                     "cost_usd": None,
-                    "model": "gemini",
+                    "model": _FALLBACK_MODEL,
                     "status": "complete",
                     "fallback_agent": ticket.metadata.get("fallback_agent_used", "gemini-cli"),
                 }
@@ -517,7 +518,7 @@ class InvestigatorAgent:
         """Select model tier based on severity, attempt count, and timeout history.
 
         Routing:
-        - MEDIUM/LOW → "gemini" (routed to fallback agents, free 1M context)
+        - MEDIUM/LOW → fallback model (routed to fallback agents, free 1M context)
         - HIGH → Sonnet (t2_standard)
         - CRITICAL, first attempt → Sonnet (t2_standard) — try cheap first
         - CRITICAL, retry after Sonnet failure → Opus (t1_heavy) escalation
@@ -542,7 +543,7 @@ class InvestigatorAgent:
 
         # MEDIUM (and LOW, though _eligible blocks LOW) → Gemini fallback
         if ticket.severity == TicketSeverity.MEDIUM:
-            return "gemini"
+            return _FALLBACK_MODEL
 
         if ticket.severity == TicketSeverity.CRITICAL:
             # Escalate to Opus only on retry (prior investigation failed)

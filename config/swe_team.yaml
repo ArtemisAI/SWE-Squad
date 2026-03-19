@@ -58,7 +58,7 @@ governance:
 # ---------------------------------------------------------------------------
 monitor:
   enabled: true
-  scan_interval_minutes: 30
+  scan_interval_minutes: 15    # Overnight high-throughput (was 30)
   dedup_window_hours: 72
   log_directories:
     - "logs/"
@@ -101,14 +101,14 @@ cycle:
   max_new_tickets_per_cycle: 10
 
   # Max tickets to investigate per cycle (each = 1 Claude CLI call).
-  max_investigations_per_cycle: 5
+  max_investigations_per_cycle: 10  # Overnight high-throughput (was 5)
 
   # Max tickets to attempt a fix on per cycle (each = 1+ Claude CLI calls).
-  max_developments_per_cycle: 4
+  max_developments_per_cycle: 5     # Overnight high-throughput (was 4)
 
   # Hard cap on concurrent INVESTIGATING tickets across all cycles.
   # New investigations are skipped when this limit is in use.
-  max_open_investigating: 5
+  max_open_investigating: 8         # Overnight high-throughput (was 5)
 
 # ---------------------------------------------------------------------------
 # Model Cost Tiers
@@ -296,7 +296,7 @@ scheduler:
   default_jobs:
     - name: "SWE monitoring cycle"
       schedule_type: "cron"
-      cron_expression: "*/30 * * * *"
+      cron_expression: "*/15 * * * *"    # Overnight high-throughput (was */30)
       priority: "critical"
       instructions: "run_cycle"
       respect_peak_hours: false

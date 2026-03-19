@@ -45,11 +45,14 @@ def on_ticket_resolved(
     ticket: SWETicket,
     ticket_store: SupabaseTicketStore,
     graph_store: KnowledgeGraphStore,
+    *,
+    auto_resolve_threshold: float = AUTO_RESOLVE_THRESHOLD,
+    max_auto_resolve: int = MAX_AUTO_RESOLVE,
 ) -> List[str]:
     """Called when a ticket transitions to RESOLVED.
 
     Checks for cluster siblings and auto-resolves those with
-    cosine similarity > 0.90.
+    cosine similarity above *auto_resolve_threshold* (default 0.90).
 
     Returns list of auto-resolved ticket IDs.
     """
@@ -79,8 +82,8 @@ def on_ticket_resolved(
         for sibling_id in cluster.ticket_ids:
             if sibling_id == ticket.ticket_id:
                 continue
-            if resolved_count >= MAX_AUTO_RESOLVE:
-                logger.info("Reached auto-resolve cap (%d), stopping", MAX_AUTO_RESOLVE)
+            if resolved_count >= max_auto_resolve:
+                logger.info("Reached auto-resolve cap (%d), stopping", max_auto_resolve)
                 break
 
             try:
@@ -94,7 +97,7 @@ def on_ticket_resolved(
                 matches = ticket_store.find_similar(
                     resolved_embedding,
                     top_k=1,
-                    similarity_floor=AUTO_RESOLVE_THRESHOLD,
+                    similarity_floor=auto_resolve_threshold,
                 )
 
                 # Check if the sibling is among the high-similarity matches
@@ -110,7 +113,7 @@ def on_ticket_resolved(
                     if sibling_embedding and resolved_embedding:
                         # Compute cosine similarity
                         similarity = _cosine_similarity(resolved_embedding, sibling_embedding)
-                        if similarity < AUTO_RESOLVE_THRESHOLD:
+                        if similarity < auto_resolve_threshold:
                             continue
                     else:
                         continue
@@ -161,6 +164,8 @@ def discover_cluster(
     embedding: List[float],
     ticket_store: SupabaseTicketStore,
     graph_store: KnowledgeGraphStore,
+    *,
+    cluster_threshold: float = CLUSTER_THRESHOLD,
 ) -> Optional[str]:
     """Check if a ticket belongs to an existing cluster, or create a new one.
 
@@ -180,7 +185,7 @@ def discover_cluster(
         matches = ticket_store.find_similar(
             embedding,
             top_k=10,
-            similarity_floor=CLUSTER_THRESHOLD,
+            similarity_floor=cluster_threshold,
         )
 
         # Filter out self
@@ -188,7 +193,7 @@ def discover_cluster(
             str(m.get("ticket_id", ""))
             for m in matches
             if str(m.get("ticket_id", "")) != ticket.ticket_id
-            and float(m.get("raw_similarity", m.get("similarity", 0))) >= CLUSTER_THRESHOLD
+            and float(m.get("raw_similarity", m.get("similarity", 0))) >= cluster_threshold
         ]
 
         if len(similar_ids) < 1:

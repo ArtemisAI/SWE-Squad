@@ -327,6 +327,10 @@ class MemoryConfig:
     top_k: int = 5
     similarity_floor: float = 0.75
     store_on_investigation_complete: bool = True
+    auto_resolve_threshold: float = 0.90
+    cluster_threshold: float = 0.85
+    dedup_threshold: float = 0.92
+    similarity_edge_threshold: float = 0.80
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MemoryConfig":
@@ -339,6 +343,10 @@ class MemoryConfig:
                 "store_on_investigation_complete",
                 True,
             ),
+            auto_resolve_threshold=data.get("auto_resolve_threshold", 0.90),
+            cluster_threshold=data.get("cluster_threshold", 0.85),
+            dedup_threshold=data.get("dedup_threshold", 0.92),
+            similarity_edge_threshold=data.get("similarity_edge_threshold", 0.80),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -348,6 +356,38 @@ class MemoryConfig:
             "top_k": self.top_k,
             "similarity_floor": self.similarity_floor,
             "store_on_investigation_complete": self.store_on_investigation_complete,
+            "auto_resolve_threshold": self.auto_resolve_threshold,
+            "cluster_threshold": self.cluster_threshold,
+            "dedup_threshold": self.dedup_threshold,
+            "similarity_edge_threshold": self.similarity_edge_threshold,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Agent timing settings
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AgentTimingConfig:
+    """Timeout and TTL settings for agent operations."""
+
+    investigation_timeout: int = 300
+    opus_timeout: int = 600
+    agent_registry_ttl: int = 300
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentTimingConfig":
+        return cls(
+            investigation_timeout=data.get("investigation_timeout", 300),
+            opus_timeout=data.get("opus_timeout", 600),
+            agent_registry_ttl=data.get("agent_registry_ttl", 300),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "investigation_timeout": self.investigation_timeout,
+            "opus_timeout": self.opus_timeout,
+            "agent_registry_ttl": self.agent_registry_ttl,
         }
 
 
@@ -384,6 +424,7 @@ class SWETeamConfig:
     rate_limits: RateLimitConfig = field(default_factory=RateLimitConfig)
     cycle: CycleConfig = field(default_factory=CycleConfig)
     fallback_agents: List[FallbackAgentConfig] = field(default_factory=list)
+    timing: AgentTimingConfig = field(default_factory=AgentTimingConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     repos: List[Dict[str, Any]] = field(default_factory=list)
     ticket_store_path: str = "data/swe_team/tickets.json"
@@ -408,6 +449,7 @@ class SWETeamConfig:
             FallbackAgentConfig.from_dict(f)
             for f in data.get("fallback_agents", [])
         ]
+        timing = AgentTimingConfig.from_dict(data.get("timing", {}))
         return cls(
             agents=agents,
             governance=gov,
@@ -417,6 +459,7 @@ class SWETeamConfig:
             rate_limits=rate_limits,
             cycle=cycle,
             fallback_agents=fallbacks,
+            timing=timing,
             repos=data.get("repos", []),
             ticket_store_path=data.get(
                 "ticket_store_path", "data/swe_team/tickets.json"
@@ -438,6 +481,7 @@ class SWETeamConfig:
             "rate_limits": self.rate_limits.to_dict(),
             "cycle": self.cycle.to_dict(),
             "fallback_agents": [f.to_dict() for f in self.fallback_agents],
+            "timing": self.timing.to_dict(),
             "repos": self.repos,
             "ticket_store_path": self.ticket_store_path,
             "a2a_hub_url": self.a2a_hub_url,

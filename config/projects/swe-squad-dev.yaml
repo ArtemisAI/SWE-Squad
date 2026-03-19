@@ -1,0 +1,15 @@
+project:
+  name: SWE-Squad-DEV
+  repo: ArtemisAI/SWE-Squad-DEV
+  local_path: /home/agent/SWE-Squad
+
+credentials:
+  github_token_env: GH_TOKEN
+  api_keys:
+    - name: anthropic
+      env: ANTHROPIC_API_KEY
+
+budget:
+  daily_cap_usd: 100.00
+  monthly_cap_usd: 1500.00
+  alert_threshold_pct: 80

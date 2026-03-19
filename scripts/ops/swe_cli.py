@@ -624,6 +624,29 @@ def cmd_costs(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ops(args: argparse.Namespace) -> int:
+    """Show multi-project operations status."""
+    from src.swe_team.ops.project_registry import ProjectRegistry
+    registry = ProjectRegistry()
+    projects = registry.list_projects()
+
+    if not projects:
+        print("No projects registered. Add YAML files to config/projects/")
+        return 0
+
+    print(f"{'Project':<25} {'Repo':<35} {'Daily Cap':<12} {'Status'}")
+    print("-" * 85)
+
+    validation = registry.validate_all()
+    for p in projects:
+        missing = validation.get(p.name, [])
+        status = "OK" if not missing else f"MISSING: {', '.join(missing[:3])}"
+        cap = f"${p.budget.daily_cap_usd:.0f}" if p.budget.daily_cap_usd else "\u2014"
+        print(f"{p.name:<25} {p.repo:<35} {cap:<12} {status}")
+
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     """Start the live dashboard web server."""
     from scripts.ops.dashboard_server import main as serve_main
@@ -707,6 +730,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp_costs = subparsers.add_parser("costs", help="Show token usage and cost summary")
     sp_costs.add_argument("--json", action="store_true", help="JSON output")
     sp_costs.set_defaults(func=cmd_costs)
+
+    # ── ops ──────────────────────────────────────────────────────────────
+    sp_ops = subparsers.add_parser("ops", help="Multi-project operations status")
+    sp_ops.set_defaults(func=cmd_ops)
 
     # serve — live dashboard web server
     p_serve = subparsers.add_parser("serve", help="Start live dashboard web server")
