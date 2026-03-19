@@ -4,6 +4,9 @@ Dynamic throttle system for SWE-Squad cycle limits.
 Replaces hardcoded cycle config values with dynamically computed limits
 based on time-of-day, API capacity, and backlog demand signals.
 
+Config can be provided via ThrottleConfig dataclass; YAML integration is
+optional and not included by default.
+
 Usage::
 
     from src.swe_team.throttle import (
@@ -39,7 +42,7 @@ _MAX_MULTIPLIER = 4.0
 
 
 # ---------------------------------------------------------------------------
-# Configuration dataclass (loaded from swe_team.yaml throttle: section)
+# Configuration dataclass
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -53,9 +56,9 @@ class ThrottleConfig:
 
     # Time band multipliers (keyed by band name)
     time_bands: Dict[str, float] = field(default_factory=lambda: {
-        "business": 1.0,    # 8am-5pm EST
-        "evening": 2.0,     # 5pm-12am EST
-        "overnight": 4.0,   # 12am-8am EST
+        "business": 1.0,    # 8am-5pm ET
+        "evening": 2.0,     # 5pm-12am ET
+        "overnight": 4.0,   # 12am-8am ET
     })
 
     # Capacity thresholds
@@ -96,10 +99,12 @@ class ThrottleConfig:
             "backlog_surge_threshold": self.backlog_surge_threshold,
             "critical_surge_threshold": self.critical_surge_threshold,
             "time_bands": self.time_bands,
-            "capacity_warning_pct": self.capacity_warning_pct,
-            "capacity_warning_multiplier": self.capacity_warning_multiplier,
-            "capacity_critical_pct": self.capacity_critical_pct,
-            "capacity_critical_multiplier": self.capacity_critical_multiplier,
+            "capacity_thresholds": {
+                "warning_pct": self.capacity_warning_pct,
+                "warning_multiplier": self.capacity_warning_multiplier,
+                "critical_pct": self.capacity_critical_pct,
+                "critical_multiplier": self.capacity_critical_multiplier,
+            },
         }
 
 
@@ -178,9 +183,13 @@ def _get_est_hour(utc_dt: datetime) -> int:
     except ImportError:
         # Fallback: assume EST (UTC-5) if zoneinfo not available
         from datetime import timedelta
+        if utc_dt.tzinfo is None:
+            utc_dt = utc_dt.replace(tzinfo=timezone.utc)
         est_dt = utc_dt - timedelta(hours=5)
         return est_dt.hour
 
+    if utc_dt.tzinfo is None:
+        utc_dt = utc_dt.replace(tzinfo=timezone.utc)
     est_dt = utc_dt.astimezone(eastern)
     return est_dt.hour
 
@@ -189,9 +198,9 @@ class TimeBasedAdapter(ThrottleAdapter):
     """Adjusts capacity based on time of day (US Eastern).
 
     Bands:
-    - business (8am-5pm EST): baseline (1.0x)
-    - evening (5pm-12am EST): increased (2.0x)
-    - overnight (12am-8am EST): maximum (4.0x)
+    - business (8am-5pm ET): baseline (1.0x)
+    - evening (5pm-12am ET): increased (2.0x)
+    - overnight (12am-8am ET): maximum (4.0x)
     """
 
     def __init__(self, config: ThrottleConfig) -> None:
@@ -208,9 +217,20 @@ class TimeBasedAdapter(ThrottleAdapter):
             band = "overnight"
 
         multiplier = self._config.time_bands.get(band, 1.0)
+
+        try:
+            from zoneinfo import ZoneInfo
+            eastern = ZoneInfo("America/New_York")
+            utc_dt = context.now_utc
+            if utc_dt.tzinfo is None:
+                utc_dt = utc_dt.replace(tzinfo=timezone.utc)
+            tz_abbr = utc_dt.astimezone(eastern).strftime("%Z")
+        except ImportError:
+            tz_abbr = "ET"
+
         return ThrottleResult(
             multiplier=multiplier,
-            reason=f"time={band} ({hour}:00 EST) → {multiplier}x",
+            reason=f"time={band} ({hour}:00 {tz_abbr}) → {multiplier}x",
         )
 
 

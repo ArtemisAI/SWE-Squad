@@ -1,11 +1,9 @@
-"""Tests for the dynamic throttle system (GH #95)."""
+"""Tests for the dynamic throttle system (#15)."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
-
-import pytest
+from datetime import datetime, timezone
 
 from src.swe_team.throttle import (
     CapacityAdapter,
@@ -14,7 +12,6 @@ from src.swe_team.throttle import (
     ThrottleConfig,
     ThrottleContext,
     ThrottlePolicy,
-    ThrottleResult,
     TimeBasedAdapter,
     days_until_weekly_reset,
     _get_est_hour,
@@ -52,7 +49,7 @@ def _default_config() -> ThrottleConfig:
 
 class TestTimeBasedAdapter:
     def test_business_hours(self):
-        """8am-6pm EST → business band (1.0x)."""
+        """8am-5pm ET → business band (1.0x)."""
         # 14:00 UTC = 10:00 AM EST (or 10:00 AM EDT in March)
         adapter = TimeBasedAdapter(_default_config())
         result = adapter.evaluate(_ctx(hour_utc=14), _FakeCycleConfig())
@@ -60,7 +57,7 @@ class TestTimeBasedAdapter:
         assert "business" in result.reason
 
     def test_evening_hours(self):
-        """6pm-12am EST → evening band (2.0x)."""
+        """5pm-12am ET → evening band (2.0x)."""
         # 23:00 UTC = 6:00 PM EST (or 7:00 PM EDT)
         adapter = TimeBasedAdapter(_default_config())
         result = adapter.evaluate(_ctx(hour_utc=23), _FakeCycleConfig())
@@ -68,7 +65,7 @@ class TestTimeBasedAdapter:
         assert "evening" in result.reason
 
     def test_overnight_hours(self):
-        """12am-8am EST → overnight band (4.0x)."""
+        """12am-8am ET → overnight band (4.0x)."""
         # 06:00 UTC = 1:00 AM EST (or 2:00 AM EDT)
         adapter = TimeBasedAdapter(_default_config())
         result = adapter.evaluate(_ctx(hour_utc=6), _FakeCycleConfig())
@@ -350,6 +347,20 @@ class TestThrottleConfig:
         d = tc.to_dict()
         assert d["enabled"] is True
         assert d["weekly_budget_usd"] == 750.0
+
+    def test_to_dict_from_dict_roundtrip(self):
+        """to_dict() output can be fed into from_dict() and round-trips correctly."""
+        original = ThrottleConfig(
+            enabled=True,
+            weekly_budget_usd=300.0,
+            capacity_warning_pct=0.75,
+            capacity_critical_multiplier=0.05,
+        )
+        restored = ThrottleConfig.from_dict(original.to_dict())
+        assert restored.enabled == original.enabled
+        assert restored.weekly_budget_usd == original.weekly_budget_usd
+        assert restored.capacity_warning_pct == original.capacity_warning_pct
+        assert restored.capacity_critical_multiplier == original.capacity_critical_multiplier
 
 
 # ---------------------------------------------------------------------------
