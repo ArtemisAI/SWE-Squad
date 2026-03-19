@@ -1,68 +1,81 @@
-# Contributing to SWE Squad
+# Contributing to SWE-Squad
 
-Thank you for your interest in contributing to SWE Squad! This document provides guidelines and information for contributors.
+Thank you for your interest in SWE-Squad!
 
-## Getting Started
+## Getting started
 
-1. **Fork** the repository
-2. **Clone** your fork: `git clone https://github.com/YOUR_USERNAME/SWE-Squad.git`
-3. **Install** dependencies: `pip install python-dotenv pyyaml pytest`
-4. **Configure**: `cp .env.example .env` and fill in test credentials
-5. **Test**: `python -m pytest tests/unit/test_swe_team.py -v`
+```bash
+git clone https://github.com/ArtemisAI/SWE-Squad.git
+cd SWE-Squad
+pip install pytest pyyaml python-dotenv
+python -m pytest tests/unit/ -v
+```
 
-## Development Workflow
+## How to contribute
+
+1. **Open an issue first** for non-trivial changes — let's align before you code.
+2. **Fork** the repo and create a branch: `feat/short-description` or `fix/short-description`.
+3. **Write tests** — all new code needs unit tests in `tests/unit/`.
+4. **Run the test suite** before opening a PR: `python -m pytest tests/unit/ -q`
+5. **Open a PR** against `main` with a description and test plan.
+
+## Development workflow
 
 1. Create a feature branch from `main`:
    ```bash
-   git checkout -b feature/your-feature-name
+   git checkout -b feat/your-feature-name
    ```
-2. Make your changes
-3. Run the test suite:
+2. Make your changes with tests.
+3. Run the full test suite:
    ```bash
-   python -m pytest tests/unit/test_swe_team.py -v
+   python -m pytest tests/unit/ -v
    ```
-4. Commit with a clear message describing the change
-5. Push to your fork and open a Pull Request
+4. Commit with a descriptive message: `type(scope): short summary`
+5. Push to your fork and open a Pull Request against `main`.
 
-## Code Style
+## Code conventions
 
-- **Python 3.10+** with type hints
-- Use `dataclasses` for data models
-- Keep dependencies minimal — prefer stdlib over external packages
-- Follow existing patterns in the codebase
+- **Dataclasses** for all data models (no Pydantic)
+- **Type hints** on all function signatures
+- **Stdlib + pyyaml + python-dotenv** only — no new runtime deps without discussion
+- **No hardcoded paths or credentials** — use env vars
 
-## What We're Looking For
+## What we're looking for
 
-### High-Priority Contributions
+### High-priority contributions
 - Bug fixes with test coverage
 - Additional ticket store backends (Redis, SQLite)
-- CI/CD pipeline integrations
 - Notification channel plugins (Slack, Discord)
 - Documentation improvements
 
-### Good First Issues
+### Good first issues
 - Look for issues labeled [`good first issue`](https://github.com/ArtemisAI/SWE-Squad/labels/good%20first%20issue)
 - Documentation typos and improvements
 - Test coverage for edge cases
 
-## Pull Request Guidelines
+## Pull request guidelines
 
 - **One concern per PR** — keep changes focused
 - **Include tests** for new functionality
 - **Update documentation** if behavior changes
-- **Keep it minimal** — the smallest change that solves the problem
 - **No new dependencies** unless absolutely necessary and discussed first
+- **No private/internal references** — no IPs, internal hostnames, or internal paths
 
-## Reporting Issues
+## Reporting issues
 
 - Use the [GitHub issue tracker](https://github.com/ArtemisAI/SWE-Squad/issues)
 - Include reproduction steps, expected vs actual behavior
 - Include relevant logs or error messages
 - Specify your Python version and OS
 
-## Code of Conduct
+## Security
 
-This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). By participating, you agree to uphold this code.
+If you find a security vulnerability, please **do not** open a public issue.
+Email the maintainers directly or use GitHub's private vulnerability reporting.
+
+## Code of conduct
+
+Be respectful. We're building autonomous agents — let's keep the humans collaborative.
 
 ## Questions?
 
