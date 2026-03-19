@@ -276,11 +276,27 @@
     text-decoration: none;
   }
 
+  @media (max-width: 768px) {
+    .stats-grid, .cards-row { grid-template-columns: 1fr !important; }
+    nav { flex-wrap: wrap; gap: 8px !important; }
+    body { padding: 8px !important; }
+    table { font-size: 11px; }
+    td, th { padding: 6px 8px !important; }
+  }
+
   @media (max-width: 640px) {
     body { padding: 1rem; }
     .grid { grid-template-columns: repeat(2, 1fr); }
     .card .value { font-size: 1.5rem; }
   }
+
+  .modal-overlay { position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);display:none;z-index:1000;align-items:center;justify-content:center; }
+  .modal-overlay.active { display:flex; }
+  .modal { background:var(--bg-card,#353330);border-radius:12px;padding:24px;max-width:600px;width:90%;max-height:80vh;overflow-y:auto;border:1px solid var(--border,rgba(255,255,255,0.08)); }
+  .modal h2 { margin-bottom:16px; }
+  .modal-close { float:right;background:none;border:none;color:var(--text-primary,#F5F5F0);font-size:24px;cursor:pointer; }
+
+  .settings-dropdown.active { display:block !important; }
 </style>
 </head>
 <body>
@@ -290,6 +306,20 @@
   <div style="display:flex;align-items:center;gap:1rem;">
     <span class="refresh-badge" id="auto-refresh">Auto-refresh: 5m</span>
     <span class="meta" id="generated-at"></span>
+    <div style="position:relative;margin-left:8px">
+      <button onclick="document.getElementById('settings-dropdown').classList.toggle('active')" style="background:none;border:1px solid var(--border);color:var(--text-primary);padding:6px 12px;border-radius:6px;cursor:pointer">&#9881;&#65039;</button>
+      <div id="settings-dropdown" class="settings-dropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:8px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:16px;min-width:200px;z-index:100">
+        <label style="display:block;margin-bottom:12px;font-size:13px">
+          <span>Auto-refresh interval</span>
+          <select id="refresh-interval" onchange="setRefreshInterval(this.value)" style="display:block;width:100%;margin-top:4px;padding:6px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary)">
+            <option value="30">30s</option>
+            <option value="60" selected>60s</option>
+            <option value="300">5m</option>
+            <option value="0">Off</option>
+          </select>
+        </label>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -308,12 +338,14 @@
   <!-- Severity breakdown -->
   <div class="section" id="severity-section">
     <h2>Open Tickets by Severity</h2>
+    <div id="severity-donut"></div>
     <div class="severity-cards" id="severity-cards"></div>
   </div>
 
   <!-- Agent Performance -->
   <div class="section" id="performance-section">
     <h2>Agent Performance (24h)</h2>
+    <div id="resolution-sparkline" style="margin-bottom:0.75rem;"></div>
     <div id="performance-stats"></div>
   </div>
 
@@ -497,7 +529,7 @@ function renderDashboard(data) {
       var sevClass = "sev-" + (act.severity || "medium");
       var ts_str = act.timestamp ? new Date(act.timestamp).toLocaleString() : "";
       var link = act.github_url ? '<a href="' + act.github_url + '" target="_blank">View</a>' : '';
-      tbl += '<tr>' +
+      tbl += '<tr style="cursor:pointer" onclick="showTicket(\'' + (act.ticket_id || '').replace(/'/g, "\\'") + '\')">' +
         '<td><span class="severity-badge ' + sevClass + '">' + (act.severity || "").toUpperCase() + '</span></td>' +
         '<td><code>' + (act.ticket_id || "").substring(0, 12) + '</code></td>' +
         '<td>' + escHtml(act.title || "") + '</td>' +
@@ -522,8 +554,35 @@ function escHtml(s) {
   return d.innerHTML;
 }
 
+function renderDonutChart() {
+  var d = DASHBOARD_DATA;
+  if (!d || !d.ticket_summary) return;
+  var bySev = d.ticket_summary.by_severity || {};
+  var total = 0; for(var k in bySev) total += bySev[k];
+  if (!total) return;
+  var colors = {critical:'#E53935',high:'#FF7043',medium:'#FFA726',low:'#66BB6A'};
+  var offset = 0, parts = [];
+  for(var s in bySev) {
+    var pct = (bySev[s]/total)*100;
+    parts.push(colors[s]+' '+offset+'% '+(offset+pct)+'%');
+    offset += pct;
+  }
+  var el = document.getElementById('severity-donut');
+  if(el) el.innerHTML = '<div style="width:140px;height:140px;border-radius:50%;background:conic-gradient('+parts.join(',')+');display:flex;align-items:center;justify-content:center;margin:0 auto"><div style="width:90px;height:90px;border-radius:50%;background:var(--bg-card,#353330);display:flex;align-items:center;justify-content:center;flex-direction:column"><span style="font-size:24px;font-weight:700">'+total+'</span><span style="font-size:10px;opacity:.6">OPEN</span></div></div>';
+}
+
+function renderSparkline() {
+  var d = DASHBOARD_DATA;
+  var ra = (d && d.recent_activity) || [];
+  var resolved = ra.filter(function(t){return t.status==='resolved'}).length;
+  var el = document.getElementById('resolution-sparkline');
+  if(el) el.innerHTML = '<span style="font-size:20px;font-weight:700;color:#4CAF50">'+resolved+'</span> <span style="font-size:12px;opacity:.6">resolved in view</span>';
+}
+
 // Initial render
 renderDashboard(DASHBOARD_DATA);
+renderDonutChart();
+renderSparkline();
 setupTabs();
 
 // Auto-refresh every 5 minutes (reloads the page)
@@ -632,6 +691,52 @@ function setupTabs() {
     });
   }
 }
+
+// Ticket detail modal
+function showTicket(ticketId) {
+  var d = DASHBOARD_DATA;
+  var t = (d.recent_activity||[]).find(function(x){return x.ticket_id===ticketId});
+  if(!t) return;
+  var html = '<h2>'+t.title+'</h2>';
+  html += '<p><strong>ID:</strong> <code>'+t.ticket_id+'</code></p>';
+  html += '<p><strong>Severity:</strong> '+t.severity+'</p>';
+  html += '<p><strong>Status:</strong> '+t.status+'</p>';
+  html += '<p><strong>Module:</strong> '+(t.source_module||'\u2014')+'</p>';
+  if(t.github_issue) html += '<p><strong>GitHub:</strong> <a href="https://github.com/ArtemisAI/SWE-Squad-DEV/issues/'+t.github_issue+'" target="_blank">#'+t.github_issue+'</a></p>';
+  if(t.assigned_to) html += '<p><strong>Assigned:</strong> '+t.assigned_to+'</p>';
+  html += '<hr style="border-color:var(--border);margin:16px 0">';
+  html += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
+  html += '<button onclick="triggerTicket(\''+ticketId+'\')" style="padding:8px 16px;background:var(--accent,#DA7756);color:white;border:none;border-radius:6px;cursor:pointer">Trigger Agent</button>';
+  html += '<button onclick="assignTicket(\''+ticketId+'\')" style="padding:8px 16px;background:var(--bg-secondary,#2D2B28);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;cursor:pointer">Assign</button>';
+  html += '</div>';
+  document.getElementById('modal-content').innerHTML = html;
+  document.getElementById('ticket-modal').classList.add('active');
+}
+function closeModal(){document.getElementById('ticket-modal').classList.remove('active');}
+function triggerTicket(id){fetch('/api/tickets/'+id+'/trigger',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'opus'})}).then(function(r){return r.json()}).then(function(d){alert('Triggered: '+JSON.stringify(d));closeModal()});}
+function assignTicket(id){var a=prompt('Assign to:');if(a)fetch('/api/tickets/'+id+'/assign',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({assignee:a})}).then(function(r){return r.json()}).then(function(d){alert('Assigned: '+JSON.stringify(d));closeModal()});}
+
+// Keyboard shortcuts
+document.addEventListener('keydown', function(e) {
+  if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT') return;
+  if(e.key==='/'){e.preventDefault();var s=document.getElementById('ticket-search');if(s)s.focus();}
+  if(e.key==='t'&&typeof toggleTheme==='function') toggleTheme();
+  if(e.key==='Escape') closeModal();
+});
+
+// Settings
+function setRefreshInterval(secs) {
+  localStorage.setItem('swe-refresh', secs);
+  // Could implement actual refresh timer change here
+}
+document.getElementById('settings-dropdown').addEventListener('click', function(e){e.stopPropagation();});
+document.addEventListener('click', function(){document.getElementById('settings-dropdown').classList.remove('active');});
 </script>
+<div class="modal-overlay" id="ticket-modal" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal()">&times;</button>
+    <div id="modal-content"></div>
+  </div>
+</div>
 </body>
 </html>
