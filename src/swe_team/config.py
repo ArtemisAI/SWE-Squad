@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from src.swe_team.models import AgentRole, SWEAgentConfig
+from src.swe_team.throttle import ThrottleConfig
 
 logger = logging.getLogger(__name__)
 
@@ -426,6 +427,7 @@ class SWETeamConfig:
     fallback_agents: List[FallbackAgentConfig] = field(default_factory=list)
     timing: AgentTimingConfig = field(default_factory=AgentTimingConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    throttle: ThrottleConfig = field(default_factory=ThrottleConfig)
     repos: List[Dict[str, Any]] = field(default_factory=list)
     ticket_store_path: str = "data/swe_team/tickets.json"
     a2a_hub_url: str = "http://localhost:18790"
@@ -450,6 +452,7 @@ class SWETeamConfig:
             for f in data.get("fallback_agents", [])
         ]
         timing = AgentTimingConfig.from_dict(data.get("timing", {}))
+        throttle = ThrottleConfig.from_dict(data.get("throttle", {}))
         return cls(
             agents=agents,
             governance=gov,
@@ -460,6 +463,7 @@ class SWETeamConfig:
             cycle=cycle,
             fallback_agents=fallbacks,
             timing=timing,
+            throttle=throttle,
             repos=data.get("repos", []),
             ticket_store_path=data.get(
                 "ticket_store_path", "data/swe_team/tickets.json"

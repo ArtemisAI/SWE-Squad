@@ -310,3 +310,34 @@ scheduler:
       cron_expression: "*/5 * * * *"
       priority: "low"
       instructions: "pr_sync"
+
+# ---------------------------------------------------------------------------
+# Dynamic Throttle System
+# ---------------------------------------------------------------------------
+# Adjusts per-cycle limits based on time-of-day, API capacity, and backlog.
+throttle:
+  enabled: true
+  time_bands:
+    business:
+      start_hour: 8
+      end_hour: 17
+      multiplier: 1.0
+    evening:
+      start_hour: 17
+      end_hour: 0
+      multiplier: 2.0
+    overnight:
+      start_hour: 0
+      end_hour: 8
+      multiplier: 4.0
+  capacity:
+    warn_usage_pct: 80
+    warn_days_remaining: 2
+    warn_multiplier: 0.5
+    critical_usage_pct: 95
+    critical_multiplier: 0.1
+  demand:
+    high_backlog_threshold: 200
+    high_backlog_multiplier: 1.5
+    critical_backlog_threshold: 20
+    surge_multiplier: 2.0

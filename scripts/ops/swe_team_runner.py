@@ -58,6 +58,10 @@ from src.swe_team.graph_scoring import priority_score
 from src.a2a.adapters.swe_team import dispatch_swe_events, SWETeamAdapter
 from src.a2a.server import A2AServer
 from src.swe_team.agent_registry import AgentRegistry
+from src.swe_team.throttle import (
+    ThrottlePolicy, ThrottleContext, TimeBasedAdapter,
+    CapacityAdapter, DemandAdapter, days_until_weekly_reset,
+)
 
 logger = logging.getLogger("swe_team")
 
@@ -637,6 +641,45 @@ def run_cycle(
     if stalled:
         logger.info("Reset %d stalled ticket(s)", len(stalled))
 
+    # 0.8. Dynamic throttle resolution — compute effective cycle limits
+    try:
+        _all_open = store.list_open() if hasattr(store, "list_open") else []
+        _backlog_size = len(_all_open)
+        _backlog_critical = sum(
+            1 for t in _all_open if t.severity.value == "critical"
+        )
+        _now_utc = datetime.now(timezone.utc)
+        _ctx = ThrottleContext(
+            now_utc=_now_utc,
+            api_usage_pct=0.0,
+            api_days_to_reset=days_until_weekly_reset(_now_utc),
+            backlog_size=_backlog_size,
+            backlog_critical=_backlog_critical,
+            rate_limit_cooling=rate_limit_tracker.is_cooling_down(),
+        )
+        if config.throttle.enabled:
+            _policy = ThrottlePolicy(
+                base_config=config.cycle,
+                adapters=[
+                    TimeBasedAdapter(config.throttle),
+                    CapacityAdapter(config.throttle),
+                    DemandAdapter(config.throttle),
+                ],
+            )
+            effective_cycle = _policy.resolve(_ctx)
+            logger.info(
+                "Throttle active: multiplier=%.3fx, severity=%s, reasons=%s",
+                effective_cycle.effective_multiplier,
+                effective_cycle.severity_filter,
+                "; ".join(effective_cycle.reasons),
+            )
+        else:
+            effective_cycle = config.cycle
+            logger.debug("Throttle disabled — using static cycle config")
+    except Exception:
+        logger.warning("Throttle resolution failed (non-fatal) — using static config", exc_info=True)
+        effective_cycle = config.cycle
+
     # 0a. Collect remote logs before scanning
     from src.swe_team.remote_logs import collect_remote_logs
     try:
@@ -688,7 +731,7 @@ def run_cycle(
 
     # 1a. Severity filter — drop tickets below configured threshold
     _SEV_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
-    sev_floor = _SEV_RANK.get(config.cycle.severity_filter.lower(), 2)
+    sev_floor = _SEV_RANK.get(effective_cycle.severity_filter.lower(), 2)
     before_filter = len(new_tickets)
     new_tickets = [
         t for t in new_tickets
@@ -697,17 +740,17 @@ def run_cycle(
     if len(new_tickets) < before_filter:
         logger.info(
             "Severity filter (%s+): dropped %d ticket(s), %d remaining",
-            config.cycle.severity_filter, before_filter - len(new_tickets), len(new_tickets),
+            effective_cycle.severity_filter, before_filter - len(new_tickets), len(new_tickets),
         )
 
     # 1b. Per-cycle cap — process highest-severity tickets first
-    if len(new_tickets) > config.cycle.max_new_tickets_per_cycle:
+    if len(new_tickets) > effective_cycle.max_new_tickets_per_cycle:
         new_tickets.sort(key=lambda t: _SEV_RANK.get(t.severity.value, 0), reverse=True)
-        skipped = len(new_tickets) - config.cycle.max_new_tickets_per_cycle
-        new_tickets = new_tickets[: config.cycle.max_new_tickets_per_cycle]
+        skipped = len(new_tickets) - effective_cycle.max_new_tickets_per_cycle
+        new_tickets = new_tickets[: effective_cycle.max_new_tickets_per_cycle]
         logger.info(
             "Per-cycle cap (%d): deferred %d ticket(s) to next cycle",
-            config.cycle.max_new_tickets_per_cycle, skipped,
+            effective_cycle.max_new_tickets_per_cycle, skipped,
         )
 
     if not dry_run:
@@ -866,11 +909,11 @@ def run_cycle(
             1 for t in store.list_all()
             if t.status == TicketStatus.INVESTIGATING
         )
-        slots_free = config.cycle.max_open_investigating - currently_investigating
+        slots_free = effective_cycle.max_open_investigating - currently_investigating
         if slots_free <= 0:
             logger.info(
                 "max_open_investigating cap (%d) reached — skipping investigation this cycle",
-                config.cycle.max_open_investigating,
+                effective_cycle.max_open_investigating,
             )
             pending_investigation = []
         elif slots_free < len(pending_investigation):
@@ -881,7 +924,7 @@ def run_cycle(
             pending_investigation = pending_investigation[:slots_free]
     if pending_investigation and not dry_run:
         # Reduce batch size if rate limit tracker shows recent cooldown
-        investigate_limit = config.cycle.max_investigations_per_cycle
+        investigate_limit = effective_cycle.max_investigations_per_cycle
         if rate_limit_tracker.is_cooling_down():
             investigate_limit = min(2, investigate_limit)
             logger.warning(
@@ -1013,8 +1056,17 @@ def run_cycle(
             rate_limit_config=config.rate_limits,
             rate_limit_tracker=rate_limit_tracker,
         )
+        _dev_count = 0
+        _dev_limit = effective_cycle.max_developments_per_cycle
         for ticket in investigated:
+            if _dev_count >= _dev_limit:
+                logger.info(
+                    "max_developments_per_cycle cap (%d) reached — deferring remaining fixes",
+                    _dev_limit,
+                )
+                break
             if ticket.investigation_report and ticket.severity.value in ("critical", "high"):
+                _dev_count += 1
                 # Opus orchestration for CRITICAL tickets
                 if ticket.severity.value == "critical" and not ticket.metadata.get("orchestration_plan"):
                     try:
