@@ -11,6 +11,7 @@ Supports:
 - Pluggable executor (Claude CLI, A2A agents, shell commands)
 - Retry with exponential backoff
 - Concurrency limiting via ThreadPoolExecutor
+- Run history tracking (JSONL-backed)
 """
 from __future__ import annotations
 
@@ -133,6 +134,24 @@ class ScheduledJob:
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
+@dataclass
+class RunRecord:
+    """A single execution record for a scheduled job."""
+    job_id: str = ""
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    status: str = "unknown"  # "success" | "failed" | "error"
+    duration_seconds: float = 0.0
+    error: Optional[str] = None
+    attempt_count: int = 1
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "RunRecord":
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
 def parse_cron_field(field_str: str, min_val: int, max_val: int) -> List[int]:
     """Parse a single cron field into a list of matching integers."""
     values = set()
@@ -177,6 +196,71 @@ def next_cron_match(expression: str, after: Optional[datetime] = None) -> dateti
     return dt  # fallback
 
 
+class RunHistoryStore:
+    """JSONL file-backed run history persistence."""
+
+    def __init__(self, path: Path, max_records_per_job: int = 50):
+        if isinstance(path, str):
+            path = Path(path)
+        self._path = path
+        self._max_per_job = max_records_per_job
+        self._lock = threading.Lock()
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+
+    def append(self, record: RunRecord) -> None:
+        """Append a run record to the JSONL file."""
+        with self._lock:
+            with open(self._path, "a") as f:
+                f.write(json.dumps(record.to_dict(), default=str) + "\n")
+
+    def get_history(self, job_id: Optional[str] = None, limit: int = 20) -> List[RunRecord]:
+        """Load run history, optionally filtered by job_id."""
+        with self._lock:
+            if not self._path.exists():
+                return []
+            records: List[RunRecord] = []
+            try:
+                for line in self._path.read_text().strip().split("\n"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                        rec = RunRecord.from_dict(data)
+                        if job_id is None or rec.job_id == job_id:
+                            records.append(rec)
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+            except Exception:
+                logger.warning("Error reading run history from %s", self._path)
+                return []
+            records.reverse()
+            return records[:limit]
+
+    def prune(self, job_id: str) -> None:
+        """Keep only the last max_records_per_job entries for a given job."""
+        with self._lock:
+            if not self._path.exists():
+                return
+            job_lines: List[str] = []
+            other_lines: List[str] = []
+            for line in self._path.read_text().strip().split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    if data.get("job_id") == job_id:
+                        job_lines.append(line)
+                    else:
+                        other_lines.append(line)
+                except json.JSONDecodeError:
+                    other_lines.append(line)
+            kept = job_lines[-self._max_per_job:]
+            all_lines = other_lines + kept
+            self._path.write_text("\n".join(all_lines) + "\n" if all_lines else "")
+
+
 class JobStore:
     """JSON file-backed job persistence."""
 
@@ -214,6 +298,15 @@ class JobStore:
         jobs.append(job)
         self.save_all(jobs)
 
+    def delete_job(self, job_id: str) -> bool:
+        """Permanently remove a job from the store. Returns True if found and deleted."""
+        jobs = self.load_all()
+        filtered = [j for j in jobs if j.job_id != job_id]
+        if len(filtered) == len(jobs):
+            return False
+        self.save_all(filtered)
+        return True
+
 
 class JobScheduler:
     """Time-aware, quota-aware job scheduler."""
@@ -242,6 +335,10 @@ class JobScheduler:
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._running_jobs: Dict[str, bool] = {}
+        # Run history store (sibling to the job store file)
+        self._history = RunHistoryStore(
+            self._store._path.parent / "run_history.jsonl"
+        )
 
     # --- CRUD ---
 
@@ -299,6 +396,18 @@ class JobScheduler:
         self._pool.submit(self._execute_job, job)
         return job
 
+    def delete_job(self, job_id: str) -> bool:
+        """Permanently remove a job from the store and running state."""
+        self._running_jobs.pop(job_id, None)
+        deleted = self._store.delete_job(job_id)
+        if deleted:
+            logger.info("Job deleted: %s", job_id)
+        return deleted
+
+    def get_run_history(self, job_id: Optional[str] = None, limit: int = 20) -> List[RunRecord]:
+        """Get run history records, optionally filtered by job_id."""
+        return self._history.get_history(job_id=job_id, limit=limit)
+
     # --- Scheduling logic ---
 
     def should_run(self, job: ScheduledJob) -> tuple[bool, str]:
@@ -347,14 +456,16 @@ class JobScheduler:
             job.status = JobStatus.SCHEDULED
 
     def _execute_job(self, job: ScheduledJob) -> None:
-        """Execute a single job with retry logic."""
+        """Execute a single job with retry logic. Records run history."""
         self._running_jobs[job.job_id] = True
         job.status = JobStatus.RUNNING
-        job.last_run = datetime.now(timezone.utc).isoformat()
+        start_time = datetime.now(timezone.utc)
+        job.last_run = start_time.isoformat()
         self._store.upsert(job)
 
         attempt = 0
         success = False
+        last_error_msg: Optional[str] = None
         while attempt <= job.max_retries:
             try:
                 self._executor(job)
@@ -362,11 +473,15 @@ class JobScheduler:
                 break
             except Exception as exc:
                 attempt += 1
-                job.last_error = f"Attempt {attempt}: {str(exc)[:200]}"
+                last_error_msg = f"Attempt {attempt}: {str(exc)[:200]}"
+                job.last_error = last_error_msg
                 logger.warning("Job %s attempt %d failed: %s", job.job_id, attempt, exc)
                 if attempt <= job.max_retries:
                     backoff = job.retry_backoff_seconds * (2 ** (attempt - 1))
                     self._stop_event.wait(min(backoff, 300))
+
+        end_time = datetime.now(timezone.utc)
+        duration = (end_time - start_time).total_seconds()
 
         job.run_count += 1
         if success:
@@ -376,6 +491,17 @@ class JobScheduler:
         else:
             job.status = JobStatus.FAILED
             logger.error("Job %s failed after %d retries", job.name, job.max_retries + 1)
+
+        # Record run history
+        record = RunRecord(
+            job_id=job.job_id,
+            timestamp=start_time.isoformat(),
+            status="success" if success else "failed",
+            duration_seconds=round(duration, 2),
+            error=last_error_msg if not success else None,
+            attempt_count=attempt + (1 if success else 0),
+        )
+        self._history.append(record)
 
         self._store.upsert(job)
         self._running_jobs.pop(job.job_id, None)

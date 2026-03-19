@@ -56,7 +56,7 @@ class ExponentialBackoff:
         msg = str(exc).lower()
         return "rate limit" in msg or "429" in msg
 
-    def execute(self, func: Callable[[], Any], context: str = "") -> Any:
+    def execute(self, func: Callable[[], Any], model: str = "", context: str = "") -> Any:
         """Call *func*, retrying with backoff on rate limit errors.
 
         Parameters
@@ -104,7 +104,7 @@ class ExponentialBackoff:
                 )
                 if self.tracker:
                     self.tracker.record(
-                        model=context,
+                        model=model or context,
                         context=context,
                         attempt=attempt + 1,
                         wait_seconds=delay,
@@ -155,7 +155,7 @@ class RateLimitTracker:
                 elapsed_hours = (now - ts).total_seconds() / 3600
                 if elapsed_hours <= hours:
                     result.append(event)
-            except (ValueError, KeyError):
+            except (ValueError, KeyError, TypeError):
                 continue
         return result
 
