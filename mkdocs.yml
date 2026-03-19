@@ -1,0 +1,47 @@
+site_name: SWE-Squad
+site_description: Autonomous Software Engineering Agents — self-healing, self-diagnosing development team powered by Claude Code
+site_url: https://artemisai.github.io/SWE-Squad
+repo_url: https://github.com/ArtemisAI/SWE-Squad
+repo_name: ArtemisAI/SWE-Squad
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: deep purple
+      accent: orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: deep purple
+      accent: orange
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - search.highlight
+    - content.code.copy
+
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - Modules: modules.md
+  - Configuration: configuration.md
+  - Security: security.md
+  - Contributing: contributing.md
+
+markdown_extensions:
+  - pymdownx.highlight
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - admonition
+  - toc:
+      permalink: true
