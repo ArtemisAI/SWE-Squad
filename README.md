@@ -40,6 +40,20 @@
 
 ---
 
+> [!WARNING]
+> **Run in a VM or container — do not run on your host machine.**
+>
+> SWE-Squad is an agentic AI system with full access to your filesystem, shell, and git history. Like any tool in this class (Claude Code, Devin, OpenHands, etc.), it can read, write, and execute files autonomously. Running it directly on your workstation or production server exposes your entire filesystem to the agent loop.
+>
+> **Recommended setup:**
+> - 🐳 **Docker** — use the provided `Dockerfile` / `docker-compose.yml` (see [Quick Start](#-quick-start))
+> - 🖥️ **VM** — a dedicated Linux VM (e.g. via VirtualBox, UTM, or a cloud instance) with scoped credentials
+> - ☁️ **Cloud sandbox** — a fresh VPS or GitHub Codespace with only the keys it needs
+>
+> Scope your API keys and GitHub tokens to the minimum required permissions. Never give the agent a token with org-wide write access.
+
+---
+
 ## 🔍 Overview
 
 SWE Squad is a team of AI agents that autonomously monitors your production systems, detects issues, and fixes them — with human oversight at every critical decision point.
