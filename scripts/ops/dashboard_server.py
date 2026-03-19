@@ -18,6 +18,9 @@ import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv()
+
 # Ensure project root on path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
