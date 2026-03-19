@@ -1,75 +1,291 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SWE Squad Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
+  /* ── 1. Design tokens ────────────────────────────────────────────── */
   :root {
-    --bg: #0f172a;
-    --surface: #1e293b;
-    --surface-hover: #334155;
-    --text: #e2e8f0;
-    --text-muted: #94a3b8;
-    --border: #334155;
-    --critical: #ef4444;
-    --critical-bg: #450a0a;
-    --high: #f97316;
-    --high-bg: #431407;
-    --medium: #eab308;
-    --medium-bg: #422006;
-    --low: #94a3b8;
-    --low-bg: #1e293b;
-    --success: #22c55e;
-    --success-bg: #052e16;
-    --accent: #3b82f6;
-    --accent-bg: #172554;
+    --font: 'Inter', system-ui, -apple-system, sans-serif;
+
+    /* dark theme (default) */
+    --bg:            #0d0e1a;
+    --bg-elevated:   #12131f;
+    --surface:       #181929;
+    --surface-alt:   #1e1f30;
+    --surface-hover: #242538;
+    --border:        rgba(255,255,255,0.08);
+    --border-hover:  rgba(255,255,255,0.18);
+
+    --text:          #f0f0f5;
+    --text-muted:    #8b8ca8;
+    --text-faint:    #4f5070;
+
+    /* brand accent — Claude-style warm coral/orange */
+    --accent:        #da7756;
+    --accent-2:      #c4623e;
+    --accent-glow:   rgba(218,119,86,0.2);
+
+    /* secondary accent — blue-violet */
+    --accent-b:      #7c8af7;
+    --accent-b-bg:   rgba(124,138,247,0.12);
+
+    /* severity */
+    --critical:      #f87171;
+    --critical-bg:   rgba(248,113,113,0.12);
+    --high:          #fb923c;
+    --high-bg:       rgba(251,146,60,0.12);
+    --medium:        #fbbf24;
+    --medium-bg:     rgba(251,191,36,0.12);
+    --low:           #6b8afd;
+    --low-bg:        rgba(107,138,253,0.12);
+
+    --success:       #4ade80;
+    --success-bg:    rgba(74,222,128,0.12);
+
+    --shadow-sm:     0 1px 3px rgba(0,0,0,0.4);
+    --shadow-md:     0 4px 16px rgba(0,0,0,0.5);
+    --shadow-lg:     0 8px 32px rgba(0,0,0,0.6);
+
+    --radius-sm:     0.5rem;
+    --radius-md:     0.75rem;
+    --radius-lg:     1rem;
+
+    --transition:    150ms cubic-bezier(0.4, 0, 0.2, 1);
   }
 
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+  /* ── 2. Light theme ──────────────────────────────────────────────── */
+  [data-theme="light"] {
+    --bg:            #f8f8fc;
+    --bg-elevated:   #ffffff;
+    --surface:       #ffffff;
+    --surface-alt:   #f2f2f8;
+    --surface-hover: #eaeaf5;
+    --border:        rgba(0,0,0,0.08);
+    --border-hover:  rgba(0,0,0,0.18);
+
+    --text:          #1a1a2e;
+    --text-muted:    #6366a0;
+    --text-faint:    #9899bb;
+
+    --critical-bg:   rgba(248,113,113,0.1);
+    --high-bg:       rgba(251,146,60,0.1);
+    --medium-bg:     rgba(251,191,36,0.1);
+    --low-bg:        rgba(107,138,253,0.1);
+    --success-bg:    rgba(74,222,128,0.1);
+    --accent-b-bg:   rgba(124,138,247,0.1);
+    --accent-glow:   rgba(218,119,86,0.15);
+
+    --shadow-sm:     0 1px 3px rgba(0,0,0,0.08);
+    --shadow-md:     0 4px 16px rgba(0,0,0,0.1);
+    --shadow-lg:     0 8px 32px rgba(0,0,0,0.15);
+  }
+
+  /* ── 3. Reset & base ─────────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
 
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-                 "Helvetica Neue", Arial, sans-serif;
+    font-family: var(--font);
     background: var(--bg);
     color: var(--text);
-    padding: 1.5rem;
     min-height: 100vh;
+    padding: 1.5rem;
+    transition: background var(--transition), color var(--transition);
+    -webkit-font-smoothing: antialiased;
   }
 
+  /* ── 4. Scrollbar ────────────────────────────────────────────────── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border-hover); border-radius: 3px; }
+
+  /* ── 5. Header ───────────────────────────────────────────────────── */
   .header {
+    position: sticky;
+    top: 0;
+    z-index: 50;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 1.5rem;
+    margin: -1.5rem -1.5rem 1.5rem;
+    padding: 0.85rem 1.5rem;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
     flex-wrap: wrap;
-    gap: 0.5rem;
+    gap: 0.75rem;
+  }
+
+  .header-brand {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+
+  .brand-icon {
+    width: 28px;
+    height: 28px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    box-shadow: 0 0 12px var(--accent-glow);
+    flex-shrink: 0;
   }
 
   .header h1 {
-    font-size: 1.5rem;
+    font-size: 1rem;
     font-weight: 700;
+    letter-spacing: -0.01em;
     color: var(--text);
   }
 
-  .header .meta {
-    color: var(--text-muted);
-    font-size: 0.85rem;
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
   }
 
-  .header .refresh-badge {
-    background: var(--accent-bg);
-    color: var(--accent);
-    padding: 0.25rem 0.75rem;
-    border-radius: 9999px;
-    font-size: 0.75rem;
+  /* live pulse indicator */
+  .live-badge {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.72rem;
     font-weight: 600;
+    color: var(--success);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
   }
 
+  .live-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--success);
+    animation: pulse-live 2s infinite;
+  }
+
+  @keyframes pulse-live {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(74,222,128,0.6); }
+    50%       { opacity: 0.7; box-shadow: 0 0 0 5px rgba(74,222,128,0); }
+  }
+
+  .meta-time {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+  }
+
+  /* ── 6. Icon button (theme toggle, settings) ─────────────────────── */
+  .icon-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.85rem;
+    transition: border-color var(--transition), color var(--transition), background var(--transition);
+  }
+
+  .icon-btn:hover {
+    border-color: var(--border-hover);
+    color: var(--text);
+    background: var(--surface-hover);
+  }
+
+  /* ── 7. Settings dropdown ────────────────────────────────────────── */
+  .settings-wrap { position: relative; }
+
+  .settings-dropdown {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: calc(100% + 8px);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 1rem;
+    min-width: 200px;
+    z-index: 200;
+    box-shadow: var(--shadow-md);
+  }
+
+  .settings-dropdown.open { display: block; }
+
+  .settings-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin-bottom: 0.4rem;
+    display: block;
+  }
+
+  .settings-select {
+    display: block;
+    width: 100%;
+    padding: 0.35rem 0.5rem;
+    background: var(--surface-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 0.8rem;
+    font-family: var(--font);
+    cursor: pointer;
+  }
+
+  /* ── 8. Search bar ───────────────────────────────────────────────── */
+  .search-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.35rem 0.65rem;
+    transition: border-color var(--transition);
+  }
+
+  .search-bar:focus-within {
+    border-color: var(--accent-b);
+    box-shadow: 0 0 0 3px var(--accent-b-bg);
+  }
+
+  .search-bar input {
+    background: none;
+    border: none;
+    outline: none;
+    color: var(--text);
+    font-size: 0.82rem;
+    font-family: var(--font);
+    width: 160px;
+  }
+
+  .search-bar input::placeholder { color: var(--text-faint); }
+
+  .search-icon { color: var(--text-faint); font-size: 0.8rem; }
+
+  /* ── 9. Tabs ─────────────────────────────────────────────────────── */
   .tabs {
     display: flex;
-    gap: 0.5rem;
-    margin-bottom: 1rem;
+    gap: 0.35rem;
+    margin-bottom: 1.25rem;
     flex-wrap: wrap;
   }
 
@@ -78,172 +294,232 @@
     border: 1px solid var(--border);
     color: var(--text-muted);
     border-radius: 9999px;
-    padding: 0.4rem 0.9rem;
+    padding: 0.38rem 0.9rem;
     font-size: 0.78rem;
     font-weight: 600;
     cursor: pointer;
+    font-family: var(--font);
+    transition: all var(--transition);
+    white-space: nowrap;
+  }
+
+  .tab-btn:hover:not(.active) {
+    border-color: var(--border-hover);
+    color: var(--text);
+    background: var(--surface-hover);
   }
 
   .tab-btn.active {
-    background: var(--accent-bg);
+    background: var(--accent);
     border-color: var(--accent);
-    color: var(--accent);
+    color: #fff;
+    box-shadow: 0 0 12px var(--accent-glow);
   }
 
-  .tab-panel { display: none; }
+  .tab-panel { display: none; animation: fadeIn 0.2s ease; }
   .tab-panel.active { display: block; }
 
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ── 10. Summary cards grid ──────────────────────────────────────── */
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 1rem;
-    margin-bottom: 1.5rem;
+    margin-bottom: 1.25rem;
   }
 
   .card {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 0.75rem;
-    padding: 1.25rem;
-    transition: border-color 0.15s;
+    border-radius: var(--radius-md);
+    padding: 1.1rem 1.25rem;
+    transition: border-color var(--transition), box-shadow var(--transition), transform var(--transition);
+    position: relative;
+    overflow: hidden;
   }
 
-  .card:hover { border-color: var(--accent); }
+  .card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-b));
+    opacity: 0;
+    transition: opacity var(--transition);
+  }
+
+  .card:hover {
+    border-color: var(--border-hover);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+  }
+
+  .card:hover::before { opacity: 1; }
 
   .card .label {
     color: var(--text-muted);
-    font-size: 0.75rem;
+    font-size: 0.7rem;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.06em;
     margin-bottom: 0.5rem;
   }
 
   .card .value {
     font-size: 2rem;
     font-weight: 700;
-    line-height: 1.2;
+    line-height: 1.1;
+    letter-spacing: -0.03em;
   }
 
   .card .sub {
     color: var(--text-muted);
-    font-size: 0.8rem;
-    margin-top: 0.25rem;
+    font-size: 0.75rem;
+    margin-top: 0.3rem;
   }
 
-  .severity-badge {
-    display: inline-block;
-    padding: 0.15rem 0.5rem;
-    border-radius: 9999px;
-    font-size: 0.7rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.02em;
+  /* Accent variant card */
+  .card-accent {
+    background: linear-gradient(135deg, var(--surface), var(--surface-alt));
+    border-color: var(--accent-glow);
   }
 
-  .sev-critical { background: var(--critical-bg); color: var(--critical); }
-  .sev-high     { background: var(--high-bg); color: var(--high); }
-  .sev-medium   { background: var(--medium-bg); color: var(--medium); }
-  .sev-low      { background: var(--low-bg); color: var(--low); }
-
+  /* ── 11. Section panels ──────────────────────────────────────────── */
   .section {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 0.75rem;
+    border-radius: var(--radius-md);
     padding: 1.25rem;
-    margin-bottom: 1.5rem;
+    margin-bottom: 1.25rem;
   }
 
-  .section h2 {
-    font-size: 1rem;
-    font-weight: 600;
-    color: var(--text);
-    margin-bottom: 1rem;
-    padding-bottom: 0.5rem;
-    border-bottom: 1px solid var(--border);
-  }
-
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.85rem;
-  }
-
-  th {
-    text-align: left;
-    color: var(--text-muted);
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    padding: 0.5rem 0.75rem;
-    border-bottom: 1px solid var(--border);
-  }
-
-  td {
-    padding: 0.5rem 0.75rem;
-    border-bottom: 1px solid var(--border);
-    color: var(--text);
-  }
-
-  tr:last-child td { border-bottom: none; }
-
-  tr:hover td { background: var(--surface-hover); }
-
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-
-  .stat-row {
+  .section-header {
     display: flex;
     justify-content: space-between;
-    padding: 0.5rem 0;
+    align-items: center;
+    margin-bottom: 1rem;
+    padding-bottom: 0.75rem;
     border-bottom: 1px solid var(--border);
   }
 
-  .stat-row:last-child { border-bottom: none; }
-
-  .stat-row .stat-label { color: var(--text-muted); }
-  .stat-row .stat-value { font-weight: 600; }
-
-  .gate-pass { color: var(--success); }
-  .gate-block { color: var(--critical); }
-  .gate-warn { color: var(--medium); }
-
-  .empty-state {
-    color: var(--text-muted);
-    text-align: center;
-    padding: 2rem;
-    font-style: italic;
+  .section-header h2 {
+    font-size: 0.88rem;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: -0.01em;
   }
 
-  .severity-cards {
-    display: flex;
+  .section-badge {
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.2rem 0.55rem;
+    border-radius: 9999px;
+    background: var(--accent-b-bg);
+    color: var(--accent-b);
+  }
+
+  /* ── 12. Severity badges ─────────────────────────────────────────── */
+  .severity-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.18rem 0.55rem;
+    border-radius: 9999px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .sev-critical { background: var(--critical-bg); color: var(--critical); }
+  .sev-high     { background: var(--high-bg);     color: var(--high); }
+  .sev-medium   { background: var(--medium-bg);   color: var(--medium); }
+  .sev-low      { background: var(--low-bg);      color: var(--low); }
+
+  /* Status badge */
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.15rem 0.5rem;
+    border-radius: 9999px;
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+  }
+
+  .status-open         { background: var(--accent-b-bg); color: var(--accent-b); }
+  .status-resolved     { background: var(--success-bg);  color: var(--success); }
+  .status-investigating{ background: var(--medium-bg);   color: var(--medium); }
+  .status-in_development{ background: var(--high-bg);    color: var(--high); }
+  .status-review       { background: var(--low-bg);      color: var(--low); }
+
+  /* ── 13. Severity overview row ───────────────────────────────────── */
+  .severity-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
     gap: 0.75rem;
-    flex-wrap: wrap;
-    margin-top: 0.75rem;
+    margin-top: 1rem;
   }
 
   .severity-card {
-    flex: 1;
-    min-width: 100px;
     text-align: center;
-    padding: 0.75rem;
-    border-radius: 0.5rem;
+    padding: 0.85rem 0.5rem;
+    border-radius: var(--radius-sm);
     border: 1px solid var(--border);
+    transition: border-color var(--transition), transform var(--transition);
   }
 
+  .severity-card:hover { border-color: var(--border-hover); transform: translateY(-1px); }
+
+  .sev-card-critical { border-top: 3px solid var(--critical); }
+  .sev-card-high     { border-top: 3px solid var(--high); }
+  .sev-card-medium   { border-top: 3px solid var(--medium); }
+  .sev-card-low      { border-top: 3px solid var(--low); }
+
   .severity-card .sev-count {
-    font-size: 1.5rem;
+    font-size: 1.6rem;
     font-weight: 700;
+    letter-spacing: -0.03em;
+    line-height: 1.2;
   }
 
   .severity-card .sev-label {
-    font-size: 0.7rem;
+    font-size: 0.65rem;
+    font-weight: 600;
     text-transform: uppercase;
-    margin-top: 0.25rem;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin-top: 0.2rem;
   }
 
+  /* ── 14. Donut chart ─────────────────────────────────────────────── */
+  .donut-wrap {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+  }
+
+  .donut-legend { display: flex; flex-direction: column; gap: 0.4rem; }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+  }
+
+  .legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+  /* ── 15. Progress bar ────────────────────────────────────────────── */
   .progress-bar {
     height: 6px;
-    background: var(--border);
+    background: var(--surface-alt);
     border-radius: 3px;
     overflow: hidden;
     margin-top: 0.5rem;
@@ -252,491 +528,1096 @@
   .progress-fill {
     height: 100%;
     border-radius: 3px;
-    transition: width 0.3s;
+    transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
   }
 
-  .actions {
+  /* ── 16. Stat rows ───────────────────────────────────────────────── */
+  .stat-row {
     display: flex;
-    gap: 0.35rem;
-    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.85rem;
   }
+
+  .stat-row:last-child { border-bottom: none; }
+  .stat-label { color: var(--text-muted); }
+  .stat-value { font-weight: 600; }
+
+  .gate-pass  { color: var(--success); }
+  .gate-block { color: var(--critical); }
+  .gate-warn  { color: var(--medium); }
+
+  /* ── 17. Tables ──────────────────────────────────────────────────── */
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+    min-width: 500px;
+  }
+
+  th {
+    text-align: left;
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+    transition: color var(--transition);
+  }
+
+  th:hover { color: var(--text); }
+
+  th .sort-icon { margin-left: 4px; opacity: 0.4; font-size: 0.65rem; }
+  th.sort-asc .sort-icon, th.sort-desc .sort-icon { opacity: 1; color: var(--accent); }
+
+  td {
+    padding: 0.55rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    vertical-align: middle;
+  }
+
+  tr:last-child td { border-bottom: none; }
+
+  tbody tr {
+    transition: background var(--transition);
+    cursor: pointer;
+  }
+
+  tbody tr:hover td { background: var(--surface-hover); }
+
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.75rem;
+    color: var(--accent-b);
+    background: var(--accent-b-bg);
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+  }
+
+  /* ── 18. Empty state ─────────────────────────────────────────────── */
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 1rem;
+    gap: 0.5rem;
+    color: var(--text-faint);
+  }
+
+  .empty-icon { font-size: 2rem; opacity: 0.5; }
+  .empty-text { font-size: 0.85rem; }
+
+  /* ── 19. Links & action buttons ──────────────────────────────────── */
+  a { color: var(--accent-b); text-decoration: none; transition: color var(--transition); }
+  a:hover { color: var(--text); text-decoration: underline; }
 
   .btn-link {
     display: inline-block;
     border: 1px solid var(--border);
-    border-radius: 0.5rem;
+    border-radius: var(--radius-sm);
     padding: 0.2rem 0.5rem;
     font-size: 0.72rem;
-    color: var(--text);
-    background: var(--surface);
+    font-weight: 500;
+    color: var(--text-muted);
+    background: var(--surface-alt);
+    transition: all var(--transition);
   }
 
   .btn-link:hover {
     border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-glow);
     text-decoration: none;
   }
 
+  .actions { display: flex; gap: 0.3rem; flex-wrap: wrap; }
+
+  /* ── 20. Modal ───────────────────────────────────────────────────── */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.65);
+    display: none;
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+  }
+
+  .modal-overlay.active { display: flex; animation: fadeIn 0.15s ease; }
+
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border-hover);
+    border-radius: var(--radius-lg);
+    padding: 1.5rem;
+    max-width: 560px;
+    width: 92%;
+    max-height: 82vh;
+    overflow-y: auto;
+    box-shadow: var(--shadow-lg);
+    position: relative;
+  }
+
+  .modal h2 {
+    font-size: 1rem;
+    font-weight: 700;
+    margin-bottom: 1rem;
+    padding-right: 2rem;
+    color: var(--text);
+  }
+
+  .modal-close {
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.25rem;
+    cursor: pointer;
+    line-height: 1;
+    transition: color var(--transition);
+  }
+
+  .modal-close:hover { color: var(--text); }
+
+  .modal p { font-size: 0.85rem; margin-bottom: 0.5rem; color: var(--text); line-height: 1.5; }
+
+  .modal-divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 1rem 0;
+  }
+
+  .modal-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+
+  .btn-primary {
+    padding: 0.45rem 1rem;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: var(--font);
+    transition: opacity var(--transition);
+  }
+
+  .btn-primary:hover { opacity: 0.85; }
+
+  .btn-secondary {
+    padding: 0.45rem 1rem;
+    background: var(--surface-alt);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: var(--font);
+    transition: border-color var(--transition);
+  }
+
+  .btn-secondary:hover { border-color: var(--border-hover); }
+
+  /* ── 21. Keyboard shortcut help overlay ──────────────────────────── */
+  .shortcut-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.7);
+    display: none;
+    z-index: 1100;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(4px);
+  }
+
+  .shortcut-overlay.active { display: flex; animation: fadeIn 0.15s ease; }
+
+  .shortcut-panel {
+    background: var(--surface);
+    border: 1px solid var(--border-hover);
+    border-radius: var(--radius-lg);
+    padding: 1.5rem;
+    max-width: 420px;
+    width: 92%;
+    box-shadow: var(--shadow-lg);
+  }
+
+  .shortcut-panel h3 { font-size: 0.9rem; font-weight: 700; margin-bottom: 1rem; }
+
+  .shortcut-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.4rem 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.82rem;
+  }
+
+  .shortcut-row:last-child { border-bottom: none; }
+
+  kbd {
+    display: inline-block;
+    background: var(--surface-alt);
+    border: 1px solid var(--border-hover);
+    border-radius: 4px;
+    padding: 0.1rem 0.4rem;
+    font-family: monospace;
+    font-size: 0.72rem;
+    color: var(--text);
+  }
+
+  /* ── 22. Toast notifications ─────────────────────────────────────── */
+  .toast-stack {
+    position: fixed;
+    bottom: 1.5rem;
+    right: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    z-index: 2000;
+    max-width: 300px;
+  }
+
+  .toast {
+    background: var(--surface);
+    border: 1px solid var(--border-hover);
+    border-radius: var(--radius-sm);
+    padding: 0.65rem 1rem;
+    font-size: 0.8rem;
+    box-shadow: var(--shadow-md);
+    animation: slideIn 0.2s ease;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  @keyframes slideIn {
+    from { transform: translateX(110%); opacity: 0; }
+    to   { transform: translateX(0);    opacity: 1; }
+  }
+
+  @keyframes slideOut {
+    from { transform: translateX(0);    opacity: 1; }
+    to   { transform: translateX(110%); opacity: 0; }
+  }
+
+  .toast.removing { animation: slideOut 0.2s ease forwards; }
+
+  .toast-icon { font-size: 1rem; }
+
+  /* ── 23. Pagination ──────────────────────────────────────────────── */
+  .pagination {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin-top: 1rem;
+    font-size: 0.8rem;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .page-btn {
+    background: var(--surface-alt);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: var(--radius-sm);
+    padding: 0.25rem 0.55rem;
+    cursor: pointer;
+    font-size: 0.78rem;
+    font-family: var(--font);
+    transition: all var(--transition);
+  }
+
+  .page-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .page-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .page-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+  .page-info { color: var(--text-muted); padding: 0 0.25rem; }
+
+  /* ── 24. Responsive ──────────────────────────────────────────────── */
   @media (max-width: 768px) {
-    .stats-grid, .cards-row { grid-template-columns: 1fr !important; }
-    nav { flex-wrap: wrap; gap: 8px !important; }
-    body { padding: 8px !important; }
-    table { font-size: 11px; }
-    td, th { padding: 6px 8px !important; }
-  }
-
-  @media (max-width: 640px) {
-    body { padding: 1rem; }
+    body { padding: 0.75rem; }
+    .header { margin: -0.75rem -0.75rem 1rem; padding: 0.65rem 0.75rem; }
     .grid { grid-template-columns: repeat(2, 1fr); }
+    .severity-grid { grid-template-columns: repeat(2, 1fr); }
     .card .value { font-size: 1.5rem; }
+    .search-bar input { width: 100px; }
+    .donut-wrap { flex-direction: column; }
   }
 
-  .modal-overlay { position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);display:none;z-index:1000;align-items:center;justify-content:center; }
-  .modal-overlay.active { display:flex; }
-  .modal { background:var(--bg-card,#353330);border-radius:12px;padding:24px;max-width:600px;width:90%;max-height:80vh;overflow-y:auto;border:1px solid var(--border,rgba(255,255,255,0.08)); }
-  .modal h2 { margin-bottom:16px; }
-  .modal-close { float:right;background:none;border:none;color:var(--text-primary,#F5F5F0);font-size:24px;cursor:pointer; }
+  @media (max-width: 420px) {
+    .grid { grid-template-columns: 1fr; }
+    .severity-grid { grid-template-columns: repeat(2, 1fr); }
+    .tabs { gap: 0.25rem; }
+    .tab-btn { font-size: 0.72rem; padding: 0.3rem 0.65rem; }
+  }
 
-  .settings-dropdown.active { display:block !important; }
+  /* ── 25. Skeleton loader ─────────────────────────────────────────── */
+  .skeleton {
+    background: linear-gradient(90deg, var(--surface-alt) 25%, var(--surface-hover) 50%, var(--surface-alt) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+    border-radius: 4px;
+  }
+
+  @keyframes shimmer {
+    from { background-position: 200% 0; }
+    to   { background-position: -200% 0; }
+  }
 </style>
 </head>
 <body>
 
-<div class="header">
-  <h1>SWE Squad Dashboard</h1>
-  <div style="display:flex;align-items:center;gap:1rem;">
-    <span class="refresh-badge" id="auto-refresh">Auto-refresh: 5m</span>
-    <span class="meta" id="generated-at"></span>
-    <div style="position:relative;margin-left:8px">
-      <button onclick="document.getElementById('settings-dropdown').classList.toggle('active')" style="background:none;border:1px solid var(--border);color:var(--text-primary);padding:6px 12px;border-radius:6px;cursor:pointer">&#9881;&#65039;</button>
-      <div id="settings-dropdown" class="settings-dropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:8px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:16px;min-width:200px;z-index:100">
-        <label style="display:block;margin-bottom:12px;font-size:13px">
-          <span>Auto-refresh interval</span>
-          <select id="refresh-interval" onchange="setRefreshInterval(this.value)" style="display:block;width:100%;margin-top:4px;padding:6px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary)">
-            <option value="30">30s</option>
-            <option value="60" selected>60s</option>
-            <option value="300">5m</option>
+<!-- ── Header ── -->
+<header class="header">
+  <div class="header-brand">
+    <div class="brand-icon">⚡</div>
+    <h1>SWE Squad</h1>
+    <div class="live-badge" id="live-badge">
+      <div class="live-dot"></div>
+      LIVE
+    </div>
+  </div>
+
+  <div class="header-right">
+    <div class="search-bar">
+      <span class="search-icon">🔍</span>
+      <input type="text" id="ticket-search" placeholder="Search tickets… (/)" autocomplete="off">
+    </div>
+    <span class="meta-time" id="generated-at"></span>
+    <button class="icon-btn" id="theme-btn" title="Toggle theme (t)" onclick="toggleTheme()">🌙</button>
+    <button class="icon-btn" id="shortcut-btn" title="Keyboard shortcuts (?)" onclick="showShortcuts()">⌨</button>
+    <div class="settings-wrap">
+      <button class="icon-btn" id="settings-btn" title="Settings" onclick="toggleSettings(event)">⚙</button>
+      <div class="settings-dropdown" id="settings-dropdown">
+        <label>
+          <span class="settings-label">Auto-refresh interval</span>
+          <select class="settings-select" id="refresh-interval" onchange="setRefreshInterval(this.value)">
+            <option value="30">30 seconds</option>
+            <option value="60" selected>1 minute</option>
+            <option value="300">5 minutes</option>
             <option value="0">Off</option>
           </select>
         </label>
       </div>
     </div>
   </div>
-</div>
+</header>
 
+<!-- ── Tabs ── -->
 <div class="tabs" id="dashboard-tabs">
   <button class="tab-btn active" data-tab-target="overview">Overview</button>
   <button class="tab-btn" data-tab-target="open">Open Bugs</button>
-  <button class="tab-btn" data-tab-target="in-progress">WIP Bugs</button>
-  <button class="tab-btn" data-tab-target="closed">Closed Bugs</button>
+  <button class="tab-btn" data-tab-target="in-progress">WIP</button>
+  <button class="tab-btn" data-tab-target="closed">Closed</button>
   <button class="tab-btn" data-tab-target="actions">Issue Actions</button>
 </div>
 
+<!-- ── Overview tab ── -->
 <div class="tab-panel active" data-tab-panel="overview">
-  <!-- Summary cards -->
+
   <div class="grid" id="summary-cards"></div>
 
-  <!-- Severity breakdown -->
   <div class="section" id="severity-section">
-    <h2>Open Tickets by Severity</h2>
-    <div id="severity-donut"></div>
-    <div class="severity-cards" id="severity-cards"></div>
+    <div class="section-header">
+      <h2>Open Tickets by Severity</h2>
+      <span class="section-badge" id="sev-total-badge"></span>
+    </div>
+    <div class="donut-wrap">
+      <div id="severity-donut"></div>
+      <div class="donut-legend" id="donut-legend"></div>
+    </div>
+    <div class="severity-grid" id="severity-cards"></div>
   </div>
 
-  <!-- Agent Performance -->
   <div class="section" id="performance-section">
-    <h2>Agent Performance (24h)</h2>
-    <div id="resolution-sparkline" style="margin-bottom:0.75rem;"></div>
+    <div class="section-header">
+      <h2>Agent Performance (24h)</h2>
+    </div>
     <div id="performance-stats"></div>
   </div>
 
-  <!-- Last Cycle -->
   <div class="section" id="cycle-section">
-    <h2>Last Cycle</h2>
+    <div class="section-header">
+      <h2>Last Cycle</h2>
+    </div>
     <div id="cycle-stats"></div>
   </div>
 
-  <!-- Memory Stats -->
   <div class="section" id="memory-section">
-    <h2>Semantic Memory</h2>
+    <div class="section-header">
+      <h2>Semantic Memory</h2>
+    </div>
     <div id="memory-stats"></div>
   </div>
 
-  <!-- Recent Activity -->
   <div class="section" id="activity-section">
-    <h2>Recent Activity</h2>
-    <div id="activity-table"></div>
+    <div class="section-header">
+      <h2>Recent Activity</h2>
+      <span class="section-badge" id="activity-count-badge"></span>
+    </div>
+    <div class="table-wrap" id="activity-table"></div>
   </div>
+
 </div>
 
+<!-- ── Open Bugs tab ── -->
 <div class="tab-panel" data-tab-panel="open">
   <div class="section">
-    <h2>Open Bugs</h2>
-    <div id="open-bugs-table"></div>
+    <div class="section-header">
+      <h2>Open Bugs</h2>
+      <span class="section-badge" id="open-count-badge"></span>
+    </div>
+    <div class="table-wrap" id="open-bugs-table"></div>
+    <div id="open-pagination" class="pagination"></div>
   </div>
 </div>
 
+<!-- ── WIP Bugs tab ── -->
 <div class="tab-panel" data-tab-panel="in-progress">
   <div class="section">
-    <h2>Work In Progress Bugs</h2>
-    <div id="in-progress-bugs-table"></div>
+    <div class="section-header">
+      <h2>Work In Progress</h2>
+      <span class="section-badge" id="wip-count-badge"></span>
+    </div>
+    <div class="table-wrap" id="in-progress-bugs-table"></div>
+    <div id="wip-pagination" class="pagination"></div>
   </div>
 </div>
 
+<!-- ── Closed Bugs tab ── -->
 <div class="tab-panel" data-tab-panel="closed">
   <div class="section">
-    <h2>Closed Bugs</h2>
-    <div id="closed-bugs-table"></div>
+    <div class="section-header">
+      <h2>Closed Bugs</h2>
+      <span class="section-badge" id="closed-count-badge"></span>
+    </div>
+    <div class="table-wrap" id="closed-bugs-table"></div>
+    <div id="closed-pagination" class="pagination"></div>
   </div>
 </div>
 
+<!-- ── Issue Actions tab ── -->
 <div class="tab-panel" data-tab-panel="actions">
   <div class="section">
-    <h2>Issue Actioning (GitHub Sync)</h2>
-    <div id="issue-actions-table"></div>
+    <div class="section-header">
+      <h2>Issue Actioning (GitHub Sync)</h2>
+    </div>
+    <div class="table-wrap" id="issue-actions-table"></div>
   </div>
 </div>
 
+<!-- ── Ticket detail modal ── -->
+<div class="modal-overlay" id="ticket-modal" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <div id="modal-content"></div>
+  </div>
+</div>
+
+<!-- ── Keyboard shortcut panel ── -->
+<div class="shortcut-overlay" id="shortcut-overlay" onclick="if(event.target===this)hideShortcuts()">
+  <div class="shortcut-panel">
+    <h3>Keyboard Shortcuts</h3>
+    <div class="shortcut-row"><span>Focus search</span><kbd>/</kbd></div>
+    <div class="shortcut-row"><span>Toggle theme</span><kbd>t</kbd></div>
+    <div class="shortcut-row"><span>Close modal</span><kbd>Esc</kbd></div>
+    <div class="shortcut-row"><span>Show shortcuts</span><kbd>?</kbd></div>
+    <div class="shortcut-row"><span>Next tab</span><kbd>→</kbd></div>
+    <div class="shortcut-row"><span>Prev tab</span><kbd>←</kbd></div>
+  </div>
+</div>
+
+<!-- ── Toast container ── -->
+<div class="toast-stack" id="toast-stack"></div>
+
 <script>
-// Dashboard data is injected here by the Python renderer
+// ── Data injected by Python renderer ───────────────────────────────
 var DASHBOARD_DATA = __DASHBOARD_DATA__;
-// Keep action tab readable and responsive by rendering a bounded ticket slice.
 var MAX_ACTIONABLE_TICKETS = 100;
+var PAGE_SIZE = 20;
 
-function renderDashboard(data) {
-  var ts = data.ticket_summary || {};
-  var ap = data.agent_performance || {};
-  var ms = data.memory_stats || {};
-  var lc = data.last_cycle || null;
-  var ra = data.recent_activity || [];
-  var tbs = data.tickets_by_state || {};
+// Pagination state per table
+var pageState = { open: 1, wip: 1, closed: 1 };
+var sortState  = {};   // { tableId: { col: 0, asc: true } }
 
-  // Generated timestamp
-  var genAt = document.getElementById("generated-at");
-  if (data.generated_at) {
-    var d = new Date(data.generated_at);
-    genAt.textContent = "Updated: " + d.toLocaleString();
-  }
-
-  // Summary cards
-  var cardsHtml = "";
-  var summaryItems = [
-    { label: "Total Tickets", value: ts.total || 0, sub: "" },
-    { label: "Open", value: ts.open || 0, sub: "" },
-    { label: "Resolved", value: ts.resolved || 0, sub: "" },
-    { label: "Investigating", value: ts.investigating || 0, sub: "" },
-    { label: "Fix Success Rate", value: ((ap.fix_success_rate || 0) * 100).toFixed(0) + "%", sub: ap.fixes_succeeded_24h + "/" + ap.fixes_attempted_24h + " (24h)" },
-    { label: "Rate Limit Events", value: data.rate_limit_events_24h || 0, sub: "Last 24h" }
-  ];
-
-  for (var i = 0; i < summaryItems.length; i++) {
-    var item = summaryItems[i];
-    cardsHtml += '<div class="card">' +
-      '<div class="label">' + item.label + '</div>' +
-      '<div class="value">' + item.value + '</div>' +
-      (item.sub ? '<div class="sub">' + item.sub + '</div>' : '') +
-      '</div>';
-  }
-  document.getElementById("summary-cards").innerHTML = cardsHtml;
-
-  // Severity cards
-  var bySev = ts.by_severity || {};
-  var sevOrder = ["critical", "high", "medium", "low"];
-  var sevHtml = "";
-  for (var s = 0; s < sevOrder.length; s++) {
-    var sev = sevOrder[s];
-    var count = bySev[sev] || 0;
-    sevHtml += '<div class="severity-card sev-' + sev + '">' +
-      '<div class="sev-count">' + count + '</div>' +
-      '<div class="sev-label">' + sev + '</div>' +
-      '</div>';
-  }
-  document.getElementById("severity-cards").innerHTML = sevHtml;
-
-  // Agent performance
-  var perfHtml = "";
-  var perfItems = [
-    ["Investigations (24h)", ap.investigations_24h || 0],
-    ["Fixes Attempted (24h)", ap.fixes_attempted_24h || 0],
-    ["Fixes Succeeded (24h)", ap.fixes_succeeded_24h || 0],
-    ["Success Rate", ((ap.fix_success_rate || 0) * 100).toFixed(0) + "%"]
-  ];
-  for (var p = 0; p < perfItems.length; p++) {
-    perfHtml += '<div class="stat-row">' +
-      '<span class="stat-label">' + perfItems[p][0] + '</span>' +
-      '<span class="stat-value">' + perfItems[p][1] + '</span>' +
-      '</div>';
-  }
-  // Progress bar for success rate
-  var rate = (ap.fix_success_rate || 0) * 100;
-  var barColor = rate >= 70 ? "var(--success)" : rate >= 40 ? "var(--medium)" : "var(--critical)";
-  perfHtml += '<div class="progress-bar"><div class="progress-fill" style="width:' +
-    rate + '%;background:' + barColor + '"></div></div>';
-  document.getElementById("performance-stats").innerHTML = perfHtml;
-
-  // Last cycle
-  var cycleEl = document.getElementById("cycle-section");
-  if (lc) {
-    var verdict = (lc.gate_verdict || "N/A").toLowerCase();
-    var verdictClass = verdict === "pass" ? "gate-pass" : verdict === "block" ? "gate-block" : "gate-warn";
-    var cycleHtml = '';
-    var cycleItems = [
-      ["Time", lc.time || "N/A"],
-      ["Gate Verdict", '<span class="' + verdictClass + '">' + (lc.gate_verdict || "N/A").toUpperCase() + '</span>'],
-      ["Open Tickets", lc.tickets_open != null ? lc.tickets_open : "N/A"],
-      ["Investigating", lc.tickets_investigating != null ? lc.tickets_investigating : "N/A"],
-      ["Next Cycle", lc.next_cycle || "N/A"]
-    ];
-    for (var c = 0; c < cycleItems.length; c++) {
-      cycleHtml += '<div class="stat-row">' +
-        '<span class="stat-label">' + cycleItems[c][0] + '</span>' +
-        '<span class="stat-value">' + cycleItems[c][1] + '</span>' +
-        '</div>';
-    }
-    document.getElementById("cycle-stats").innerHTML = cycleHtml;
-  } else {
-    document.getElementById("cycle-stats").innerHTML = '<div class="empty-state">No cycle data available</div>';
-  }
-
-  // Memory stats
-  var memEl = document.getElementById("memory-section");
-  if (ms.total_embeddings > 0) {
-    var memHtml = '';
-    var memItems = [
-      ["Total Embeddings", ms.total_embeddings || 0],
-      ["Memory Hits (24h)", ms.memory_hits_24h || 0],
-      ["Avg Confidence", (ms.avg_confidence || 0).toFixed(2)]
-    ];
-    for (var m = 0; m < memItems.length; m++) {
-      memHtml += '<div class="stat-row">' +
-        '<span class="stat-label">' + memItems[m][0] + '</span>' +
-        '<span class="stat-value">' + memItems[m][1] + '</span>' +
-        '</div>';
-    }
-    document.getElementById("memory-stats").innerHTML = memHtml;
-  } else {
-    memEl.style.display = "none";
-  }
-
-  // Recent activity table
-  if (ra.length === 0) {
-    document.getElementById("activity-table").innerHTML = '<div class="empty-state">No recent activity</div>';
-  } else {
-    var tbl = '<table><thead><tr>' +
-      '<th>Severity</th><th>Ticket</th><th>Title</th><th>Status</th><th>Updated</th><th>Link</th>' +
-      '</tr></thead><tbody>';
-    for (var r = 0; r < ra.length && r < 25; r++) {
-      var act = ra[r];
-      var sevClass = "sev-" + (act.severity || "medium");
-      var ts_str = act.timestamp ? new Date(act.timestamp).toLocaleString() : "";
-      var link = act.github_url ? '<a href="' + act.github_url + '" target="_blank">View</a>' : '';
-      tbl += '<tr style="cursor:pointer" onclick="showTicket(\'' + (act.ticket_id || '').replace(/'/g, "\\'") + '\')">' +
-        '<td><span class="severity-badge ' + sevClass + '">' + (act.severity || "").toUpperCase() + '</span></td>' +
-        '<td><code>' + (act.ticket_id || "").substring(0, 12) + '</code></td>' +
-        '<td>' + escHtml(act.title || "") + '</td>' +
-        '<td>' + (act.action || "") + '</td>' +
-        '<td>' + ts_str + '</td>' +
-        '<td>' + link + '</td>' +
-        '</tr>';
-    }
-    tbl += '</tbody></table>';
-    document.getElementById("activity-table").innerHTML = tbl;
-  }
-
-  renderStateTable("open-bugs-table", tbs.open || []);
-  renderStateTable("in-progress-bugs-table", tbs.in_progress || []);
-  renderStateTable("closed-bugs-table", tbs.closed || []);
-  renderActionsTable("issue-actions-table", tbs);
+// ── Theme ───────────────────────────────────────────────────────────
+function applyTheme(t) {
+  document.documentElement.setAttribute('data-theme', t);
+  document.getElementById('theme-btn').textContent = t === 'dark' ? '🌙' : '☀';
+  try { localStorage.setItem('swe-theme', t); } catch(e) {}
 }
 
+function toggleTheme() {
+  var cur = document.documentElement.getAttribute('data-theme');
+  applyTheme(cur === 'dark' ? 'light' : 'dark');
+}
+
+(function() {
+  try {
+    var saved = localStorage.getItem('swe-theme');
+    if (saved) applyTheme(saved);
+  } catch(e) {}
+})();
+
+// ── Settings dropdown ────────────────────────────────────────────────
+function toggleSettings(e) {
+  e.stopPropagation();
+  document.getElementById('settings-dropdown').classList.toggle('open');
+}
+
+document.addEventListener('click', function(e) {
+  var dd = document.getElementById('settings-dropdown');
+  if (dd && !dd.contains(e.target)) dd.classList.remove('open');
+});
+
+// ── Auto-refresh ─────────────────────────────────────────────────────
+var refreshTimer = null;
+
+function setRefreshInterval(secs) {
+  try { localStorage.setItem('swe-refresh', secs); } catch(e) {}
+  clearInterval(refreshTimer);
+  var n = parseInt(secs, 10);
+  if (n > 0) {
+    refreshTimer = setInterval(function() {
+      showToast('↻ Refreshing…', 'info');
+      setTimeout(function() { location.reload(); }, 800);
+    }, n * 1000);
+  }
+}
+
+(function() {
+  try {
+    var saved = localStorage.getItem('swe-refresh') || '60';
+    var sel = document.getElementById('refresh-interval');
+    if (sel) {
+      for (var i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].value === saved) { sel.selectedIndex = i; break; }
+      }
+    }
+    setRefreshInterval(saved);
+  } catch(e) {}
+})();
+
+// ── Keyboard shortcuts ───────────────────────────────────────────────
+document.addEventListener('keydown', function(e) {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') {
+    if (e.key === 'Escape') { e.target.blur(); }
+    return;
+  }
+  if (e.key === '/') { e.preventDefault(); var s = document.getElementById('ticket-search'); if(s) s.focus(); }
+  if (e.key === 't') toggleTheme();
+  if (e.key === 'Escape') { closeModal(); hideShortcuts(); }
+  if (e.key === '?') showShortcuts();
+  if (e.key === 'ArrowRight') navigateTab(1);
+  if (e.key === 'ArrowLeft')  navigateTab(-1);
+});
+
+function navigateTab(dir) {
+  var btns = Array.from(document.querySelectorAll('.tab-btn'));
+  var cur = btns.findIndex(function(b) { return b.classList.contains('active'); });
+  var next = (cur + dir + btns.length) % btns.length;
+  btns[next].click();
+}
+
+// ── Shortcut panel ───────────────────────────────────────────────────
+function showShortcuts() { document.getElementById('shortcut-overlay').classList.add('active'); }
+function hideShortcuts() { document.getElementById('shortcut-overlay').classList.remove('active'); }
+
+// ── Toast ────────────────────────────────────────────────────────────
+function showToast(msg, type) {
+  var icons = { info: 'ℹ️', success: '✅', warn: '⚠️', error: '❌' };
+  var stack = document.getElementById('toast-stack');
+  var t = document.createElement('div');
+  t.className = 'toast';
+  t.innerHTML = '<span class="toast-icon">' + (icons[type] || 'ℹ️') + '</span>' + escHtml(msg);
+  stack.appendChild(t);
+  setTimeout(function() {
+    t.classList.add('removing');
+    setTimeout(function() { if(t.parentNode) t.parentNode.removeChild(t); }, 200);
+  }, 3000);
+}
+
+// ── Utilities ────────────────────────────────────────────────────────
 function escHtml(s) {
-  var d = document.createElement("div");
-  d.appendChild(document.createTextNode(s));
+  var d = document.createElement('div');
+  d.appendChild(document.createTextNode(String(s)));
   return d.innerHTML;
 }
 
-function renderDonutChart() {
-  var d = DASHBOARD_DATA;
-  if (!d || !d.ticket_summary) return;
-  var bySev = d.ticket_summary.by_severity || {};
-  var total = 0; for(var k in bySev) total += bySev[k];
-  if (!total) return;
-  var colors = {critical:'#E53935',high:'#FF7043',medium:'#FFA726',low:'#66BB6A'};
-  var offset = 0, parts = [];
-  for(var s in bySev) {
-    var pct = (bySev[s]/total)*100;
-    parts.push(colors[s]+' '+offset+'% '+(offset+pct)+'%');
-    offset += pct;
+function fmtDate(ts) {
+  if (!ts) return '—';
+  try {
+    var d = new Date(ts);
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  } catch(e) { return ts; }
+}
+
+function fmtRelative(ts) {
+  if (!ts) return '—';
+  try {
+    var diff = Date.now() - new Date(ts).getTime();
+    if (diff < 60000) return 'just now';
+    if (diff < 3600000) return Math.floor(diff/60000) + 'm ago';
+    if (diff < 86400000) return Math.floor(diff/3600000) + 'h ago';
+    return Math.floor(diff/86400000) + 'd ago';
+  } catch(e) { return ts; }
+}
+
+function statusBadge(status) {
+  var cls = 'status-' + (status || '').toLowerCase().replace(/\s+/g, '_');
+  return '<span class="status-badge ' + cls + '">' + escHtml(status || '—') + '</span>';
+}
+
+// ── Search / filter ──────────────────────────────────────────────────
+var searchQuery = '';
+
+document.getElementById('ticket-search').addEventListener('input', function() {
+  searchQuery = this.value.toLowerCase();
+  renderAllTables();
+});
+
+function filterRows(rows) {
+  if (!searchQuery) return rows;
+  return rows.filter(function(r) {
+    var haystack = [(r.ticket_id||''), (r.title||''), (r.status||''), (r.assigned_to||''), (r.severity||'')].join(' ').toLowerCase();
+    return haystack.indexOf(searchQuery) !== -1;
+  });
+}
+
+// ── Sort ─────────────────────────────────────────────────────────────
+function sortRows(rows, col, asc) {
+  var cols = ['severity', 'ticket_id', 'title', 'status', 'assigned_to', 'updated_at'];
+  var sevOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+  var key = cols[col] || 'ticket_id';
+  return rows.slice().sort(function(a, b) {
+    var av = (a[key] || '').toString().toLowerCase();
+    var bv = (b[key] || '').toString().toLowerCase();
+    if (key === 'severity') {
+      av = sevOrder[a.severity] != null ? sevOrder[a.severity] : 9;
+      bv = sevOrder[b.severity] != null ? sevOrder[b.severity] : 9;
+    }
+    var cmp = av < bv ? -1 : av > bv ? 1 : 0;
+    return asc ? cmp : -cmp;
+  });
+}
+
+// ── Pagination ───────────────────────────────────────────────────────
+function renderPagination(containerId, total, page, onPage) {
+  var el = document.getElementById(containerId);
+  if (!el) return;
+  var pages = Math.ceil(total / PAGE_SIZE);
+  if (pages <= 1) { el.innerHTML = ''; return; }
+
+  var html = '<button class="page-btn" ' + (page<=1?'disabled':'') + ' onclick="(' + onPage.toString() + ')(' + (page-1) + ')">‹</button>';
+  var start = Math.max(1, page - 2), end = Math.min(pages, page + 2);
+  for (var p = start; p <= end; p++) {
+    html += '<button class="page-btn' + (p===page?' active':'') + '" onclick="(' + onPage.toString() + ')(' + p + ')">' + p + '</button>';
   }
-  var el = document.getElementById('severity-donut');
-  if(el) el.innerHTML = '<div style="width:140px;height:140px;border-radius:50%;background:conic-gradient('+parts.join(',')+');display:flex;align-items:center;justify-content:center;margin:0 auto"><div style="width:90px;height:90px;border-radius:50%;background:var(--bg-card,#353330);display:flex;align-items:center;justify-content:center;flex-direction:column"><span style="font-size:24px;font-weight:700">'+total+'</span><span style="font-size:10px;opacity:.6">OPEN</span></div></div>';
+  html += '<button class="page-btn" ' + (page>=pages?'disabled':'') + ' onclick="(' + onPage.toString() + ')(' + (page+1) + ')">›</button>';
+  html += '<span class="page-info">' + ((page-1)*PAGE_SIZE+1) + '–' + Math.min(page*PAGE_SIZE, total) + ' of ' + total + '</span>';
+  el.innerHTML = html;
 }
 
-function renderSparkline() {
-  var d = DASHBOARD_DATA;
-  var ra = (d && d.recent_activity) || [];
-  var resolved = ra.filter(function(t){return t.status==='resolved'}).length;
-  var el = document.getElementById('resolution-sparkline');
-  if(el) el.innerHTML = '<span style="font-size:20px;font-weight:700;color:#4CAF50">'+resolved+'</span> <span style="font-size:12px;opacity:.6">resolved in view</span>';
+// ── Main render ──────────────────────────────────────────────────────
+function renderDashboard(data) {
+  var ts  = data.ticket_summary     || {};
+  var ap  = data.agent_performance  || {};
+  var ms  = data.memory_stats       || {};
+  var lc  = data.last_cycle         || null;
+  var ra  = data.recent_activity    || [];
+  var tbs = data.tickets_by_state   || {};
+
+  // Timestamp
+  var genAt = document.getElementById('generated-at');
+  if (data.generated_at) {
+    genAt.textContent = 'Updated ' + fmtRelative(data.generated_at);
+  }
+
+  renderSummaryCards(ts, ap, data);
+  renderSeveritySection(ts);
+  renderPerformance(ap);
+  renderLastCycle(lc);
+  renderMemory(ms);
+  renderActivity(ra);
+  renderAllTables();
+
+  // Update badges
+  var ob = document.getElementById('open-count-badge');
+  if(ob) ob.textContent = (tbs.open || []).length + ' tickets';
+  var wb = document.getElementById('wip-count-badge');
+  if(wb) wb.textContent = (tbs.in_progress || []).length + ' tickets';
+  var cb = document.getElementById('closed-count-badge');
+  if(cb) cb.textContent = (tbs.closed || []).length + ' tickets';
+  var ab = document.getElementById('activity-count-badge');
+  if(ab) ab.textContent = ra.length + ' events';
 }
 
-// Initial render
-renderDashboard(DASHBOARD_DATA);
-renderDonutChart();
-renderSparkline();
-setupTabs();
+function renderSummaryCards(ts, ap, data) {
+  var rate = ((ap.fix_success_rate || 0) * 100).toFixed(0);
+  var items = [
+    { label: 'Total Tickets',    value: ts.total || 0, sub: 'all time' },
+    { label: 'Open',             value: ts.open  || 0, sub: 'awaiting fix' },
+    { label: 'Resolved',         value: ts.resolved || 0, sub: 'fixed & closed' },
+    { label: 'Investigating',    value: ts.investigating || 0, sub: 'in analysis' },
+    { label: 'Fix Success Rate', value: rate + '%', sub: (ap.fixes_succeeded_24h||0) + '/' + (ap.fixes_attempted_24h||0) + ' today' },
+    { label: 'Rate Limit Events',value: data.rate_limit_events_24h || 0, sub: 'last 24h' }
+  ];
 
-// Auto-refresh every 5 minutes (reloads the page)
-setInterval(function() { location.reload(); }, 5 * 60 * 1000);
+  var html = '';
+  for (var i = 0; i < items.length; i++) {
+    var item = items[i];
+    html += '<div class="card' + (i===4?' card-accent':'') + '">' +
+      '<div class="label">' + item.label + '</div>' +
+      '<div class="value">' + escHtml(String(item.value)) + '</div>' +
+      '<div class="sub">' + escHtml(item.sub) + '</div>' +
+      '</div>';
+  }
+  document.getElementById('summary-cards').innerHTML = html;
+}
 
-function renderStateTable(targetId, rows) {
+function renderSeveritySection(ts) {
+  var bySev = ts.by_severity || {};
+  var sevOrder = ['critical', 'high', 'medium', 'low'];
+  var colors = { critical: '#f87171', high: '#fb923c', medium: '#fbbf24', low: '#6b8afd' };
+  var total = 0;
+  for (var k in bySev) total += (bySev[k] || 0);
+
+  var badge = document.getElementById('sev-total-badge');
+  if (badge) badge.textContent = total + ' open';
+
+  // Donut
+  var donutEl = document.getElementById('severity-donut');
+  if (donutEl && total > 0) {
+    var offset = 0, parts = [];
+    for (var s = 0; s < sevOrder.length; s++) {
+      var sev = sevOrder[s];
+      var pct = ((bySev[sev] || 0) / total) * 100;
+      if (pct > 0) {
+        parts.push(colors[sev] + ' ' + offset.toFixed(2) + '% ' + (offset + pct).toFixed(2) + '%');
+        offset += pct;
+      }
+    }
+    donutEl.innerHTML = '<div style="width:130px;height:130px;border-radius:50%;background:conic-gradient(' + parts.join(',') + ');display:flex;align-items:center;justify-content:center;flex-shrink:0">' +
+      '<div style="width:82px;height:82px;border-radius:50%;background:var(--surface);display:flex;align-items:center;justify-content:center;flex-direction:column">' +
+      '<span style="font-size:1.4rem;font-weight:700;letter-spacing:-0.03em">' + total + '</span>' +
+      '<span style="font-size:0.6rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted)">open</span>' +
+      '</div></div>';
+  } else if (donutEl) {
+    donutEl.innerHTML = '<div class="empty-state"><span class="empty-icon">✅</span><span class="empty-text">No open tickets</span></div>';
+  }
+
+  // Legend
+  var legendEl = document.getElementById('donut-legend');
+  if (legendEl) {
+    var legendHtml = '';
+    for (var sl = 0; sl < sevOrder.length; sl++) {
+      var sv = sevOrder[sl];
+      legendHtml += '<div class="legend-item"><div class="legend-dot" style="background:' + colors[sv] + '"></div>' +
+        '<span>' + sv.charAt(0).toUpperCase() + sv.slice(1) + ': <strong>' + (bySev[sv] || 0) + '</strong></span></div>';
+    }
+    legendEl.innerHTML = legendHtml;
+  }
+
+  // Severity cards
+  var cardsHtml = '';
+  for (var sc = 0; sc < sevOrder.length; sc++) {
+    var svc = sevOrder[sc];
+    var cnt = bySev[svc] || 0;
+    cardsHtml += '<div class="severity-card sev-card-' + svc + '">' +
+      '<div class="sev-count sev-' + svc + '">' + cnt + '</div>' +
+      '<div class="sev-label">' + svc + '</div>' +
+      '</div>';
+  }
+  document.getElementById('severity-cards').innerHTML = cardsHtml;
+}
+
+function renderPerformance(ap) {
+  var rate = (ap.fix_success_rate || 0) * 100;
+  var barColor = rate >= 70 ? 'var(--success)' : rate >= 40 ? 'var(--medium)' : 'var(--critical)';
+  var items = [
+    ['Investigations (24h)',  ap.investigations_24h   || 0],
+    ['Fixes Attempted (24h)', ap.fixes_attempted_24h  || 0],
+    ['Fixes Succeeded (24h)', ap.fixes_succeeded_24h  || 0],
+    ['Success Rate',          rate.toFixed(0) + '%']
+  ];
+  var html = '';
+  for (var i = 0; i < items.length; i++) {
+    html += '<div class="stat-row"><span class="stat-label">' + items[i][0] + '</span><span class="stat-value">' + escHtml(String(items[i][1])) + '</span></div>';
+  }
+  html += '<div class="progress-bar"><div class="progress-fill" style="width:' + rate + '%;background:' + barColor + '"></div></div>';
+  document.getElementById('performance-stats').innerHTML = html;
+}
+
+function renderLastCycle(lc) {
+  if (!lc) {
+    document.getElementById('cycle-stats').innerHTML = '<div class="empty-state"><span class="empty-icon">⏳</span><span class="empty-text">No cycle data</span></div>';
+    return;
+  }
+  var verdict = (lc.gate_verdict || '').toLowerCase();
+  var vClass  = verdict === 'pass' ? 'gate-pass' : verdict === 'block' ? 'gate-block' : 'gate-warn';
+  var items = [
+    ['Time',          lc.time || '—'],
+    ['Gate Verdict',  '<span class="' + vClass + '">' + escHtml((lc.gate_verdict || '—').toUpperCase()) + '</span>'],
+    ['Open Tickets',  lc.tickets_open != null ? lc.tickets_open : '—'],
+    ['Investigating', lc.tickets_investigating != null ? lc.tickets_investigating : '—'],
+    ['Next Cycle',    lc.next_cycle || '—']
+  ];
+  var html = '';
+  for (var i = 0; i < items.length; i++) {
+    html += '<div class="stat-row"><span class="stat-label">' + items[i][0] + '</span><span class="stat-value">' + items[i][1] + '</span></div>';
+  }
+  document.getElementById('cycle-stats').innerHTML = html;
+}
+
+function renderMemory(ms) {
+  var el = document.getElementById('memory-section');
+  if (!ms || !ms.total_embeddings) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  var items = [
+    ['Total Embeddings', ms.total_embeddings || 0],
+    ['Memory Hits (24h)', ms.memory_hits_24h || 0],
+    ['Avg Confidence', (ms.avg_confidence || 0).toFixed(2)]
+  ];
+  var html = '';
+  for (var i = 0; i < items.length; i++) {
+    html += '<div class="stat-row"><span class="stat-label">' + items[i][0] + '</span><span class="stat-value">' + escHtml(String(items[i][1])) + '</span></div>';
+  }
+  document.getElementById('memory-stats').innerHTML = html;
+}
+
+function renderActivity(ra) {
+  if (!ra || ra.length === 0) {
+    document.getElementById('activity-table').innerHTML = '<div class="empty-state"><span class="empty-icon">📭</span><span class="empty-text">No recent activity</span></div>';
+    return;
+  }
+  var html = '<table><thead><tr>' +
+    '<th>Severity</th><th>Ticket</th><th>Title</th><th>Status</th><th>Updated</th><th>Link</th>' +
+    '</tr></thead><tbody>';
+  for (var i = 0; i < ra.length && i < 25; i++) {
+    var act = ra[i];
+    var link = act.github_url ? '<a href="' + escHtml(act.github_url) + '" target="_blank" onclick="event.stopPropagation()">↗</a>' : '';
+    var tid = (act.ticket_id || '').replace(/'/g, "\\'");
+    html += '<tr onclick="showTicket(\'' + tid + '\')">' +
+      '<td><span class="severity-badge sev-' + (act.severity||'medium') + '">' + escHtml((act.severity||'').toUpperCase()) + '</span></td>' +
+      '<td><code>' + escHtml((act.ticket_id||'').substring(0,10)) + '</code></td>' +
+      '<td>' + escHtml(act.title || '') + '</td>' +
+      '<td>' + statusBadge(act.action || act.status) + '</td>' +
+      '<td style="white-space:nowrap">' + fmtRelative(act.timestamp) + '</td>' +
+      '<td>' + link + '</td>' +
+      '</tr>';
+  }
+  html += '</tbody></table>';
+  document.getElementById('activity-table').innerHTML = html;
+}
+
+// ── Table renderers (sortable, paginated, filterable) ────────────────
+function renderAllTables() {
+  var tbs = DASHBOARD_DATA.tickets_by_state || {};
+  renderStateTable('open-bugs-table', tbs.open || [], 'open', 'open-pagination');
+  renderStateTable('in-progress-bugs-table', tbs.in_progress || [], 'wip', 'wip-pagination');
+  renderStateTable('closed-bugs-table', tbs.closed || [], 'closed', 'closed-pagination');
+  renderActionsTable('issue-actions-table', tbs);
+}
+
+function renderStateTable(targetId, allRows, stateKey, paginationId) {
   var target = document.getElementById(targetId);
   if (!target) return;
-  if (!rows || rows.length === 0) {
-    target.innerHTML = '<div class="empty-state">No tickets in this bucket</div>';
+
+  var rows = filterRows(allRows);
+  var ss = sortState[targetId];
+  if (ss) rows = sortRows(rows, ss.col, ss.asc);
+
+  var page = pageState[stateKey] || 1;
+  var totalPages = Math.ceil(rows.length / PAGE_SIZE);
+  if (page > totalPages) { pageState[stateKey] = 1; page = 1; }
+
+  if (rows.length === 0) {
+    target.innerHTML = '<div class="empty-state"><span class="empty-icon">🎉</span><span class="empty-text">' + (searchQuery ? 'No matching tickets' : 'No tickets in this bucket') + '</span></div>';
+    if(paginationId) document.getElementById(paginationId).innerHTML = '';
     return;
   }
 
-  var html = '<table><thead><tr>' +
-    '<th>Severity</th><th>Ticket</th><th>Title</th><th>Status</th><th>Assignee</th><th>Updated</th>' +
-    '</tr></thead><tbody>';
-  for (var i = 0; i < rows.length; i++) {
-    var row = rows[i];
-    var sev = row.severity || "medium";
-    html += '<tr>' +
+  var colDefs = ['Severity', 'Ticket', 'Title', 'Status', 'Assignee', 'Updated'];
+  var html = '<table><thead><tr>';
+  for (var c = 0; c < colDefs.length; c++) {
+    var ss2 = sortState[targetId];
+    var isSort = ss2 && ss2.col === c;
+    var sortClass = isSort ? (ss2.asc ? ' sort-asc' : ' sort-desc') : '';
+    html += '<th class="' + sortClass + '" onclick="handleSort(\'' + targetId + '\',' + c + ',\'' + stateKey + '\',\'' + (paginationId||'') + '\')">' +
+      colDefs[c] + '<span class="sort-icon">' + (isSort ? (ss2.asc ? '▲' : '▼') : '↕') + '</span></th>';
+  }
+  html += '</tr></thead><tbody>';
+
+  var start = (page - 1) * PAGE_SIZE;
+  var pageRows = rows.slice(start, start + PAGE_SIZE);
+
+  for (var i = 0; i < pageRows.length; i++) {
+    var row = pageRows[i];
+    var sev = row.severity || 'medium';
+    var tid = (row.ticket_id || '').replace(/'/g, "\\'");
+    html += '<tr onclick="showTicketFromState(\'' + tid + '\')">' +
       '<td><span class="severity-badge sev-' + sev + '">' + sev.toUpperCase() + '</span></td>' +
-      '<td><code>' + (row.ticket_id || "").substring(0, 12) + '</code></td>' +
-      '<td>' + escHtml(row.title || "") + '</td>' +
-      '<td>' + escHtml(row.status || "") + '</td>' +
-      '<td>' + escHtml(row.assigned_to || "-") + '</td>' +
-      '<td>' + escHtml(row.updated_at || "") + '</td>' +
+      '<td><code>' + escHtml((row.ticket_id||'').substring(0,10)) + '</code></td>' +
+      '<td>' + escHtml(row.title || '') + '</td>' +
+      '<td>' + statusBadge(row.status) + '</td>' +
+      '<td>' + escHtml(row.assigned_to || '—') + '</td>' +
+      '<td style="white-space:nowrap">' + fmtRelative(row.updated_at) + '</td>' +
       '</tr>';
   }
   html += '</tbody></table>';
   target.innerHTML = html;
+
+  if (paginationId) {
+    renderPagination(paginationId, rows.length, page, function(p) {
+      pageState[stateKey] = p;
+      renderAllTables();
+    });
+  }
+}
+
+function handleSort(targetId, col, stateKey, paginationId) {
+  var ss = sortState[targetId];
+  if (ss && ss.col === col) {
+    sortState[targetId] = { col: col, asc: !ss.asc };
+  } else {
+    sortState[targetId] = { col: col, asc: true };
+  }
+  pageState[stateKey] = 1;
+  renderAllTables();
 }
 
 function renderActionsTable(targetId, ticketsByState) {
   var target = document.getElementById(targetId);
   if (!target) return;
   var rows = [];
-  var allBuckets = [
-    ticketsByState.open || [],
-    ticketsByState.in_progress || [],
-    ticketsByState.closed || []
-  ];
-  for (var b = 0; b < allBuckets.length; b++) {
-    for (var r = 0; r < allBuckets[b].length; r++) {
-      rows.push(allBuckets[b][r]);
-      if (rows.length >= MAX_ACTIONABLE_TICKETS) break;
+  var buckets = [ticketsByState.open||[], ticketsByState.in_progress||[], ticketsByState.closed||[]];
+  for (var b = 0; b < buckets.length && rows.length < MAX_ACTIONABLE_TICKETS; b++) {
+    for (var r = 0; r < buckets[b].length && rows.length < MAX_ACTIONABLE_TICKETS; r++) {
+      rows.push(buckets[b][r]);
     }
-    if (rows.length >= MAX_ACTIONABLE_TICKETS) break;
   }
-  var totalActionable = (ticketsByState.open || []).length +
-    (ticketsByState.in_progress || []).length +
-    (ticketsByState.closed || []).length;
-
+  rows = filterRows(rows);
   if (rows.length === 0) {
-    target.innerHTML = '<div class="empty-state">No tickets available for actioning</div>';
+    target.innerHTML = '<div class="empty-state"><span class="empty-icon">📭</span><span class="empty-text">No actionable tickets</span></div>';
     return;
   }
-
-  var html = '<table><thead><tr>' +
-    '<th>Ticket</th><th>Status</th><th>GitHub</th><th>Actions</th>' +
-    '</tr></thead><tbody>';
+  var html = '<table><thead><tr><th>Ticket</th><th>Status</th><th>GitHub</th><th>Actions</th></tr></thead><tbody>';
   for (var i = 0; i < rows.length; i++) {
     var row = rows[i];
     var actions = row.github_actions || {};
-    if (!actions.view) {
-      html += '<tr>' +
-        '<td><code>' + (row.ticket_id || "").substring(0, 12) + '</code> — ' + escHtml(row.title || "") + '</td>' +
-        '<td>' + escHtml(row.status || "") + '</td>' +
-        '<td>-</td>' +
-        '<td><span class="meta">No GitHub issue linked</span></td>' +
-        '</tr>';
-      continue;
-    }
+    var ghCell = actions.view ? '<a href="' + escHtml(actions.view) + '" target="_blank">↗ Issue</a>' : '—';
+    var actCell = actions.view
+      ? '<div class="actions">' +
+        '<a class="btn-link" href="' + escHtml(actions.assign) + '" target="_blank">Assign</a>' +
+        '<a class="btn-link" href="' + escHtml(actions.update) + '" target="_blank">Update</a>' +
+        '<a class="btn-link" href="' + escHtml(actions.comment) + '" target="_blank">Comment</a>' +
+        '<a class="btn-link" href="' + escHtml(actions.link) + '" target="_blank">Link</a>' +
+        '</div>'
+      : '<span style="color:var(--text-faint);font-size:0.75rem">No GitHub issue</span>';
     html += '<tr>' +
-      '<td><code>' + (row.ticket_id || "").substring(0, 12) + '</code> — ' + escHtml(row.title || "") + '</td>' +
-      '<td>' + escHtml(row.status || "") + '</td>' +
-      '<td><a href="' + actions.view + '" target="_blank">Issue</a></td>' +
-      '<td><div class="actions">' +
-      '<a class="btn-link" href="' + actions.assign + '" target="_blank">Assign</a>' +
-      '<a class="btn-link" href="' + actions.update + '" target="_blank">Update</a>' +
-      '<a class="btn-link" href="' + actions.comment + '" target="_blank">Comment</a>' +
-      '<a class="btn-link" href="' + actions.link + '" target="_blank">Link</a>' +
-      '</div></td>' +
+      '<td><code>' + escHtml((row.ticket_id||'').substring(0,10)) + '</code> — ' + escHtml(row.title||'') + '</td>' +
+      '<td>' + statusBadge(row.status) + '</td>' +
+      '<td>' + ghCell + '</td>' +
+      '<td>' + actCell + '</td>' +
       '</tr>';
   }
   html += '</tbody></table>';
-  if (totalActionable > MAX_ACTIONABLE_TICKETS) {
-    html += '<div class="meta" style="margin-top:0.75rem;">Showing first ' +
-      MAX_ACTIONABLE_TICKETS + ' of ' + totalActionable + ' actionable tickets.</div>';
-  }
   target.innerHTML = html;
 }
 
-function setupTabs() {
-  var buttons = document.querySelectorAll(".tab-btn");
-
-  for (var i = 0; i < buttons.length; i++) {
-    buttons[i].addEventListener("click", function() {
-      var target = this.getAttribute("data-tab-target");
-      var activeBtn = document.querySelector(".tab-btn.active");
-      if (activeBtn) activeBtn.classList.remove("active");
-      var activePanel = document.querySelector(".tab-panel.active");
-      if (activePanel) activePanel.classList.remove("active");
-      this.classList.add("active");
-      var panel = document.querySelector('.tab-panel[data-tab-panel="' + target + '"]');
-      if (panel) panel.classList.add("active");
-    });
-  }
-}
-
-// Ticket detail modal
+// ── Ticket detail modal ──────────────────────────────────────────────
 function showTicket(ticketId) {
   var d = DASHBOARD_DATA;
-  var t = (d.recent_activity||[]).find(function(x){return x.ticket_id===ticketId});
-  if(!t) return;
-  var html = '<h2>'+t.title+'</h2>';
-  html += '<p><strong>ID:</strong> <code>'+t.ticket_id+'</code></p>';
-  html += '<p><strong>Severity:</strong> '+t.severity+'</p>';
-  html += '<p><strong>Status:</strong> '+t.status+'</p>';
-  html += '<p><strong>Module:</strong> '+(t.source_module||'\u2014')+'</p>';
-  if(t.github_issue) html += '<p><strong>GitHub:</strong> <a href="https://github.com/ArtemisAI/SWE-Squad-DEV/issues/'+t.github_issue+'" target="_blank">#'+t.github_issue+'</a></p>';
-  if(t.assigned_to) html += '<p><strong>Assigned:</strong> '+t.assigned_to+'</p>';
-  html += '<hr style="border-color:var(--border);margin:16px 0">';
-  html += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
-  html += '<button onclick="triggerTicket(\''+ticketId+'\')" style="padding:8px 16px;background:var(--accent,#DA7756);color:white;border:none;border-radius:6px;cursor:pointer">Trigger Agent</button>';
-  html += '<button onclick="assignTicket(\''+ticketId+'\')" style="padding:8px 16px;background:var(--bg-secondary,#2D2B28);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;cursor:pointer">Assign</button>';
+  var t = (d.recent_activity||[]).find(function(x){return x.ticket_id===ticketId;});
+  if (!t) { showTicketFromState(ticketId); return; }
+  _openTicketModal(t);
+}
+
+function showTicketFromState(ticketId) {
+  var tbs = DASHBOARD_DATA.tickets_by_state || {};
+  var all = (tbs.open||[]).concat(tbs.in_progress||[]).concat(tbs.closed||[]);
+  var t = all.find(function(x){return x.ticket_id===ticketId;});
+  if (!t) return;
+  _openTicketModal(t);
+}
+
+function _openTicketModal(t) {
+  var ghLink = t.github_issue
+    ? '<a href="https://github.com/ArtemisAI/SWE-Squad-DEV/issues/' + t.github_issue + '" target="_blank">#' + t.github_issue + '</a>'
+    : '—';
+  var html = '<h2>' + escHtml(t.title||'Ticket') + '</h2>';
+  html += '<p><strong>ID:</strong> <code>' + escHtml(t.ticket_id||'') + '</code></p>';
+  html += '<p><strong>Severity:</strong> <span class="severity-badge sev-' + (t.severity||'medium') + '">' + escHtml((t.severity||'').toUpperCase()) + '</span></p>';
+  html += '<p><strong>Status:</strong> ' + statusBadge(t.status) + '</p>';
+  html += '<p><strong>Module:</strong> ' + escHtml(t.source_module||'—') + '</p>';
+  html += '<p><strong>Assigned:</strong> ' + escHtml(t.assigned_to||'—') + '</p>';
+  html += '<p><strong>GitHub:</strong> ' + ghLink + '</p>';
+  if (t.updated_at) html += '<p><strong>Updated:</strong> ' + fmtDate(t.updated_at) + '</p>';
+  html += '<hr class="modal-divider">';
+  html += '<div class="modal-actions">';
+  html += '<button class="btn-primary" onclick="triggerTicket(\'' + escHtml(t.ticket_id||'') + '\')">Trigger Agent</button>';
+  html += '<button class="btn-secondary" onclick="assignTicket(\'' + escHtml(t.ticket_id||'') + '\')">Assign</button>';
+  html += '<button class="btn-secondary" onclick="closeModal()">Close</button>';
   html += '</div>';
   document.getElementById('modal-content').innerHTML = html;
   document.getElementById('ticket-modal').classList.add('active');
 }
-function closeModal(){document.getElementById('ticket-modal').classList.remove('active');}
-function triggerTicket(id){fetch('/api/tickets/'+id+'/trigger',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'opus'})}).then(function(r){return r.json()}).then(function(d){alert('Triggered: '+JSON.stringify(d));closeModal()});}
-function assignTicket(id){var a=prompt('Assign to:');if(a)fetch('/api/tickets/'+id+'/assign',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({assignee:a})}).then(function(r){return r.json()}).then(function(d){alert('Assigned: '+JSON.stringify(d));closeModal()});}
 
-// Keyboard shortcuts
-document.addEventListener('keydown', function(e) {
-  if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT') return;
-  if(e.key==='/'){e.preventDefault();var s=document.getElementById('ticket-search');if(s)s.focus();}
-  if(e.key==='t'&&typeof toggleTheme==='function') toggleTheme();
-  if(e.key==='Escape') closeModal();
-});
-
-// Settings
-function setRefreshInterval(secs) {
-  localStorage.setItem('swe-refresh', secs);
-  // Could implement actual refresh timer change here
+function closeModal() {
+  document.getElementById('ticket-modal').classList.remove('active');
 }
-document.getElementById('settings-dropdown').addEventListener('click', function(e){e.stopPropagation();});
-document.addEventListener('click', function(){document.getElementById('settings-dropdown').classList.remove('active');});
+
+function triggerTicket(id) {
+  fetch('/api/tickets/'+id+'/trigger', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({model:'opus'})})
+    .then(function(r){return r.json();})
+    .then(function(){showToast('Agent triggered for ' + id.substring(0,8), 'success'); closeModal();})
+    .catch(function(){showToast('Failed to trigger agent', 'error');});
+}
+
+function assignTicket(id) {
+  var a = prompt('Assign to:');
+  if (!a) return;
+  fetch('/api/tickets/'+id+'/assign', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({assignee:a})})
+    .then(function(r){return r.json();})
+    .then(function(){showToast('Assigned to ' + a, 'success'); closeModal();})
+    .catch(function(){showToast('Assignment failed', 'error');});
+}
+
+// ── Tabs ─────────────────────────────────────────────────────────────
+function setupTabs() {
+  var buttons = document.querySelectorAll('.tab-btn');
+  for (var i = 0; i < buttons.length; i++) {
+    buttons[i].addEventListener('click', function() {
+      document.querySelectorAll('.tab-btn').forEach(function(b){b.classList.remove('active');});
+      document.querySelectorAll('.tab-panel').forEach(function(p){p.classList.remove('active');});
+      this.classList.add('active');
+      var panel = document.querySelector('.tab-panel[data-tab-panel="' + this.getAttribute('data-tab-target') + '"]');
+      if (panel) panel.classList.add('active');
+    });
+  }
+}
+
+// ── Boot ─────────────────────────────────────────────────────────────
+setupTabs();
+renderDashboard(DASHBOARD_DATA);
+showToast('Dashboard loaded', 'success');
 </script>
-<div class="modal-overlay" id="ticket-modal" onclick="if(event.target===this)closeModal()">
-  <div class="modal">
-    <button class="modal-close" onclick="closeModal()">&times;</button>
-    <div id="modal-content"></div>
-  </div>
-</div>
 </body>
 </html>

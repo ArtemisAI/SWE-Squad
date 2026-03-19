@@ -735,7 +735,7 @@ class TestRenderDashboardHtml:
 
         html = render_dashboard_html(data)
         assert "setInterval" in html
-        assert "5 * 60 * 1000" in html  # 5 minutes
+        assert "setRefreshInterval" in html  # configurable auto-refresh
 
     def test_html_contains_webui_tabs(self, ticket_store, status_file):
         store, _ = ticket_store
