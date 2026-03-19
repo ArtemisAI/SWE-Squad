@@ -95,7 +95,7 @@ def probe_embedding_model(
         return False
     try:
         from openai import OpenAI
-        client = OpenAI(base_url=url, api_key=key, timeout=10)
+        client = OpenAI(base_url=url, api_key=key, timeout=10, max_retries=0)
         resp = client.embeddings.create(model=model, input="probe")
         ok = bool(resp.data and resp.data[0].embedding)
         if not ok:
@@ -121,7 +121,7 @@ def probe_chat_model(
         return False
     try:
         from openai import OpenAI
-        client = OpenAI(base_url=url, api_key=key, timeout=15)
+        client = OpenAI(base_url=url, api_key=key, timeout=10, max_retries=0)
         resp = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": "ping"}],
