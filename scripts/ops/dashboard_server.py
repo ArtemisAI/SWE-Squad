@@ -63,13 +63,13 @@ def _render_dashboard(store) -> str:
 
     html = template_path.read_text(encoding="utf-8")
 
-    # Inject live data as a JS variable and auto-refresh meta tag
+    # Inject live data by replacing the __DASHBOARD_DATA__ placeholder in the template
     data_json = json.dumps(data, indent=2, default=str)
-    inject = (
-        f'<meta http-equiv="refresh" content="{_REFRESH_SECONDS}">\n'
-        f"<script>window.__SWE_DATA__ = {data_json};</script>\n"
-    )
-    html = html.replace("</head>", f"{inject}</head>", 1)
+    html = html.replace("__DASHBOARD_DATA__", data_json, 1)
+
+    # Inject auto-refresh meta tag
+    refresh_tag = f'<meta http-equiv="refresh" content="{_REFRESH_SECONDS}">\n'
+    html = html.replace("</head>", f"{refresh_tag}</head>", 1)
     return html
 
 
