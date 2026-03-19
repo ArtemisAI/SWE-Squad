@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import FrozenSet, Optional
+from typing import FrozenSet
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +34,11 @@ AUTHORIZED_CODE_MODELS: FrozenSet[str] = frozenset({
     "claude-4-opus",
 })
 
-# Pattern to match any Claude model variant
-_CLAUDE_PATTERN = re.compile(r"^(claude|haiku|sonnet|opus)", re.IGNORECASE)
+# Word-boundary pattern for detecting code-generation intent in task strings
+_CODE_TASK_PATTERN = re.compile(
+    r"\b(code|fix|develop|implement|write|generate|patch)\b",
+    re.IGNORECASE,
+)
 
 # Models explicitly BLOCKED — known to have caused incidents
 BLOCKED_MODELS: FrozenSet[str] = frozenset({
@@ -71,8 +74,12 @@ READ_ONLY_TASKS: FrozenSet[str] = frozenset({
 
 
 def is_claude_model(model: str) -> bool:
-    """Check if a model string refers to a Claude model."""
-    return bool(_CLAUDE_PATTERN.match(model.strip()))
+    """Check if a model string refers to a Claude model.
+
+    Returns True only if the model (case-insensitive) is in the exact allowlist.
+    Prefix/substring matches are intentionally NOT accepted to prevent spoofing.
+    """
+    return model.strip().lower() in {m.lower() for m in AUTHORIZED_CODE_MODELS}
 
 
 def validate_model_for_task(model: str, task: str) -> tuple[bool, str]:
@@ -94,8 +101,12 @@ def validate_model_for_task(model: str, task: str) -> tuple[bool, str]:
 
     # Code generation tasks REQUIRE Claude
     task_lower = task.strip().lower()
-    if task_lower in CODE_GENERATION_TASKS or "code" in task_lower or "fix" in task_lower or "develop" in task_lower:
-        if not is_claude_model(model):
+    is_code_task = (
+        task_lower in CODE_GENERATION_TASKS
+        or bool(_CODE_TASK_PATTERN.search(task_lower))
+    )
+    if is_code_task:
+        if model_lower not in {m.lower() for m in AUTHORIZED_CODE_MODELS}:
             logger.critical(
                 "SEC-68 MODEL BOUNDARY VIOLATION: non-Claude model '%s' "
                 "attempted for code generation task '%s' — DENIED",
