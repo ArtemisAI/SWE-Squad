@@ -89,6 +89,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response({"status": "ok"})
         elif self.path == "/data":
             self._serve_json()
+        elif self.path == "/api/activity":
+            self._handle_api_activity()
         elif self.path == "/costs":
             self._handle_costs()
         elif self.path == "/scheduler":
@@ -124,6 +126,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
+    def _handle_api_activity(self):
+        log_path = PROJECT_ROOT / "logs" / "swe_team.log"
+        entries = []
+        if log_path.exists():
+            lines = log_path.read_text().strip().split('\n')[-30:]
+            for line in lines:
+                if '[INFO]' in line and any(w in line for w in ['Investigating', 'attempt_fix', 'Triaged', 'SESSION', 'Dispatched', 'Claude CLI', 'gate:']):
+                    parts = line.split(' ', 3)
+                    entries.append({"time": parts[0] + ' ' + parts[1][:8] if len(parts) > 1 else "", "agent": "swe-squad", "action": parts[-1][:120] if parts else line[:120]})
+        self._json_response(entries[-20:])
+
     def _handle_costs(self):
         try:
             from src.swe_team.token_tracker import TokenTracker
@@ -139,6 +152,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     f"<td>${data['cost_usd']:.4f}</td></tr>"
                 )
 
+            # Daily trend
+            from collections import defaultdict
+            daily = defaultdict(float)
+            if tracker._path.exists():
+                for record in tracker._load_records():
+                    day = record.timestamp[:10]
+                    daily[day] += record.cost_usd
+
+            daily_rows = ""
+            for day in sorted(daily.keys())[-7:]:
+                bar_width = min(int(daily[day] / max(max(daily.values(), default=1), 0.01) * 200), 200)
+                daily_rows += f'<tr><td>{day}</td><td>${daily[day]:.4f}</td><td><div style="width:{bar_width}px;height:16px;background:#e94560;border-radius:4px;"></div></td></tr>'
+
             html = f"""<!DOCTYPE html>
 <html><head><title>SWE-Squad Costs</title>
 <meta http-equiv="refresh" content="60">
@@ -148,7 +174,7 @@ body {{ font-family: monospace; background: #1a1a2e; color: #e0e0e0; padding: 20
 .card {{ background: #16213e; padding: 20px; border-radius: 8px; min-width: 200px; }}
 .card h3 {{ margin: 0; color: #0f3460; font-size: 14px; }}
 .card .value {{ font-size: 32px; color: #e94560; margin-top: 8px; }}
-table {{ width: 100%; border-collapse: collapse; background: #16213e; border-radius: 8px; }}
+table {{ width: 100%; border-collapse: collapse; background: #16213e; border-radius: 8px; margin-bottom: 20px; }}
 th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #0f3460; }}
 th {{ color: #e94560; }}
 nav {{ margin-bottom: 20px; }}
@@ -164,6 +190,9 @@ nav a {{ color: #e94560; margin-right: 15px; text-decoration: none; }}
 <h2>By Model</h2>
 <table><tr><th>Model</th><th>Calls</th><th>Input Tokens</th><th>Output Tokens</th><th>Cost</th></tr>
 {rows}</table>
+<h2>Daily Cost Trend (Last 7 Days)</h2>
+<table><tr><th>Date</th><th>Cost</th><th>Trend</th></tr>
+{daily_rows}</table>
 </body></html>"""
 
             body = html.encode("utf-8")

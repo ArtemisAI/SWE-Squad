@@ -783,6 +783,14 @@
   }
 
   /* ── 22. Toast notifications ─────────────────────────────────────── */
+  .toast-container { position:fixed;top:20px;right:20px;z-index:2000;display:flex;flex-direction:column;gap:8px; }
+  .toast { background:var(--bg-card, var(--surface));border:1px solid var(--border);border-radius:8px;padding:12px 20px;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,0.4);animation:toastSlideIn 0.3s ease;max-width:350px; }
+  .toast.success { border-left:3px solid var(--success,#4CAF50); }
+  .toast.error { border-left:3px solid var(--error,#EF5350); }
+  .toast.info { border-left:3px solid var(--accent,#DA7756); }
+  @keyframes toastSlideIn { from{transform:translateX(100%);opacity:0} to{transform:translateX(0);opacity:1} }
+
+  /* legacy compat */
   .toast-stack {
     position: fixed;
     bottom: 1.5rem;
@@ -792,19 +800,6 @@
     gap: 0.5rem;
     z-index: 2000;
     max-width: 300px;
-  }
-
-  .toast {
-    background: var(--surface);
-    border: 1px solid var(--border-hover);
-    border-radius: var(--radius-sm);
-    padding: 0.65rem 1rem;
-    font-size: 0.8rem;
-    box-shadow: var(--shadow-md);
-    animation: slideIn 0.2s ease;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
   }
 
   @keyframes slideIn {
@@ -975,6 +970,13 @@
     <div class="table-wrap" id="activity-table"></div>
   </div>
 
+  <div class="section" style="margin-top:20px">
+    <h2>Agent Activity Feed</h2>
+    <div id="activity-feed" style="max-height:300px;overflow-y:auto;font-size:12px;font-family:monospace;background:var(--bg-secondary, var(--surface-alt));border-radius:8px;padding:12px;">
+      Loading...
+    </div>
+  </div>
+
 </div>
 
 <!-- ── Open Bugs tab ── -->
@@ -1046,6 +1048,7 @@
 
 <!-- ── Toast container ── -->
 <div class="toast-stack" id="toast-stack"></div>
+<div class="toast-container" id="toast-container"></div>
 
 <script>
 // ── Data injected by Python renderer ───────────────────────────────
@@ -1142,16 +1145,13 @@ function hideShortcuts() { document.getElementById('shortcut-overlay').classList
 
 // ── Toast ────────────────────────────────────────────────────────────
 function showToast(msg, type) {
-  var icons = { info: 'ℹ️', success: '✅', warn: '⚠️', error: '❌' };
-  var stack = document.getElementById('toast-stack');
+  type = type || 'info';
+  var c = document.getElementById('toast-container');
   var t = document.createElement('div');
-  t.className = 'toast';
-  t.innerHTML = '<span class="toast-icon">' + (icons[type] || 'ℹ️') + '</span>' + escHtml(msg);
-  stack.appendChild(t);
-  setTimeout(function() {
-    t.classList.add('removing');
-    setTimeout(function() { if(t.parentNode) t.parentNode.removeChild(t); }, 200);
-  }, 3000);
+  t.className = 'toast ' + type;
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(function(){ t.style.opacity='0'; setTimeout(function(){t.remove()},300); }, 4000);
 }
 
 // ── Utilities ────────────────────────────────────────────────────────
@@ -1614,9 +1614,21 @@ function setupTabs() {
   }
 }
 
+// ── Agent Activity Feed ──────────────────────────────────────────────
+function loadActivityFeed() {
+  fetch('/api/activity').then(function(r){return r.json()}).then(function(d){
+    var el = document.getElementById('activity-feed');
+    if(!d.length){el.innerHTML='<span style="color:var(--text-muted)">No recent activity</span>';return;}
+    el.innerHTML = d.map(function(e){
+      return '<div style="padding:4px 0;border-bottom:1px solid var(--border)"><span style="color:var(--text-muted)">'+e.time+'</span> <span style="color:var(--accent)">'+e.agent+'</span> '+e.action+'</div>';
+    }).join('');
+  }).catch(function(){document.getElementById('activity-feed').innerHTML='Feed unavailable';});
+}
+
 // ── Boot ─────────────────────────────────────────────────────────────
 setupTabs();
 renderDashboard(DASHBOARD_DATA);
+loadActivityFeed();
 showToast('Dashboard loaded', 'success');
 </script>
 </body>
