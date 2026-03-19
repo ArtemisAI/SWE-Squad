@@ -115,9 +115,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            logger.debug("Client disconnected during response — ignored")
         except Exception as exc:
             logger.exception("Dashboard render error")
-            self.send_error(500, str(exc))
+            try:
+                self.send_error(500, str(exc))
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     def _handle_costs(self):
         try:
@@ -167,9 +172,14 @@ nav a {{ color: #e94560; margin-right: 15px; text-decoration: none; }}
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            logger.debug("Client disconnected during response — ignored")
         except Exception as exc:
             logger.exception("Costs page error")
-            self.send_error(500, str(exc))
+            try:
+                self.send_error(500, str(exc))
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     def _handle_scheduler(self):
         try:
@@ -218,25 +228,38 @@ nav a {{ color: #e94560; margin-right: 15px; text-decoration: none; }}
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            logger.debug("Client disconnected during response — ignored")
         except Exception as exc:
             logger.exception("Scheduler page error")
-            self.send_error(500, str(exc))
+            try:
+                self.send_error(500, str(exc))
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     def _serve_json(self):
         try:
             from scripts.ops.dashboard_data import generate_dashboard_data
             data = generate_dashboard_data(self.store)
             self._json_response(data)
+        except (BrokenPipeError, ConnectionResetError):
+            logger.debug("Client disconnected during response — ignored")
         except Exception as exc:
-            self.send_error(500, str(exc))
+            try:
+                self.send_error(500, str(exc))
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     def _json_response(self, data: dict):
-        body = json.dumps(data, indent=2, default=str).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            body = json.dumps(data, indent=2, default=str).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            logger.debug("Client disconnected during response — ignored")
 
 
 def main():
