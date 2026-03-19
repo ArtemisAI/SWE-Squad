@@ -1,53 +1,31 @@
 name: Bug Report
-description: Report a bug in SWE Squad
+description: Something isn't working
 labels: ["bug"]
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Thanks for reporting a bug! Please fill out the information below.
-
   - type: textarea
     id: description
     attributes:
-      label: Description
-      description: A clear description of the bug.
+      label: What happened?
+      placeholder: Describe the bug clearly
     validations:
       required: true
-
   - type: textarea
-    id: reproduction
+    id: reproduce
     attributes:
-      label: Steps to Reproduce
-      description: How can we reproduce this bug?
+      label: Steps to reproduce
       placeholder: |
-        1. Configure .env with...
-        2. Run `python scripts/ops/swe_team_runner.py -v`
-        3. Observe error...
+        1. Run ...
+        2. See error ...
     validations:
       required: true
-
   - type: textarea
     id: expected
     attributes:
-      label: Expected Behavior
-      description: What should have happened?
-
-  - type: textarea
-    id: logs
-    attributes:
-      label: Relevant Logs
-      description: Paste any relevant log output or error messages.
-      render: shell
-
+      label: Expected behavior
+    validations:
+      required: true
   - type: input
-    id: python-version
+    id: python
     attributes:
-      label: Python Version
-      placeholder: "3.10.12"
-
-  - type: input
-    id: os
-    attributes:
-      label: Operating System
-      placeholder: "Ubuntu 22.04"
+      label: Python version
+      placeholder: "3.11"

@@ -1,21 +1,24 @@
 ## Summary
+<!-- What does this PR do? -->
 
-<!-- Brief description of what this PR does -->
+## Type of change
+- [ ] Bug fix
+- [ ] New feature
+- [ ] Refactor
+- [ ] Tests
+- [ ] Documentation
 
-## Changes
+## Test plan
+```bash
+# Command to run tests for this PR
+python3 -m pytest tests/unit/test_<module>.py -v
+```
 
-<!-- Bullet list of changes -->
+## Checklist
+- [ ] Tests pass locally (`make test`)
+- [ ] No private/internal references (IPs, hostnames, internal paths)
+- [ ] Follows existing code style (dataclasses, type hints, stdlib-only deps)
+- [ ] PR description includes test plan
 
--
-
-## Testing
-
-<!-- How was this tested? -->
-
-- [ ] Unit tests pass (`python -m pytest tests/unit/test_swe_team.py -v`)
-- [ ] No new dependencies added
-- [ ] Documentation updated (if applicable)
-
-## Related Issues
-
-<!-- Link related issues: Fixes #123, Related to #456 -->
+## Related issues
+Closes #
