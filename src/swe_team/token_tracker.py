@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone, timedelta
@@ -54,7 +53,15 @@ class TokenUsage:
 def calculate_cost(model: str, input_tokens: int, output_tokens: int, pricing: Optional[Dict] = None) -> float:
     """Calculate cost in USD for a given token usage."""
     pricing = pricing or DEFAULT_PRICING
-    model_key = model.lower().split("-")[0] if model else "default"
+    model_lower = model.lower() if model else ""
+    if "opus" in model_lower:
+        model_key = "opus"
+    elif "sonnet" in model_lower:
+        model_key = "sonnet"
+    elif "haiku" in model_lower:
+        model_key = "haiku"
+    else:
+        model_key = "default"
     rates = pricing.get(model_key, pricing.get("default", {"input": 0.003, "output": 0.015}))
     return (input_tokens / 1000 * rates["input"]) + (output_tokens / 1000 * rates["output"])
 
@@ -94,18 +101,16 @@ class TokenTracker:
             metadata=metadata or {},
         )
 
-        # Append to JSONL file
+        # Append to JSONL file and update session totals inside the same lock
+        key = ticket_id or session_id or "unknown"
         with self._lock:
             with open(self._path, "a") as f:
                 f.write(json.dumps(usage.to_dict(), default=str) + "\n")
-
-        # Update session totals
-        key = ticket_id or session_id or "unknown"
-        if key not in self._session_totals:
-            self._session_totals[key] = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
-        self._session_totals[key]["input_tokens"] += input_tokens
-        self._session_totals[key]["output_tokens"] += output_tokens
-        self._session_totals[key]["cost_usd"] += cost
+            if key not in self._session_totals:
+                self._session_totals[key] = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
+            self._session_totals[key]["input_tokens"] += input_tokens
+            self._session_totals[key]["output_tokens"] += output_tokens
+            self._session_totals[key]["cost_usd"] += cost
 
         logger.info(
             "TOKEN: %s %s in=%d out=%d cost=$%.4f (ticket=%s)",
@@ -150,9 +155,17 @@ class TokenTracker:
 
     def get_hourly_spend(self) -> float:
         """Get spend in the last hour."""
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
         records = self._load_records()
-        return sum(r.cost_usd for r in records if r.timestamp >= cutoff)
+        result = 0.0
+        for r in records:
+            try:
+                ts = datetime.fromisoformat(r.timestamp)
+                if ts >= cutoff:
+                    result += r.cost_usd
+            except (ValueError, TypeError):
+                continue
+        return result
 
     def check_budget(
         self,
@@ -162,18 +175,19 @@ class TokenTracker:
         ticket_id: str = "",
     ) -> tuple[bool, float]:
         """Check if we have budget remaining. Returns (has_budget, remaining_usd)."""
+        remaining = float("inf")
+
         if daily_cap > 0:
             daily = self.get_daily_spend()
             if daily >= daily_cap:
                 return False, 0.0
             remaining = daily_cap - daily
-        elif hourly_cap > 0:
+
+        if hourly_cap > 0:
             hourly = self.get_hourly_spend()
             if hourly >= hourly_cap:
                 return False, 0.0
-            remaining = hourly_cap - hourly
-        else:
-            remaining = float("inf")
+            remaining = min(remaining, hourly_cap - hourly)
 
         if per_ticket_cap > 0 and ticket_id:
             ticket_cost = self.get_ticket_cost(ticket_id)
@@ -197,8 +211,8 @@ class TokenTracker:
                     if ticket_id and r.ticket_id != ticket_id:
                         continue
                     records.append(r)
-        except (json.JSONDecodeError, OSError):
-            logger.warning("Error reading token usage file")
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Corrupt token store at %s: %s", self._path, e)
         return records
 
     def summary(self) -> Dict[str, Any]:

@@ -1,7 +1,6 @@
 """Tests for token_tracker module."""
 import json
-import tempfile
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -48,10 +47,11 @@ class TestCalculateCost:
         assert calculate_cost("sonnet", 0, 0) == 0.0
 
     def test_custom_pricing(self):
-        custom = {"test": {"input": 0.01, "output": 0.02}, "default": {"input": 0.001, "output": 0.002}}
-        cost = calculate_cost("test-model", 2000, 3000)
-        # Without custom pricing, uses default
-        cost_custom = calculate_cost("test-model", 2000, 3000, pricing=custom)
+        custom = {"sonnet": {"input": 0.01, "output": 0.02}, "default": {"input": 0.001, "output": 0.002}}
+        cost = calculate_cost("claude-sonnet-4", 2000, 3000)
+        # Without custom pricing, uses default sonnet rates
+        assert cost > 0
+        cost_custom = calculate_cost("claude-sonnet-4", 2000, 3000, pricing=custom)
         expected = 2 * 0.01 + 3 * 0.02
         assert cost_custom == pytest.approx(expected)
 
