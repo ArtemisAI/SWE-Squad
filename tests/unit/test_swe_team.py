@@ -1116,6 +1116,8 @@ class TestEmbeddings:
         mock_openai.assert_called_once_with(
             base_url="http://api.ai-automate.me/v1/",
             api_key="k",
+            timeout=15.0,
+            max_retries=1,
         )
         extraction_model_reads = [
             call.args for call in wrapped_getenv.call_args_list if call.args and call.args[0] == "EXTRACTION_MODEL"

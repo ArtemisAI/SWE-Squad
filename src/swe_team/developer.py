@@ -54,6 +54,7 @@ class DeveloperAgent:
         rate_limit_config: Optional[object] = None,
         rate_limit_tracker: Optional[RateLimitTracker] = None,
         fallback_agents: Optional[List[_FallbackAgent]] = None,
+        use_worktree: bool = False,
     ) -> None:
         self._repo_root = Path(repo_root)
         self._program_path = Path(program_path)
@@ -63,6 +64,8 @@ class DeveloperAgent:
         self._test_command = test_command or self._default_test_command()
         self._model_config = model_config
         self._fallback_agents: List[_FallbackAgent] = fallback_agents or []
+        self._use_worktree = use_worktree
+        self._active_worktree: Optional[Path] = None
 
         # Rate limit backoff
         rl = rate_limit_config
@@ -99,11 +102,31 @@ class DeveloperAgent:
 
         ticket.transition(TicketStatus.IN_DEVELOPMENT)
         ticket.metadata["last_heartbeat"] = datetime.now(timezone.utc).isoformat()
-        branch = self._ensure_branch(ticket)
+        if self._use_worktree:
+            try:
+                branch = self._ensure_worktree(ticket)
+            except RuntimeError as exc:
+                logger.warning(
+                    "Worktree setup failed for %s (%s) — falling back to branch",
+                    ticket.ticket_id, exc,
+                )
+                branch = self._ensure_branch(ticket)
+        else:
+            branch = self._ensure_branch(ticket)
         ticket.metadata["branch"] = branch
         ticket.metadata.setdefault("pr_number", None)
         attempts = list(ticket.metadata.get("attempts", []))
 
+        try:
+            return self._fix_loop(ticket, branch, attempts)
+        finally:
+            if self._active_worktree:
+                self._cleanup_worktree(ticket)
+
+    def _fix_loop(
+        self, ticket: SWETicket, branch: str, attempts: list,
+    ) -> bool:
+        """Inner keep/discard loop — separated so worktree cleanup runs in finally."""
         last_error = None  # Feed failures into next attempt (Ralph Wiggum loop)
         for attempt_num in range(self._max_attempts):
             attempt_start = time.monotonic()
@@ -331,6 +354,65 @@ class DeveloperAgent:
             )
         self._git(["git", "checkout", "-B", branch])
         return branch
+
+    def _ensure_worktree(self, ticket: SWETicket) -> str:
+        """Create an isolated git worktree for this ticket.
+
+        Each agent gets its own worktree — a real branch in a separate
+        directory.  This eliminates serialisation when multiple tickets
+        target the same repo (inspired by ClawTeam).
+
+        Returns the branch name.  Sets ``self._active_worktree`` so that
+        all subsequent git/test/claude operations run inside the worktree.
+        """
+        branch = f"swe-fix/ticket-{ticket.ticket_id}"
+        worktree_dir = Path(f"/tmp/swe-agent-{ticket.ticket_id}")
+
+        # Remove stale worktree from a previous crashed run
+        if worktree_dir.exists():
+            try:
+                self._git(["git", "worktree", "remove", "--force", str(worktree_dir)])
+            except RuntimeError:
+                shutil.rmtree(worktree_dir, ignore_errors=True)
+
+        # Prune dead worktree references before adding a new one
+        self._git(["git", "worktree", "prune"])
+
+        self._git(["git", "worktree", "add", str(worktree_dir), "-b", branch])
+
+        # Redirect all subsequent operations to the worktree directory
+        self._active_worktree = worktree_dir
+        self._original_repo_root = self._repo_root
+        self._repo_root = worktree_dir
+        logger.info(
+            "Worktree created for %s at %s (branch %s)",
+            ticket.ticket_id, worktree_dir, branch,
+        )
+        return branch
+
+    def _cleanup_worktree(self, ticket: SWETicket) -> None:
+        """Merge the worktree branch back and remove the worktree."""
+        worktree_dir = self._active_worktree
+        if not worktree_dir:
+            return
+
+        branch = f"swe-fix/ticket-{ticket.ticket_id}"
+
+        # Restore original repo root first so git commands target the main repo
+        self._repo_root = getattr(self, "_original_repo_root", self._repo_root)
+        self._active_worktree = None
+
+        try:
+            self._git(["git", "worktree", "remove", "--force", str(worktree_dir)])
+        except RuntimeError:
+            logger.warning("Failed to remove worktree %s — cleaning up manually", worktree_dir)
+            shutil.rmtree(worktree_dir, ignore_errors=True)
+            try:
+                self._git(["git", "worktree", "prune"])
+            except RuntimeError:
+                pass
+
+        logger.info("Worktree cleaned up for %s", ticket.ticket_id)
 
     def _build_prompt(
         self, ticket: SWETicket, *, last_error: Optional[str] = None, attempt: int = 1

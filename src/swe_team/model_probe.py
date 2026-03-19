@@ -213,9 +213,17 @@ class ModelProbe:
 
         Returns a dict of {env_var: final_value} for any vars that were
         changed so callers can log/alert.
+
+        Non-blocking: if the proxy is unreachable or all probes fail, returns
+        empty and keeps defaults so the rest of the pipeline can proceed.
         """
-        available = self.available
+        try:
+            available = self.available
+        except Exception as exc:
+            logger.warning("model_probe: proxy unreachable during validate_and_patch_env — skipping probe, using defaults: %s", exc)
+            return {}
         if not available:
+            logger.info("model_probe: no models available — skipping probe, using defaults")
             return {}
 
         patches: dict[str, str] = {}
