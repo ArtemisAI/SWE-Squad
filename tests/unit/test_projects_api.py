@@ -37,8 +37,8 @@ def tmp_config(tmp_path):
     config = {
         "repos": [
             {
-                "name": "ArtemisAI/LinkedAi",
-                "local_path": "/home/agent/Projects/LinkedAi",
+                "name": "example-org/my-app",
+                "local_path": "/home/agent/Projects/my-app",
                 "description": "Primary product",
                 "priority": "medium",
             },
@@ -78,8 +78,8 @@ class TestConfigHelpers:
         with mock.patch("scripts.ops.dashboard_server._CONFIG_PATH", tmp_config):
             projects = _load_projects_from_config()
         assert len(projects) == 2
-        assert projects[0]["name"] == "ArtemisAI/LinkedAi"
-        assert projects[0]["local_path"] == "/home/agent/Projects/LinkedAi"
+        assert projects[0]["name"] == "example-org/my-app"
+        assert projects[0]["local_path"] == "/home/agent/Projects/my-app"
         assert projects[0]["enabled"] is True
 
     def test_load_projects_from_empty_config(self, empty_config):
@@ -110,7 +110,7 @@ class TestConfigHelpers:
     def test_save_duplicate_project_fails(self, tmp_config):
         from scripts.ops.dashboard_server import _save_project_to_config
         project = {
-            "name": "ArtemisAI/LinkedAi",
+            "name": "example-org/my-app",
             "local_path": "/some/path",
         }
         with mock.patch("scripts.ops.dashboard_server._CONFIG_PATH", tmp_config):
@@ -123,7 +123,7 @@ class TestConfigHelpers:
             _load_projects_from_config,
         )
         with mock.patch("scripts.ops.dashboard_server._CONFIG_PATH", tmp_config):
-            ok = _delete_project_from_config("ArtemisAI/LinkedAi")
+            ok = _delete_project_from_config("example-org/my-app")
             assert ok is True
             projects = _load_projects_from_config()
         assert len(projects) == 1
@@ -159,7 +159,7 @@ class TestCLIProjectCommands:
 
         assert result == 0
         output = capsys.readouterr().out
-        assert "ArtemisAI/LinkedAi" in output
+        assert "example-org/my-app" in output
         assert "ArtemisAI/SWE-Squad-DEV" in output
         assert "2 project(s)" in output
 
@@ -180,7 +180,7 @@ class TestCLIProjectCommands:
         output = capsys.readouterr().out
         data = json.loads(output)
         assert len(data) == 2
-        assert data[0]["name"] == "ArtemisAI/LinkedAi"
+        assert data[0]["name"] == "example-org/my-app"
 
     def test_project_init(self, empty_config, capsys):
         from scripts.ops.swe_cli import build_parser, cmd_project
@@ -219,7 +219,7 @@ class TestCLIProjectCommands:
 
             parser = build_parser()
             args = parser.parse_args([
-                "project", "init", "ArtemisAI/LinkedAi",
+                "project", "init", "example-org/my-app",
             ])
             result = cmd_project(args)
 
@@ -292,18 +292,18 @@ class TestProjectsAPI:
         data = json.loads(body)
         assert isinstance(data, list)
         assert len(data) == 2
-        assert data[0]["name"] == "ArtemisAI/LinkedAi"
+        assert data[0]["name"] == "example-org/my-app"
 
     def test_get_single_project(self, tmp_config):
-        handler = self._make_handler("GET", "/api/projects/ArtemisAI/LinkedAi")
+        handler = self._make_handler("GET", "/api/projects/example-org/my-app")
 
         with mock.patch("scripts.ops.dashboard_server._CONFIG_PATH", tmp_config):
-            handler._handle_get_project("ArtemisAI/LinkedAi")
+            handler._handle_get_project("example-org/my-app")
 
         handler.send_response.assert_called_with(200)
         body = handler.wfile.getvalue()
         data = json.loads(body)
-        assert data["name"] == "ArtemisAI/LinkedAi"
+        assert data["name"] == "example-org/my-app"
 
     def test_get_single_project_not_found(self, tmp_config):
         handler = self._make_handler("GET", "/api/projects/nonexistent")
@@ -331,7 +331,7 @@ class TestProjectsAPI:
         assert data["project"]["name"] == "ArtemisAI/TestProject"
 
     def test_post_duplicate_project(self, tmp_config):
-        body = {"name": "ArtemisAI/LinkedAi"}
+        body = {"name": "example-org/my-app"}
         handler = self._make_handler("POST", "/api/projects", body=body)
 
         with mock.patch("scripts.ops.dashboard_server._CONFIG_PATH", tmp_config):
@@ -349,16 +349,16 @@ class TestProjectsAPI:
         handler.send_response.assert_called_with(400)
 
     def test_delete_project(self, tmp_config):
-        handler = self._make_handler("DELETE", "/api/projects/ArtemisAI/LinkedAi")
+        handler = self._make_handler("DELETE", "/api/projects/example-org/my-app")
 
         with mock.patch("scripts.ops.dashboard_server._CONFIG_PATH", tmp_config):
-            handler._handle_delete_project("ArtemisAI/LinkedAi")
+            handler._handle_delete_project("example-org/my-app")
 
         handler.send_response.assert_called_with(200)
         resp_body = handler.wfile.getvalue()
         data = json.loads(resp_body)
         assert data["ok"] is True
-        assert data["deleted"] == "ArtemisAI/LinkedAi"
+        assert data["deleted"] == "example-org/my-app"
 
     def test_delete_project_not_found(self, tmp_config):
         handler = self._make_handler("DELETE", "/api/projects/nonexistent")
@@ -384,13 +384,13 @@ class TestRepoConfigure:
             shutil.copy(tmp_config, config_dir / "swe_team.yaml")
 
             parser = build_parser()
-            args = parser.parse_args(["repo", "configure", "ArtemisAI/LinkedAi"])
+            args = parser.parse_args(["repo", "configure", "example-org/my-app"])
             result = cmd_repo_configure(args)
 
         assert result == 0
         output = capsys.readouterr().out
         data = json.loads(output)
-        assert data["name"] == "ArtemisAI/LinkedAi"
+        assert data["name"] == "example-org/my-app"
 
     def test_repo_configure_not_found(self, tmp_config, capsys):
         from scripts.ops.swe_cli import build_parser, cmd_repo_configure

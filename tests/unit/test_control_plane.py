@@ -54,7 +54,7 @@ def sample_config(config_path):
             },
         },
         "projects": {
-            "ArtemisAI/LinkedAi": {
+            "example-org/my-app": {
                 "max_concurrent_agents": 3,
                 "budget_cap_daily": 50.0,
                 "budget_cap_weekly": 200.0,
@@ -229,12 +229,12 @@ class TestConfigStore:
         state = store.get_pipeline_state()
         assert state.paused is False
         projects = store.get_projects()
-        assert "ArtemisAI/LinkedAi" in projects
-        assert projects["ArtemisAI/LinkedAi"].priority_weight == 0.7
+        assert "example-org/my-app" in projects
+        assert projects["example-org/my-app"].priority_weight == 0.7
 
     def test_get_project(self, sample_config):
         store = ConfigStore(sample_config)
-        cfg = store.get_project("ArtemisAI/LinkedAi")
+        cfg = store.get_project("example-org/my-app")
         assert cfg is not None
         assert cfg.max_concurrent_agents == 3
 
@@ -254,11 +254,11 @@ class TestConfigStore:
 
     def test_update_project(self, sample_config):
         store = ConfigStore(sample_config)
-        cfg = store.update_project("ArtemisAI/LinkedAi", {"priority_weight": 0.9})
+        cfg = store.update_project("example-org/my-app", {"priority_weight": 0.9})
         assert cfg.priority_weight == 0.9
         # Verify persistence
         store2 = ConfigStore(sample_config)
-        cfg2 = store2.get_project("ArtemisAI/LinkedAi")
+        cfg2 = store2.get_project("example-org/my-app")
         assert cfg2.priority_weight == 0.9
 
     def test_update_new_project(self, sample_config):
@@ -307,16 +307,16 @@ class TestConfigStore:
 class TestControlPlane:
     def test_get_projects(self, control_plane):
         projects = control_plane.get_projects()
-        assert "ArtemisAI/LinkedAi" in projects
+        assert "example-org/my-app" in projects
         assert "ArtemisAI/SWE-Squad-DEV" in projects
 
     def test_get_project(self, control_plane):
-        cfg = control_plane.get_project("ArtemisAI/LinkedAi")
+        cfg = control_plane.get_project("example-org/my-app")
         assert cfg is not None
         assert cfg.max_concurrent_agents == 3
 
     def test_update_project(self, control_plane):
-        cfg = control_plane.update_project("ArtemisAI/LinkedAi", {
+        cfg = control_plane.update_project("example-org/my-app", {
             "priority_weight": 0.95,
             "max_concurrent_agents": 5,
         })
@@ -325,10 +325,10 @@ class TestControlPlane:
 
     def test_update_projects_bulk(self, control_plane):
         results = control_plane.update_projects_bulk({
-            "ArtemisAI/LinkedAi": {"priority_weight": 0.8},
+            "example-org/my-app": {"priority_weight": 0.8},
             "ArtemisAI/SWE-Squad-DEV": {"priority_weight": 0.2},
         })
-        assert results["ArtemisAI/LinkedAi"].priority_weight == 0.8
+        assert results["example-org/my-app"].priority_weight == 0.8
         assert results["ArtemisAI/SWE-Squad-DEV"].priority_weight == 0.2
 
     def test_pause_resume(self, control_plane):
@@ -368,7 +368,7 @@ class TestControlPlane:
             "title": "Production down",
             "description": "All endpoints returning 500",
             "severity": "critical",
-            "project": "ArtemisAI/LinkedAi",
+            "project": "example-org/my-app",
         })
         assert ticket.priority == 0
         assert ticket.source == "urgent"
@@ -415,7 +415,7 @@ class TestControlPlane:
         ticket = control_plane.add_ticket({
             "title": "Refactor auth module",
             "severity": "medium",
-            "project": "ArtemisAI/LinkedAi",
+            "project": "example-org/my-app",
         })
         assert ticket.priority == 50
         assert ticket.source == "api"
@@ -522,7 +522,7 @@ class TestControlPlaneAPI:
         handler = self._make_handler(path="/api/config/projects")
         assert handle_get(handler, control_plane) is True
         resp = self._get_response(handler)
-        assert "ArtemisAI/LinkedAi" in resp
+        assert "example-org/my-app" in resp
 
     def test_handle_get_queue(self, control_plane):
         from src.swe_team.control_plane_api import handle_get
@@ -535,10 +535,10 @@ class TestControlPlaneAPI:
 
     def test_handle_get_single_project(self, control_plane):
         from src.swe_team.control_plane_api import handle_get
-        handler = self._make_handler(path="/api/config/projects/ArtemisAI/LinkedAi")
+        handler = self._make_handler(path="/api/config/projects/example-org/my-app")
         assert handle_get(handler, control_plane) is True
         resp = self._get_response(handler)
-        assert "ArtemisAI/LinkedAi" in resp
+        assert "example-org/my-app" in resp
 
     def test_handle_get_unmatched(self, control_plane):
         from src.swe_team.control_plane_api import handle_get
@@ -598,11 +598,11 @@ class TestControlPlaneAPI:
         handler = self._make_handler(
             method="PUT",
             path="/api/config/projects",
-            body={"ArtemisAI/LinkedAi": {"priority_weight": 0.99}},
+            body={"example-org/my-app": {"priority_weight": 0.99}},
         )
         assert handle_put(handler, control_plane) is True
         resp = self._get_response(handler)
-        assert resp["ArtemisAI/LinkedAi"]["priority_weight"] == 0.99
+        assert resp["example-org/my-app"]["priority_weight"] == 0.99
 
     def test_handle_put_cycle_interval(self, control_plane):
         from src.swe_team.control_plane_api import handle_put
@@ -670,7 +670,7 @@ class TestControlPanelWebUI:
         html = render_control_panel(control_plane)
         assert "Control Plane" in html
         assert "Pipeline Status" in html
-        assert "ArtemisAI/LinkedAi" in html
+        assert "example-org/my-app" in html
         assert "API Reference" in html
         assert "/api/tickets/urgent" in html
 

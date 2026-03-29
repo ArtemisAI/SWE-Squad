@@ -91,9 +91,9 @@ flowchart TD
 SWE Squad registers with a centralized A2A Hub for cross-agent coordination:
 
 ```
-LinkedAi A2A Hub: http://100.110.176.73:18790
+A2A Hub (your-hub-host:18790)
 ├── Protocol: JSON-RPC 2.0 over HTTP POST
-├── Registered agents: openclaw, gemini, llm_proxy, swe-squad
+├── Registered agents: gemini, llm_proxy, swe-squad, custom-agents
 ├── Discovery: GET /health, GET /.well-known/agent-card.json
 └── Events: POST /v1/events
 ```

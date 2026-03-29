@@ -25,7 +25,7 @@ The RBAC system prevents privilege escalation — a triage agent cannot perform 
 Remote worker access uses a scoped SSH configuration:
 
 - `config/ssh_workers.conf` — `IdentitiesOnly yes`, Host entries for each worker.
-- `~/.ssh/swe_workers_linkedai_key` — Dedicated ed25519 key for workers only.
+- `~/.ssh/swe_workers_key` — Dedicated ed25519 key for workers only.
 
 Only workers listed in `ssh_workers.conf` are reachable via the dedicated key. The primary orchestrator node is explicitly excluded from `authorized_keys` on workers — agents cannot reach "up" the hierarchy.
 

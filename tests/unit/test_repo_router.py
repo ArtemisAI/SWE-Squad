@@ -43,7 +43,7 @@ class TestRepoRouterResolve:
 
     def test_resolve_unknown_repo_raises(self):
         router = RepoRouter(SAMPLE_REPOS)
-        ticket = _make_ticket("test-org/LinkedAi")
+        ticket = _make_ticket("test-org/my-app")
         with pytest.raises(ValueError, match="not in the configured sandbox list"):
             router.resolve(ticket)
 
@@ -106,7 +106,7 @@ class TestIsSandboxPath:
 
     def test_path_outside_sandbox(self):
         router = RepoRouter(SAMPLE_REPOS)
-        assert router.is_sandbox_path(Path("/home/agent/Projects/LinkedAi")) is False
+        assert router.is_sandbox_path(Path("/home/agent/Projects/my-app")) is False
 
     def test_production_repo_rejected(self):
         router = RepoRouter(SAMPLE_REPOS)
@@ -142,7 +142,7 @@ class TestSandboxBoundaryPreflight:
 
     def test_sandbox_check_fails_when_outside(self):
         check = PreflightCheck(
-            expected_repo_root=Path("/home/agent/Projects/LinkedAi"),
+            expected_repo_root=Path("/home/agent/Projects/my-app"),
             sandbox_paths=[Path("/home/agent/Projects/SWE-Sandbox")],
         )
         failures = check.check_sandbox_boundary()
@@ -151,7 +151,7 @@ class TestSandboxBoundaryPreflight:
 
     def test_sandbox_check_skipped_when_no_paths(self):
         check = PreflightCheck(
-            expected_repo_root=Path("/home/agent/Projects/LinkedAi"),
+            expected_repo_root=Path("/home/agent/Projects/my-app"),
         )
         failures = check.check_sandbox_boundary()
         assert failures == []

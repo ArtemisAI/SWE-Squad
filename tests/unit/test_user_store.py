@@ -111,13 +111,13 @@ class TestRoleEnforcement:
 
     def test_bot_role_not_promoted_to_admin(self, tmp_path):
         store = _make_store(tmp_path)
-        bot = store.get_or_create_user("swe-squad-alpha", role="bot")
+        bot = store.get_or_create_user("squad-bot-1", role="bot")
         assert bot["role"] == "bot"
 
     def test_bot_does_not_count_as_first_human(self, tmp_path):
         """A bot created first must NOT prevent the first real user from getting admin."""
         store = _make_store(tmp_path)
-        store.get_or_create_user("swe-squad-alpha", role="bot")
+        store.get_or_create_user("squad-bot-1", role="bot")
         human = store.get_or_create_user("mallory")
         assert human["role"] == "admin"
 

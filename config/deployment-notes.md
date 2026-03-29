@@ -3,7 +3,7 @@
 ## Multi-Team Configuration
 
 Each SWE-Squad team instance requires:
-1. A dedicated GitHub account (e.g., `swe-squad-alpha`, `swe-squad-beta`)
+1. A dedicated GitHub account (e.g., `my-squad-bot`, `my-squad-beta`)
 2. Assignee-based issue pickup — teams only process issues assigned to their account
 3. Separate `SWE_TEAM_ID` for Supabase ticket scoping
 4. Independent daemon process with its own `.env`

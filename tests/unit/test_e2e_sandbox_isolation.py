@@ -503,7 +503,7 @@ class TestRepoRouterFailClosed:
 
     def test_production_repo_rejected(self, router):
         """Ticket targeting a real production repo is rejected."""
-        ticket = _make_ticket("test-org/LinkedAi", 42)
+        ticket = _make_ticket("test-org/my-app", 42)
         with pytest.raises(ValueError, match="not in the configured sandbox list"):
             router.resolve(ticket)
 
