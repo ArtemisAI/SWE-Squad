@@ -1,6 +1,6 @@
 {
   "private": true,
-  "name": "swe-squad-dev",
+  "name": "swe-squad",
   "description": "SWE-Squad autonomous software engineering team",
   "engines": {
     "node": ">=20.6.0"

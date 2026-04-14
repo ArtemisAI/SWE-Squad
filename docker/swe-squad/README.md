@@ -14,13 +14,13 @@ Modular Docker Compose setup for the full SWE-Squad autonomous engineering syste
 
 ```bash
 # From the project root
-docker compose -f docker/swe-squad/docker-compose.yml up -d
+docker compose up -d
 ```
 
-Or from the project root using the top-level compose file (includes openclaw):
+Or directly:
 
 ```bash
-docker compose up -d
+docker compose -f docker/swe-squad/docker-compose.yml up -d
 ```
 
 ## Services

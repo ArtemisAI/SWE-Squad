@@ -1,0 +1,16 @@
+.git
+node_modules
+control-plane/node_modules
+control-plane/dist
+memory/node_modules
+memory/dist
+*.log
+__pycache__
+.pytest_cache
+.worktrees
+data
+logs
+ui
+.env
+.env.*
+!.env.example
