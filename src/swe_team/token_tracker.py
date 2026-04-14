@@ -49,7 +49,23 @@ class TokenUsage:
 
     @classmethod
     def from_dict(cls, data: dict) -> "TokenUsage":
-        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+        cleaned = {}
+        int_fields = {"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"}
+        for k, v in data.items():
+            if k not in cls.__dataclass_fields__:
+                continue
+            if k in int_fields:
+                try:
+                    v = int(v)
+                except (ValueError, TypeError):
+                    v = 0
+            elif k == "cost_usd":
+                try:
+                    v = float(v)
+                except (ValueError, TypeError):
+                    v = 0.0
+            cleaned[k] = v
+        return cls(**cleaned)
 
 
 def calculate_cost(model: str, input_tokens: int, output_tokens: int, pricing: Optional[Dict] = None) -> float:
@@ -238,6 +254,20 @@ class TokenTracker:
                 continue
         return results
 
+    def _filter_range(self, start: datetime, end: datetime) -> List[TokenUsage]:
+        """Filter records to those within [start, end] inclusive."""
+        results = []
+        for r in self._load_records():
+            try:
+                ts = datetime.fromisoformat(r.timestamp)
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if start <= ts <= end:
+                    results.append(r)
+            except (ValueError, TypeError):
+                continue
+        return results
+
     def by_hour(self, since_hours: int = 24) -> list[dict]:
         """Token/cost totals grouped by hour."""
         records = self._filter_since(timedelta(hours=since_hours))
@@ -264,6 +294,15 @@ class TokenTracker:
         """Token/cost totals grouped by month."""
         records = self._filter_since(timedelta(days=since_months * 31))
         return self._aggregate(records, lambda r: r.timestamp[:7])  # YYYY-MM
+
+    def by_range(self, start: datetime, end: datetime) -> list[dict]:
+        """Token/cost totals grouped by day for an arbitrary date range."""
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        records = self._filter_range(start, end)
+        return self._aggregate(records, lambda r: r.timestamp[:10])  # YYYY-MM-DD
 
     def by_agent(self, since_hours: int = 24) -> dict:
         """Token/cost totals grouped by agent/task field."""
@@ -310,6 +349,110 @@ class TokenTracker:
         for b in buckets.values():
             b["cost_usd"] = round(b["cost_usd"], 6)
         return buckets
+
+    def by_agent_list(self, since_hours: int = 168) -> list[dict]:
+        """Return agent cost data as a list for the frontend API.
+
+        Returns a list of dicts with keys: agent, total_cost_usd, ticket_count.
+        """
+        data = self.by_agent(since_hours=since_hours)
+        result = []
+        for agent, values in data.items():
+            result.append({
+                "agent": agent,
+                "total_cost_usd": values.get("cost_usd", 0.0),
+                "ticket_count": values.get("count", 0),
+            })
+        # Sort by cost descending
+        result.sort(key=lambda x: x.get("total_cost_usd", 0), reverse=True)
+        return result
+
+    def by_ticket_list(self, since_hours: int = 168, store=None) -> list[dict]:
+        """Return ticket cost data as a list for the frontend API.
+
+        Returns a list of dicts with keys: ticket_id, title, total_cost_usd.
+        Uses the ticket store to get ticket titles.
+        """
+        data = self.by_ticket(since_hours=since_hours)
+        result = []
+
+        # Get ticket titles from store if available
+        ticket_titles = {}
+        if store:
+            try:
+                tickets = store.list_tickets()
+                ticket_titles = {t.ticket_id: t.title for t in tickets}
+            except Exception:
+                pass  # Fall back to empty titles
+
+        for ticket_id, values in data.items():
+            if ticket_id == "unknown":
+                continue
+            result.append({
+                "ticket_id": ticket_id,
+                "title": ticket_titles.get(ticket_id, f"Ticket {ticket_id}"),
+                "total_cost_usd": values.get("cost_usd", 0.0),
+            })
+        # Sort by cost descending
+        result.sort(key=lambda x: x.get("total_cost_usd", 0), reverse=True)
+        return result
+
+    def by_bucket_list(self, since_hours: int = 168, granularity: str = "day") -> list[dict]:
+        """Return cost buckets as a list for the frontend API.
+
+        Returns a list of dicts with keys: bucket, input_tokens, output_tokens,
+        cache_read_tokens, cache_creation_tokens, total_cost_usd.
+
+        Args:
+            since_hours: Hours of data to include.
+            granularity: "hour", "day", "week", or "month".
+        """
+        if granularity == "hour":
+            return self.by_hour(since_hours=since_hours)
+        elif granularity == "day":
+            return self.by_day(since_days=since_hours // 24)
+        elif granularity == "week":
+            return self.by_week(since_weeks=since_hours // (24 * 7))
+        elif granularity == "month":
+            return self.by_month(since_months=since_hours // (24 * 30))
+        else:
+            return self.by_day(since_days=7)
+
+    def by_model(self, since_hours: int = 168) -> list[dict]:
+        """Return cost data grouped by model.
+
+        Returns a list of dicts with keys: model, total_cost_usd, input_tokens,
+        output_tokens, count.
+        """
+        records = self._filter_since(timedelta(hours=since_hours))
+        buckets: Dict[str, Dict[str, Any]] = {}
+
+        for r in records:
+            k = r.model or "unknown"
+            if k not in buckets:
+                buckets[k] = {
+                    "model": k,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "cache_creation_tokens": 0,
+                    "total_cost_usd": 0.0,
+                    "count": 0,
+                }
+            b = buckets[k]
+            b["input_tokens"] += r.input_tokens
+            b["output_tokens"] += r.output_tokens
+            b["cache_read_tokens"] += r.cache_read_tokens
+            b["cache_creation_tokens"] += r.cache_creation_tokens
+            b["total_cost_usd"] += r.cost_usd
+            b["count"] += 1
+
+        for b in buckets.values():
+            b["total_cost_usd"] = round(b["total_cost_usd"], 6)
+
+        result = list(buckets.values())
+        result.sort(key=lambda x: x.get("total_cost_usd", 0), reverse=True)
+        return result
 
     def subscription_roi(self, monthly_fee: float, since_days: int = 30) -> dict:
         """Calculate ROI of subscription vs pay-per-token API pricing."""

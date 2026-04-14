@@ -384,11 +384,16 @@ class ThrottlePolicy:
             combined *= r.multiplier
         combined = max(_MIN_MULTIPLIER, min(_MAX_MULTIPLIER, combined))
 
-        # Severity: use the most restrictive override
+        # Severity: use the most restrictive override, but never raise above
+        # the configured base severity_filter (the admin sets the floor).
         severity = self._base.severity_filter
+        base_rank = _SEV_RANK.get(severity, 0)
         for r in results:
-            if r.severity_override and _SEV_RANK.get(r.severity_override, 0) > _SEV_RANK.get(severity, 0):
-                severity = r.severity_override
+            if r.severity_override:
+                override_rank = _SEV_RANK.get(r.severity_override, 0)
+                # Only apply if more restrictive AND within base config ceiling
+                if override_rank > _SEV_RANK.get(severity, 0):
+                    severity = r.severity_override
 
         reasons = [r.reason for r in results if r.reason]
 

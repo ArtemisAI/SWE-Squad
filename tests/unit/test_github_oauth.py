@@ -22,7 +22,7 @@ def _make_provider(
     return GitHubOAuthProvider(
         client_id=client_id,
         client_secret=client_secret,
-        allowed_orgs=allowed_orgs if allowed_orgs is not None else ["example-org"],
+        allowed_orgs=allowed_orgs if allowed_orgs is not None else ["your-org"],
         cookie_secret=cookie_secret,
         session_expiry_hours=session_expiry_hours,
     )
@@ -42,7 +42,7 @@ class TestAuthorizeUrl(unittest.TestCase):
     def test_authorize_url_contains_scope(self):
         provider = _make_provider()
         url = provider.get_authorize_url("s")
-        self.assertIn("scope=read%3Aorg", url)
+        self.assertIn("scope=read%3Auser+read%3Aorg+repo", url)
 
     def test_authorize_url_starts_with_github(self):
         provider = _make_provider()
@@ -62,7 +62,7 @@ class TestCookieCreationAndValidation(unittest.TestCase):
         self.user_info = {
             "login": "octocat",
             "name": "The Octocat",
-            "orgs": ["example-org"],
+            "orgs": ["your-org"],
         }
 
     def test_roundtrip_returns_same_user(self):
@@ -74,7 +74,7 @@ class TestCookieCreationAndValidation(unittest.TestCase):
     def test_roundtrip_preserves_orgs(self):
         cookie = self.provider.create_session_cookie(self.user_info)
         result = self.provider.validate_session(cookie)
-        self.assertIn("example-org", result["orgs"])
+        self.assertIn("your-org", result["orgs"])
 
     def test_roundtrip_preserves_name(self):
         cookie = self.provider.create_session_cookie(self.user_info)
@@ -116,12 +116,12 @@ class TestCookieCreationAndValidation(unittest.TestCase):
 class TestCookieExpiry(unittest.TestCase):
     def test_expired_cookie_returns_none(self):
         provider = _make_provider(session_expiry_hours=0)
-        user_info = {"login": "octocat", "name": "Cat", "orgs": ["example-org"]}
+        user_info = {"login": "octocat", "name": "Cat", "orgs": ["your-org"]}
         # Manually craft an already-expired cookie
         payload_data = {
             "login": "octocat",
             "name": "Cat",
-            "orgs": ["example-org"],
+            "orgs": ["your-org"],
             "exp": int(time.time()) - 1,  # expired 1 second ago
         }
         payload_json = json.dumps(payload_data, separators=(",", ":"), sort_keys=True)
@@ -155,17 +155,17 @@ class TestCookieExpiry(unittest.TestCase):
 
 class TestOrgAllowlist(unittest.TestCase):
     def test_org_member_is_authorized(self):
-        provider = _make_provider(allowed_orgs=["example-org"])
-        user = {"login": "u", "orgs": ["example-org", "another-org"]}
+        provider = _make_provider(allowed_orgs=["your-org"])
+        user = {"login": "u", "orgs": ["your-org", "another-org"]}
         self.assertTrue(provider.is_authorized(user))
 
     def test_non_member_is_not_authorized(self):
-        provider = _make_provider(allowed_orgs=["example-org"])
+        provider = _make_provider(allowed_orgs=["your-org"])
         user = {"login": "u", "orgs": ["some-other-org"]}
         self.assertFalse(provider.is_authorized(user))
 
     def test_empty_orgs_user_is_not_authorized(self):
-        provider = _make_provider(allowed_orgs=["example-org"])
+        provider = _make_provider(allowed_orgs=["your-org"])
         user = {"login": "u", "orgs": []}
         self.assertFalse(provider.is_authorized(user))
 
@@ -179,15 +179,15 @@ class TestOrgAllowlist(unittest.TestCase):
         self.assertTrue(provider.is_authorized({"login": "u", "orgs": ["OrgB"]}))
 
     def test_case_sensitive_org_matching(self):
-        provider = _make_provider(allowed_orgs=["example-org"])
-        user = {"login": "u", "orgs": ["artemisai"]}  # lowercase
+        provider = _make_provider(allowed_orgs=["your-org"])
+        user = {"login": "u", "orgs": ["Your-Org"]}  # wrong case
         self.assertFalse(provider.is_authorized(user))
 
 
 class TestCookieTamperingDetection(unittest.TestCase):
     def setUp(self):
         self.provider = _make_provider()
-        self.user_info = {"login": "alice", "name": "Alice", "orgs": ["example-org"]}
+        self.user_info = {"login": "alice", "name": "Alice", "orgs": ["your-org"]}
 
     def test_payload_modification_detected(self):
         cookie = self.provider.create_session_cookie(self.user_info)
@@ -252,13 +252,13 @@ class TestExchangeCode(unittest.TestCase):
         provider = _make_provider()
         token_resp = {"access_token": "ghs_fake_token"}
         user_resp = {"login": "bob", "name": "Bob Smith", "email": "bob@example.com", "avatar_url": ""}
-        orgs_resp = [{"login": "example-org"}, {"login": "other-org"}]
+        orgs_resp = [{"login": "your-org"}, {"login": "other-org"}]
 
         with patch("urllib.request.urlopen", side_effect=self._mock_urlopen(token_resp, user_resp, orgs_resp)):
             result = provider.exchange_code("code123")
 
         self.assertEqual(result["login"], "bob")
-        self.assertIn("example-org", result["orgs"])
+        self.assertIn("your-org", result["orgs"])
 
     def test_exchange_code_raises_on_token_error(self):
         provider = _make_provider()

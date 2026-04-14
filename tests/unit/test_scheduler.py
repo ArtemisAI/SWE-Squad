@@ -390,7 +390,10 @@ class TestShouldRun(unittest.TestCase):
 
     def test_runs_when_due(self):
         sched = self._make_scheduler()
-        job = self._make_job(next_run=(datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat())
+        job = self._make_job(
+            next_run=(datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+            respect_peak_hours=False,
+        )
         ok, reason = sched.should_run(job)
         self.assertTrue(ok)
         self.assertEqual(reason, "ready")
@@ -415,8 +418,8 @@ class TestShouldRun(unittest.TestCase):
         self.assertFalse(ok)
 
     def test_defers_normal_during_peak(self):
-        # peak_end_hour=23: hours 0..22 are peak (real hour is always < 23)
-        tw = TimeWindow(peak_start_hour=0, peak_end_hour=23, peak_days=list(range(7)))
+        # peak_end_hour=24: covers all hours 0..23, clock-independent
+        tw = TimeWindow(peak_start_hour=0, peak_end_hour=24, peak_days=list(range(7)))
         sched = self._make_scheduler(time_window=tw)
         job = self._make_job(
             priority=JobPriority.NORMAL,
@@ -427,7 +430,7 @@ class TestShouldRun(unittest.TestCase):
         self.assertIn("peak", reason)
 
     def test_defers_low_during_peak(self):
-        tw = TimeWindow(peak_start_hour=0, peak_end_hour=23, peak_days=list(range(7)))
+        tw = TimeWindow(peak_start_hour=0, peak_end_hour=24, peak_days=list(range(7)))
         sched = self._make_scheduler(time_window=tw)
         job = self._make_job(
             priority=JobPriority.LOW,
@@ -438,7 +441,7 @@ class TestShouldRun(unittest.TestCase):
         self.assertIn("peak", reason)
 
     def test_critical_ignores_peak(self):
-        tw = TimeWindow(peak_start_hour=0, peak_end_hour=23, peak_days=list(range(7)))
+        tw = TimeWindow(peak_start_hour=0, peak_end_hour=24, peak_days=list(range(7)))
         sched = self._make_scheduler(time_window=tw)
         job = self._make_job(
             priority=JobPriority.CRITICAL,
@@ -448,7 +451,7 @@ class TestShouldRun(unittest.TestCase):
         self.assertTrue(ok)
 
     def test_high_allowed_during_peak(self):
-        tw = TimeWindow(peak_start_hour=0, peak_end_hour=23, peak_days=list(range(7)))
+        tw = TimeWindow(peak_start_hour=0, peak_end_hour=24, peak_days=list(range(7)))
         sched = self._make_scheduler(time_window=tw)
         job = self._make_job(
             priority=JobPriority.HIGH,
@@ -502,7 +505,7 @@ class TestShouldRun(unittest.TestCase):
     def test_naive_next_run_normalized_to_utc(self):
         sched = self._make_scheduler()
         naive_past = (datetime.now(timezone.utc) - timedelta(minutes=5)).replace(tzinfo=None)
-        job = self._make_job(next_run=naive_past.isoformat())
+        job = self._make_job(next_run=naive_past.isoformat(), respect_peak_hours=False)
         ok, reason = sched.should_run(job)
         self.assertTrue(ok)
         self.assertEqual(reason, "ready")

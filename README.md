@@ -1,296 +1,601 @@
 <p align="center">
-  <img src="assets/swe_squad_banner.png" alt="SWE Squad Banner" width="100%">
+  <img src="https://img.shields.io/badge/TypeScript-Control_Plane-3178c6?logo=typescript&logoColor=white" alt="TypeScript">
+  <img src="https://img.shields.io/badge/Python-Agent_Library-3776ab?logo=python&logoColor=white" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/pi--agent-SDK-blueviolet" alt="pi-agent SDK">
+  <img src="https://img.shields.io/badge/Claude_Code-CLI-blueviolet?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJ3aGl0ZSI+PHBhdGggZD0iTTEyIDJDNi40OCAyIDIgNi40OCAyIDEyczQuNDggMTAgMTAgMTAgMTAtNC40OCAxMC0xMFMxNy41MiAyIDEyIDJ6Ii8+PC9zdmc+" alt="Claude Code">
+  <img src="https://img.shields.io/badge/A2A-Protocol-orange" alt="A2A Protocol">
+  <img src="https://img.shields.io/badge/tests-6800+-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
 </p>
 
 <h1 align="center">SWE Squad</h1>
 
 <p align="center">
-  <em>An autonomous, provider-agnostic software engineering team that monitors, triages, and fixes bugs while you sleep.</em>
+  <strong>Autonomous Software Engineering Agents That Fix Bugs While You Sleep</strong>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-passing-22C55E?style=for-the-badge" alt="Tests Passing">
-  <img src="https://img.shields.io/badge/python-3.12+-3776AB?logo=python&logoColor=white&style=for-the-badge" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/license-MIT-6366F1?style=for-the-badge" alt="MIT License">
-  <img src="https://img.shields.io/badge/A2A-Protocol-F97316?style=for-the-badge" alt="A2A Protocol">
+  An always-on AI engineering manager backed by a persistent LLM session with 16 custom tools.<br>
+  Scans GitHub issues, investigates root causes, delegates fixes, reviews PRs, and enforces safety gates — autonomously.
 </p>
 
 <p align="center">
-  <a href="https://github.com/ArtemisAI/SWE-Squad/stargazers">
-    <img src="https://img.shields.io/github/stars/ArtemisAI/SWE-Squad?style=social" alt="GitHub Stars">
-  </a>
-  &nbsp;&nbsp;
-  <a href="https://github.com/ArtemisAI/SWE-Squad/network/members">
-    <img src="https://img.shields.io/github/forks/ArtemisAI/SWE-Squad?style=social" alt="GitHub Forks">
-  </a>
+  Built on <a href="https://github.com/nichochar/pi-coding-agent">pi-agent SDK</a> &bull;
+  <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a> &bull;
+  <a href="https://supabase.com">Supabase</a> &bull;
+  <a href="https://github.com/google/A2A">A2A Protocol</a>
 </p>
 
 ---
 
-> [!WARNING]
-> **Run in a VM or container — do not run on your host machine.**
->
-> SWE Squad is an agentic AI system with full access to your filesystem, shell, and git history. Like any tool in this class (Claude Code, Devin, OpenHands), it reads, writes, and executes files autonomously.
->
-> **Recommended setup:**
-> - **Docker** — use the provided `Dockerfile` / `docker-compose.yml` (see [Quick Start](#quick-start))
-> - **VM** — a dedicated Linux VM with scoped credentials
-> - **Cloud sandbox** — a fresh VPS or GitHub Codespace with only the keys it needs
->
-> Scope your API keys and GitHub tokens to the minimum required permissions. Never give the agent a token with org-wide write access.
+## Overview
 
----
+SWE Squad is an **always-on AI engineering manager** that runs as a persistent daemon. It:
 
-## What is SWE Squad?
+1. **Imports** GitHub issues as structured tickets into a Supabase store
+2. **Triages** by severity — the LLM decides priority, not hardcoded rules
+3. **Investigates** root causes by delegating to any configured coding engine
+4. **Develops** fixes on feature branches with automated test verification
+5. **Reviews** PRs with structured feedback (security, correctness, style)
+6. **Merges** approved changes and monitors for regressions
+7. **Notifies** via Telegram on critical events, PR creation, and failures
 
-SWE Squad is a team of AI agents that autonomously monitors your production systems, detects issues, and fixes them — with human-in-the-loop escalation at every critical decision point.
+The system is built on two codebases:
 
-Unlike single-agent coding tools, SWE Squad operates as a **coordinated pipeline** where each agent has a specialized role: monitoring ingests logs and GitHub issues, triage classifies severity and routes work, investigation performs root-cause analysis, and the developer agent attempts fixes on isolated git branches — discarding any that fail tests. A stability gate (Ralph Wiggum) blocks new feature work until the error backlog is clear.
+| Layer | Language | Purpose |
+|-------|----------|---------|
+| **Control Plane** | TypeScript | Persistent pi-agent daemon with 16 custom tools — the decision-making brain |
+| **Agent Library** | Python | Specialized agents (monitor, triage, investigate, develop), ticket store, embeddings |
 
-The system is built around a **provider-agnostic plugin architecture**: every external dependency — coding engine, notification channel, issue tracker, sandbox, vector store — is behind a swappable interface. You bring your own tools; SWE Squad orchestrates them.
+### Key Capabilities
 
----
-
-## Key Features
-
-- **Provider-agnostic plugin architecture** — 12 domain interfaces, 20+ built-in implementations. Swap any component without touching core logic.
-- **Multi-team support** — multiple squads share a Supabase backend with full isolation via `team_id` and assignee-based issue pickup. Alpha and beta squads never collide.
-- **Session lifecycle management** — investigation and development sessions persist across daemon cycles. Developer sessions fork from investigator sessions, carrying full context forward.
-- **Parallel execution with git worktree isolation** — each fix attempt runs in its own worktree; tests pass → commit, tests fail → auto-revert. No broken code reaches main.
-- **Semantic memory** — resolved tickets are embedded (bge-m3, 1024-dim) and stored in a pgvector knowledge base. Top-5 similar past fixes are injected into every investigation prompt, confidence-weighted.
-- **Knowledge graph scoring** — graph-based relationship scoring between tickets surfaces non-obvious connections across modules and error classes.
-- **GitHub OAuth dashboard** — optional WebUI with user management, live metrics, and control plane API for runtime configuration (sessions, projects, model tiers).
-- **A2A inter-agent protocol** — JSON-RPC 2.0 event bus for cross-agent coordination. Includes server, client, and adapters for Gemini CLI, OpenCode, and generic CLI agents.
-- **Circuit breaker + exponential backoff** — if development failures exceed 80%, the daemon pauses for 30 minutes. All LLM calls use capped exponential backoff.
-- **Automated code review** — every fix PR is reviewed before merge with a fail-closed policy. Code review failures block the merge.
-- **Credential scanner** — pre-commit hook and inline scanner detect secrets before they reach git history.
-- **Model routing** — Haiku for cheap tasks, Sonnet for routine fixes, Opus as orchestrator-only for critical tickets. After two Sonnet failures, auto-escalate to Opus.
-- **Deterministic replay** — successful fix trajectories are cached by error fingerprint for zero-cost instant replay.
+- **16 Custom Tools** — ticket CRUD, GitHub import, investigation/development/review delegation, PR management, workspace provisioning, safety gates, health monitoring, notifications
+- **Engine-Agnostic Delegation** — swap coding engines (Claude CLI, Gemini CLI, Copilot, OpenCode) via config
+- **Provider-Agnostic Architecture** — every external service is a swappable plugin behind an interface
+- **Persistent Sessions** — JSONL-backed session state survives daemon restarts
+- **Safety Gates** — circuit breaker, stability gate, outcome tracker, budget enforcement
+- **Semantic Memory** — pgvector embeddings surface similar past fixes at investigation time
+- **Multi-Team Support** — multiple squads share Supabase without overlap
+- **React WebUI** — management dashboard with Kanban boards, pipeline editor, team controls
 
 ---
 
 ## Architecture
 
-The pipeline flows from log ingestion through triage, investigation, development, and governance:
+The V2 architecture centers on a **single persistent LLM session** (via `@mariozechner/pi-coding-agent`) that decides what to do based on its persona and tool results. No hardcoded phases.
 
 ```mermaid
 flowchart TD
-    subgraph entry ["Entry Point"]
-        Runner(["SWE Squad Runner\ncron · daemon · one-shot"])
+    subgraph daemon [" SWE-Manager Daemon (TypeScript) "]
+        Session["pi-agent Session\nPersistent LLM + 16 tools"]
+        HB["Heartbeat Loop\n5-min interval"]
+        HB -->|"prompt"| Session
     end
 
-    subgraph ingest ["Ingestion"]
+    subgraph tools [" Custom Tools "]
         direction LR
-        Monitor["Monitor Agent\nLog scanning & fingerprinting"]
-        GitHub["GitHub Scanner\nAssignee-filtered issues"]
-        Remote["Remote Logs\nSSH / rsync collection"]
+        TL["ticket_list\nticket_create\nticket_update"]
+        GH["github_issues\ngithub_import"]
+        DEL["delegate_investigation\ndelegate_development\ndelegate_review"]
+        PR["run_tests\napprove_pr\nmerge_pr"]
+        OPS["check_stability\ncheck_health\ncheck_metrics"]
+        WS["manage_workspace\nsend_notification"]
     end
 
-    subgraph analysis ["Analysis & Routing"]
-        Triage["Triage Agent\nSeverity classification"]
-        Distiller["Trajectory Distiller\nCached fix replay"]
-        Investigator["Investigator Agent\nRoot-cause analysis"]
-        Memory["Semantic Memory\npgvector + knowledge graph"]
+    subgraph engines [" Coding Engines (config-resolved) "]
+        Claude["Claude Code CLI"]
+        Gemini["Gemini CLI"]
+        Copilot["GitHub Copilot"]
     end
 
-    subgraph resolution ["Resolution"]
-        Developer["Developer Agent\nKeep / discard fix loop"]
-        Reviewer["Code Reviewer\nFail-closed merge gate"]
+    subgraph infra [" Infrastructure "]
+        Supa[("Supabase\nTickets + pgvector")]
+        GitHub["GitHub API\nIssues + PRs"]
+        Telegram["Telegram\nNotifications"]
     end
 
-    subgraph governance ["Governance & Output"]
-        direction LR
-        Ralph["Stability Gate\nBugs before features"]
-        Creative["Creative Agent\nProactive proposals"]
-        A2A["A2A Dispatch\nInter-agent event bus"]
-    end
+    Session --> tools
+    DEL -->|"spawn"| engines
+    TL & GH --> Supa
+    GH --> GitHub
+    WS --> Telegram
 
-    Runner --> Monitor & GitHub & Remote
-    Monitor & GitHub & Remote --> Triage
-    Triage --> Distiller & Investigator
-    Investigator <--> Memory
-    Distiller & Investigator --> Developer
-    Developer --> Reviewer --> Ralph
-    Ralph -->|stable| Creative
-    Ralph --> A2A
+    classDef daemonNode fill:#6366f1,stroke:#4338ca,color:#fff,stroke-width:2px,rx:12
+    classDef toolNode fill:#3b82f6,stroke:#2563eb,color:#fff,stroke-width:1.5px
+    classDef engineNode fill:#ef4444,stroke:#dc2626,color:#fff,stroke-width:1.5px
+    classDef infraNode fill:#10b981,stroke:#059669,color:#fff,stroke-width:2px
+    classDef subgraphBox fill:transparent,stroke:#e5e7eb,stroke-width:1px,color:#6b7280
 
-    classDef entryNode fill:#6366f1,stroke:#4338ca,color:#fff,stroke-width:2px
-    classDef ingestNode fill:#10b981,stroke:#059669,color:#fff,stroke-width:1.5px
-    classDef analysisNode fill:#f59e0b,stroke:#d97706,color:#fff,stroke-width:1.5px
-    classDef resolveNode fill:#ef4444,stroke:#dc2626,color:#fff,stroke-width:2px
-    classDef gateNode fill:#8b5cf6,stroke:#7c3aed,color:#fff,stroke-width:1.5px
-    classDef outputNode fill:#06b6d4,stroke:#0891b2,color:#fff,stroke-width:1.5px
-
-    class Runner entryNode
-    class Monitor,GitHub,Remote ingestNode
-    class Triage,Distiller,Investigator,Memory analysisNode
-    class Developer,Reviewer resolveNode
-    class Ralph gateNode
-    class Creative,A2A outputNode
+    class Session,HB daemonNode
+    class TL,GH,DEL,PR,OPS,WS toolNode
+    class Claude,Gemini,Copilot engineNode
+    class Supa,GitHub,Telegram infraNode
+    class daemon,tools,engines,infra subgraphBox
 ```
 
-### Fix Loop
+### Ticket Pipeline
 
-Each fix attempt runs on a git branch. Tests pass → commit. Tests fail → `git reset --hard`. No broken code ever reaches main.
+The daemon flushes right-to-left, completing nearest-done work first:
+
+```
+open → investigating → investigation_complete → in_development → in_review → testing → resolved
+```
+
+Each heartbeat, the LLM picks the highest-priority ticket closest to completion and advances it one step.
+
+---
+
+## How the Fix Loop Works
 
 ```mermaid
 flowchart TD
-    Start(["New Ticket"]) --> Cache{"Trajectory\ncache hit?"}
-    Cache -->|hit| Replay["Replay cached fix\nzero cost, instant"]
-    Replay --> T0{"Tests?"}
-    T0 -->|pass| Keep0(["KEEP — commit"])
-    T0 -->|fail| A1
-    Cache -->|miss| A1
+    Start(["New Ticket"]):::startNode --> Cache{"Trajectory\ncache hit?"}:::decisionNode
 
-    subgraph attempts ["Escalating Fix Attempts"]
-        A1["Attempt 1 — Sonnet\nroutine fix"] --> T1{"Tests?"}
-        T1 -->|pass| Keep1(["KEEP"])
-        T1 -->|fail| A2["Attempt 2 — Sonnet\nwith error context"]
-        A2 --> T2{"Tests?"}
-        T2 -->|pass| Keep2(["KEEP"])
-        T2 -->|fail| A3["Attempt 3 — Opus\norchestrates sub-agents"]
-        A3 --> T3{"Tests?"}
-        T3 -->|pass| Keep3(["KEEP"])
-        T3 -->|fail| HITL
+    Cache -->|"hit — free"| Replay["Replay cached fix\nzero cost"]:::cacheNode
+    Replay --> Tests0{"Tests\npass?"}:::testNode
+    Tests0 -->|"pass"| Keep0(["KEEP — commit"]):::successNode
+
+    Cache -->|"miss"| A1
+
+    subgraph attempts [" Escalating Fix Attempts "]
+        A1["Attempt 1 — Sonnet\nRoutine fix"]:::sonnetNode
+        A1 --> Tests1{"Tests\npass?"}:::testNode
+        Tests1 -->|"pass"| Keep1(["KEEP"]):::successNode
+        Tests1 -->|"fail"| A2["Attempt 2 — Sonnet\n+ error context"]:::sonnetNode
+        A2 --> Tests2{"Tests\npass?"}:::testNode
+        Tests2 -->|"pass"| Keep2(["KEEP"]):::successNode
+        Tests2 -->|"fail"| A3["Attempt 3 — Opus\nOrchestrates sub-agents"]:::opusNode
+        A3 --> Tests3{"Tests\npass?"}:::testNode
+        Tests3 -->|"pass"| Keep3(["KEEP"]):::successNode
+        Tests3 -->|"fail"| HITL
     end
 
-    HITL(["HITL Escalation\nHuman notified"])
+    HITL(["HITL Escalation\nTelegram notification"]):::failNode
 
-    classDef decisionNode fill:#f59e0b,stroke:#d97706,color:#fff
-    classDef successNode fill:#10b981,stroke:#059669,color:#fff
-    classDef failNode fill:#ef4444,stroke:#dc2626,color:#fff
-    classDef sonnetNode fill:#3b82f6,stroke:#2563eb,color:#fff
-    classDef opusNode fill:#8b5cf6,stroke:#7c3aed,color:#fff
+    Tests0 -->|"fail"| A1
 
-    class Cache,T0,T1,T2,T3 decisionNode
-    class Keep0,Keep1,Keep2,Keep3 successNode
-    class HITL failNode
-    class A1,A2 sonnetNode
-    class A3 opusNode
+    classDef startNode fill:#6366f1,stroke:#4338ca,color:#fff,stroke-width:2px
+    classDef decisionNode fill:#f59e0b,stroke:#d97706,color:#fff,stroke-width:2px
+    classDef cacheNode fill:#8b5cf6,stroke:#7c3aed,color:#fff,stroke-width:1.5px
+    classDef testNode fill:#64748b,stroke:#475569,color:#fff,stroke-width:1.5px
+    classDef sonnetNode fill:#3b82f6,stroke:#2563eb,color:#fff,stroke-width:1.5px
+    classDef opusNode fill:#ef4444,stroke:#dc2626,color:#fff,stroke-width:2px
+    classDef successNode fill:#10b981,stroke:#059669,color:#fff,stroke-width:2px
+    classDef failNode fill:#ef4444,stroke:#dc2626,color:#fff,stroke-width:2px
+    classDef subgraphBox fill:transparent,stroke:#e5e7eb,stroke-width:1px,color:#6b7280
+
+    class attempts subgraphBox
 ```
+
+Each attempt runs on a **git branch**. Tests pass = commit + PR. Tests fail = `git reset --hard` (auto-revert). No broken code ever reaches main.
 
 ---
 
 ## Quick Start
 
+### Prerequisites
+
+- **Node.js 20+** and **pnpm** (for the TypeScript control plane)
+- **Python 3.10+** (for the agent library and tests)
+- **[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)** (coding engine)
+- **[GitHub CLI](https://cli.github.com/)** (`gh`) authenticated
+
+### 1. Install
+
 ```bash
-# 1. Clone and install
 git clone https://github.com/ArtemisAI/SWE-Squad.git
 cd SWE-Squad
+
+# TypeScript control plane
+cd control-plane && pnpm install && cd ..
+
+# Python agent library
 pip install python-dotenv pyyaml
-
-# 2. Configure
-cp .env.example .env
-# Edit .env — set SWE_TEAM_ENABLED, SWE_TEAM_ID, GH_TOKEN, SWE_GITHUB_ACCOUNT, SWE_GITHUB_REPO
-
-# 3. Bootstrap (acknowledge pre-existing errors on first run)
-python scripts/ops/swe_team_runner.py --bootstrap -v
-
-# 4. Run a single scan cycle
-python scripts/ops/swe_team_runner.py -v
-
-# 5. Start the daemon (continuous 30-minute cycles)
-python scripts/ops/swe_team_runner.py --daemon -v
-
-# 6. Run tests
-python -m pytest tests/unit/ -q
 ```
 
-For Docker:
+### 2. Configure
 
 ```bash
-docker compose up -d
+cp .env.example .env
+# Edit .env with your credentials (see Configuration section)
 ```
+
+### 3. Run the Daemon
+
+```bash
+# Single heartbeat (test your setup)
+npx tsx control-plane/src/main.ts --verbose
+
+# Daemon mode (continuous 5-minute heartbeats)
+npx tsx control-plane/src/main.ts --daemon --verbose
+
+# Fresh session (discards prior session state)
+npx tsx control-plane/src/main.ts --daemon --fresh --verbose
+
+# Dry run (validates config and tool registration, no LLM calls)
+npx tsx control-plane/src/main.ts --dry-run
+```
+
+### 4. Run Tests
+
+```bash
+# Python tests (5900+ tests)
+python3 -m pytest tests/ -v --tb=short
+
+# TypeScript tests (900+ tests)
+cd control-plane && pnpm test
+
+# TypeScript type checking
+cd control-plane && pnpm typecheck
+```
+
+---
+
+## The 16 Custom Tools
+
+The daemon's LLM session has access to these tools, registered via `defineTool()` from pi-agent:
+
+| Tool | Purpose |
+|------|---------|
+| `ticket_list` | Query tickets by status, severity, repo, or pipeline view |
+| `ticket_create` | Create a new ticket with fingerprint-based deduplication |
+| `ticket_update` | Update ticket status, notes, assignee; enforces resolution audit |
+| `github_issues` | List open GitHub issues from configured repositories |
+| `github_import` | Import GitHub issues as tickets with dedup (fingerprint: `gh-issue-{repo}-{number}`) |
+| `delegate_investigation` | Claim ticket, resolve engine from config, spawn investigation, store report |
+| `delegate_development` | Claim ticket, provision workspace, spawn development, create PR |
+| `delegate_review` | Spawn code review on a PR with structured feedback |
+| `run_tests` | Execute test suite in a workspace and report results |
+| `approve_pr` | Approve a pull request via GitHub API |
+| `merge_pr` | Merge an approved PR (squash merge) |
+| `manage_workspace` | Create/cleanup/list git worktrees for isolated development |
+| `check_stability` | Evaluate safety gates: circuit breaker + open criticals + test failures |
+| `check_health` | Aggregate health snapshot: Supabase, engines, circuit breaker, uptime |
+| `check_metrics` | Pipeline metrics: throughput, cycle time, failure rates |
+| `send_notification` | Send alerts via configured provider (Telegram, Slack, webhook) |
 
 ---
 
 ## Configuration
 
-### Required Environment Variables
+### Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `SWE_TEAM_ENABLED` | Kill switch — must be `true` to run |
-| `SWE_TEAM_ID` | Unique team identifier for ticket scoping |
-| `SWE_GITHUB_ACCOUNT` | Dedicated GitHub bot account for issue pickup |
-| `SWE_GITHUB_REPO` | Target repository (`owner/repo`) |
-| `GH_TOKEN` | GitHub PAT with `repo` scope |
+Copy `.env.example` to `.env` and configure:
 
-### Optional Environment Variables
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SWE_TEAM_ENABLED` | Yes | Kill switch (`true`/`false`) |
+| `SWE_TEAM_ID` | Yes | Unique team identifier for ticket scoping |
+| `SWE_GITHUB_ACCOUNT` | Yes | Dedicated GitHub bot account |
+| `GH_TOKEN` | Yes | GitHub PAT with `repo` scope |
+| `SUPABASE_URL` | Yes | Supabase PostgREST URL |
+| `SUPABASE_ANON_KEY` | Yes | Supabase authentication key |
+| `TELEGRAM_BOT_TOKEN` | No | Telegram bot token for notifications |
+| `TELEGRAM_CHAT_ID` | No | Telegram chat ID for alerts |
+| `BASE_LLM_API_URL` | No | OpenAI-compatible proxy for embeddings |
+| `ANTHROPIC_BASE_URL` | No | Proxy URL for Claude CLI (engine delegation) |
+| `SWE_DAEMON_MODEL` | No | Override daemon LLM model (default: `claude-sonnet`) |
+| `SWE_MODEL_T2` | No | Override delegation model tier (default: `sonnet`) |
 
-| Variable | Description |
-|----------|-------------|
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Alert notifications |
-| `SUPABASE_URL` / `SUPABASE_ANON_KEY` | Shared multi-team ticket store |
-| `BASE_LLM_API_URL` / `BASE_LLM_API_KEY` | OpenAI-compatible proxy for embeddings |
-| `EMBEDDING_MODEL` | Embedding model name (default: `bge-m3`) |
-| `SWE_MODEL_T1/T2/T3` | Override model tiers (default: haiku/sonnet/opus) |
-| `SWE_REMOTE_NODES` | JSON array of SSH worker nodes |
+See [`.env.example`](.env.example) for the full list.
 
-See `.env.example` for the full list. Runtime configuration is in `config/swe_team.yaml`.
+### YAML Config (`config/swe_team.yaml`)
 
----
+The YAML config controls:
 
-## Provider Architecture
-
-SWE Squad is provider-agnostic: every external service is behind a swappable interface. New provider = new file in `src/swe_team/providers/<domain>/` + entry in `swe_team.yaml`. Nothing else changes.
-
-| Domain | Interface | Default Implementation | Alternatives |
-|--------|-----------|----------------------|--------------|
-| Coding engine | `CodingEngine` | Claude Code CLI | Gemini CLI, OpenCode |
-| Notification | `NotificationProvider` | Telegram | Slack, PagerDuty, webhook |
-| Issue tracker | `IssueTracker` | GitHub Issues | GitLab, Jira, Linear |
-| Sandbox | `SandboxProvider` | Docker / local subprocess | Proxmox, cloud VM |
-| Auth | `AuthProvider` | GitHub OAuth | Custom JWT, API key |
-| Embeddings | `EmbeddingProvider` | bge-m3 via BASE_LLM | OpenAI, local sentence-transformers |
-| Vector store | `VectorStore` | Supabase pgvector | Qdrant, Weaviate, Chroma |
-| Workspace | `WorkspaceProvider` | git-worktree | Docker volume, noop |
-| Repo map | `RepoMapProvider` | ctags | tree-sitter, file listing |
-| Task queue | `TaskQueueProvider` | In-memory (heapq) | Redis, RabbitMQ, SQS |
-| Usage governor | `UsageGovernor` | Built-in token budget | Custom rate limiter |
-| Log query | `LogQueryProvider` | Local file scanner | CloudWatch, Loki, Datadog |
+- **`delegation`** — per-role engine binding (investigator, developer, reviewer)
+- **`workspace`** — worktree provisioning settings
+- **`daemon`** — heartbeat interval, initial prompt, session lifecycle
+- **`cycle`** — max concurrent investigations/developments, severity filters
+- **`memory`** — embedding model, similarity thresholds, TTL
+- **`notification`** — provider selection (telegram/slack/webhook)
+- **`governance`** — stability gate thresholds
+- **`githubRepos`** — list of repos to scan for issues
 
 ---
 
-## Dashboard (Optional)
+## Engine Delegation
 
-The WebUI is an optional plugin (`src/swe_team/control_plane_api.py`). When enabled, it provides:
+The daemon never implements directly. It delegates to configured **coding engines** resolved from config:
 
-- Live ticket queue with severity and status filters
-- Session browser — active and suspended Claude Code sessions
-- Project configuration editor (model tiers, priority weights, sandbox paths)
-- User management with role-based access control (GitHub OAuth)
-- Control plane API for runtime reconfiguration without restart
-
-To enable:
-
-```bash
-python scripts/ops/swe_team_runner.py --daemon --enable-dashboard --port 8080
+```yaml
+# config/swe_team.yaml
+delegation:
+  investigator:
+    engine: claude-cli
+    model: sonnet
+    readOnly: true
+    timeout: 1800
+  developer:
+    engine: claude-cli
+    model: sonnet
+    timeout: 3600
+  reviewer:
+    engine: claude-cli
+    model: haiku
+    readOnly: true
+    timeout: 900
 ```
 
-The dashboard is not required for the agent pipeline to function.
+Supported engines: Claude Code CLI, Gemini CLI, OpenCode, GitHub Copilot. Adding a new engine = new file in `providers/engine/` + config entry.
 
 ---
 
-## Multi-Team Support
+## Model Routing
 
-Multiple squads can operate on shared infrastructure with full isolation:
+| Scenario | Model | Cost |
+|----------|-------|------|
+| Daemon management cycle | **Sonnet** | $$ |
+| Investigation (default) | **Sonnet** | $$ |
+| Development + PR creation | **Sonnet** | $$ |
+| PR review | **Haiku** | $ |
+| Embeddings, fact extraction | **bge-m3 / gemini-3-flash** | $ |
+| CRITICAL bugs | **Opus** | $$$ |
+| Deterministic replay (cached) | **None** | Free |
 
-- Each squad has its own `SWE_TEAM_ID` — all tickets are scoped to it in Supabase
-- Issue pickup is **assignee-based only**: a squad only processes issues assigned to its bot account
-- Squads share the semantic memory knowledge base — cross-team patterns improve investigation quality
-- Independent daemon processes, independent `.env` files, independent GitHub bot accounts
+```mermaid
+flowchart LR
+    Ticket(["Incoming Ticket"]):::startNode --> Cached{"Cached\nfix?"}:::decisionNode
+
+    Cached -->|"hit — free"| Replay(["Replay\nzero cost"]):::cacheNode
+    Cached -->|"miss"| Severity{"Severity?"}:::decisionNode
+
+    subgraph tiers [" Model Tiers "]
+        direction TB
+        T1["T1 Haiku\nEmbeddings, triage\n$"]:::t1Node
+        T2["T2 Sonnet\nInvestigation + fix\n$$"]:::t2Node
+        T3["T3 Opus\nOrchestrator only\n$$$"]:::t3Node
+    end
+
+    Severity -->|"LOW / MEDIUM"| T1
+    Severity -->|"HIGH"| T2
+    Severity -->|"CRITICAL"| T3
+    T2 -->|"2 failures"| T3
+
+    subgraph fallback [" Fallback Chain "]
+        direction LR
+        Claude["Claude Code\nprimary"]:::claudeNode
+        Gemini["Gemini CLI\nfallback"]:::geminiNode
+        OpenCode["OpenCode\nlast resort"]:::opencodeNode
+        Claude -->|"rate limited"| Gemini -->|"unavailable"| OpenCode
+    end
+
+    T2 -.->|"dispatch"| Claude
+    T3 -.->|"dispatch"| Claude
+
+    classDef startNode fill:#6366f1,stroke:#4338ca,color:#fff,stroke-width:2px
+    classDef decisionNode fill:#f59e0b,stroke:#d97706,color:#fff,stroke-width:2px
+    classDef cacheNode fill:#10b981,stroke:#059669,color:#fff,stroke-width:2px
+    classDef t1Node fill:#94a3b8,stroke:#64748b,color:#fff,stroke-width:1.5px
+    classDef t2Node fill:#3b82f6,stroke:#2563eb,color:#fff,stroke-width:1.5px
+    classDef t3Node fill:#ef4444,stroke:#dc2626,color:#fff,stroke-width:2px
+    classDef claudeNode fill:#8b5cf6,stroke:#7c3aed,color:#fff,stroke-width:1.5px
+    classDef geminiNode fill:#f59e0b,stroke:#d97706,color:#fff,stroke-width:1.5px
+    classDef opencodeNode fill:#14b8a6,stroke:#0d9488,color:#fff,stroke-width:1.5px
+    classDef subgraphBox fill:transparent,stroke:#e5e7eb,stroke-width:1px,color:#6b7280
+
+    class tiers,fallback subgraphBox
+```
+
+---
+
+## Semantic Memory
+
+When a ticket is resolved, SWE Squad extracts structured facts and stores embeddings in pgvector. On future investigations, the top-5 most similar memories are injected as context.
+
+```mermaid
+flowchart TD
+    subgraph store [" Storage — on ticket resolved "]
+        Resolved(["Ticket Resolved"]):::successNode
+        Extract["extract_memory_facts\nroot cause, fix, module, tags"]:::extractNode
+        Embed["embed_ticket\nbge-m3 — 1024 dim"]:::embedNode
+        Dedup{"Cosine\n> 0.92?"}:::decisionNode
+        StoreDB[("Supabase\npgvector")]:::dbNode
+
+        Resolved --> Extract --> Embed --> Dedup
+        Dedup -->|"new"| StoreDB
+        Dedup -->|"duplicate"| StoreDB
+    end
+
+    subgraph retrieve [" Retrieval — on investigation "]
+        NewTicket(["New Ticket"]):::startNode
+        Search["find_similar\nTop-5, cosine >= 0.75\n180-day TTL"]:::searchNode
+        Inject["Inject as\nSemantic Memory context"]:::injectNode
+
+        NewTicket --> Search -->|"query"| StoreDB
+        StoreDB -->|"matches"| Inject
+    end
+
+    classDef successNode fill:#10b981,stroke:#059669,color:#fff,stroke-width:2px
+    classDef startNode fill:#6366f1,stroke:#4338ca,color:#fff,stroke-width:2px
+    classDef extractNode fill:#f59e0b,stroke:#d97706,color:#fff,stroke-width:1.5px
+    classDef embedNode fill:#8b5cf6,stroke:#7c3aed,color:#fff,stroke-width:1.5px
+    classDef decisionNode fill:#f59e0b,stroke:#d97706,color:#fff,stroke-width:2px
+    classDef dbNode fill:#3ecf8e,stroke:#2da66e,color:#fff,stroke-width:2px
+    classDef searchNode fill:#3b82f6,stroke:#2563eb,color:#fff,stroke-width:1.5px
+    classDef injectNode fill:#8b5cf6,stroke:#7c3aed,color:#fff,stroke-width:1.5px
+    classDef subgraphBox fill:transparent,stroke:#e5e7eb,stroke-width:1px,color:#6b7280
+
+    class store,retrieve subgraphBox
+```
+
+---
+
+## Plugin Architecture
+
+Every external service is a swappable plugin behind an interface:
+
+| Component | Interface | Default | Alternatives |
+|---|---|---|---|
+| Coding agent | `CodingEngine` | Claude Code CLI | Gemini CLI, OpenCode, Copilot |
+| Notifications | `NotificationProvider` | Telegram | Slack, webhook, email |
+| Issue tracker | `IssueTracker` | GitHub Issues | Jira, Linear, GitLab |
+| Embeddings | `EmbeddingProvider` | bge-m3 | OpenAI, sentence-transformers |
+| Vector store | `VectorStore` | Supabase pgvector | Qdrant, Weaviate, Chroma |
+| Task queue | `TaskQueueProvider` | In-memory (heapq) | Redis, RabbitMQ, SQS |
+| Workspace | `WorkspaceProvider` | git-worktree | Docker volume, cloud VM |
+| Sandbox | `SandboxProvider` | Local subprocess | Docker, Codespaces |
+
+New provider = new file in `providers/<domain>/` + config entry. Nothing else changes.
+
+---
+
+## Project Structure
+
+```
+control-plane/                     # TypeScript V2 control plane
+  src/
+    main.ts                        # Daemon entry point — pi-agent session + heartbeat
+    config/
+      schemas.ts                   # Zod schemas for all config sections
+      loader.ts                    # YAML + env var config loader
+    tools/                         # 16 custom pi-agent tools
+      ticket-list.ts               # Query tickets by status/severity/repo
+      ticket-create.ts             # Create tickets with fingerprint dedup
+      ticket-update.ts             # Update status/notes/assignee
+      github-issues.ts             # List GitHub issues
+      github-import.ts             # Import issues as tickets
+      delegate-investigation.ts    # Spawn investigation via engine
+      delegate-development.ts      # Spawn development + PR creation
+      delegate-review.ts           # Spawn PR review
+      run-tests.ts                 # Execute test suite
+      approve-pr.ts                # Approve PR via GitHub API
+      merge-pr.ts                  # Merge approved PRs
+      manage-workspace.ts          # Git worktree provisioning
+      check-stability.ts           # Safety gate evaluation
+      check-health.ts              # System health snapshot
+      check-metrics.ts             # Pipeline metrics
+      send-notification.ts         # Notification dispatch
+    providers/                     # Provider implementations
+      supabase/                    # Supabase client + ticket store
+      notification/                # Telegram, Slack, webhook
+      engine/                      # Coding engine registry
+      memory/                      # Memory service providers
+    safety/                        # Circuit breaker, outcome tracker
+    services/                      # Memory service, workspace manager
+    shared/                        # Engine resolver, prompt builder, context
+    extensions/                    # Tool guard, RBAC, cost tracking
+  tests/                           # 900+ vitest tests (unit + integration)
+
+src/swe_team/                      # Python agent library
+  monitor_agent.py                 # Log scanning, error detection
+  triage_agent.py                  # Severity routing
+  investigator.py                  # Root-cause analysis via Claude CLI
+  developer.py                     # Keep/discard fix loop
+  ralph_wiggum.py                  # Stability gate
+  supabase_store.py                # Supabase ticket store
+  embeddings.py                    # bge-m3 embeddings + fact extraction
+  guardrails.py                    # Safety gate coordinator
+  cost_tracker.py                  # Budget enforcement
+  atomic_checkout.py               # Cross-VM task dedup
+  ...                              # 30+ modules total
+
+src/a2a/                           # A2A inter-agent protocol
+  server.py, client.py, dispatch.py
+
+ui/                                # React + Vite management dashboard
+
+scripts/ops/                       # Operational scripts
+  swe_team_runner.py               # Legacy Python runner (cron/daemon)
+  swe_cli.py                       # CLI tool (status, tickets, reports)
+  propagate.sh                     # Code propagation to worker nodes
+
+config/
+  swe_team.yaml                    # Runtime configuration
+  swe_team/programs/               # Prompt templates (investigate.md, fix.md)
+
+.pi/
+  skills/swe-manager/SKILL.md      # LLM persona definition
+  extensions/                      # pi-agent extension stubs
+
+tests/                             # 5900+ pytest tests
+```
+
+---
+
+## Multi-Team Deployment
+
+SWE Squad supports multiple teams sharing infrastructure:
+
+| Team | VM | Role | Engine |
+|------|-----|------|--------|
+| **alpha** | `primary` | Senior: QA, merge authority, critical fixes | Claude CLI (direct) |
+| **beta** | `worker-1` | Development: bulk features, bug fixes | Claude CLI (proxy) |
+| **gamma** | `worker-2` | Economy: investigation, triage | Claude CLI (proxy) |
+
+Each team has its own `team_id` scoping all tickets, a dedicated GitHub bot account, and isolated VM.
+
+---
+
+## Safety
+
+- **Circuit Breaker** — trips at 80% failure rate, pauses daemon for 30 minutes
+- **Stability Gate** — blocks new work when critical tickets are open or tests are failing
+- **Outcome Tracker** — max 3 investigation/development attempts per ticket before HITL escalation
+- **Budget Enforcement** — per-agent cost tracking with configurable hard-stops
+- **RBAC** — role-based access control on tool invocations (bypass mode by default)
+- **Bot Containment** — each bot account is confined to its designated VM
+
+---
+
+## WebUI
+
+The React management dashboard provides:
+
+- **Dashboard** — real-time ticket metrics, PR pipeline, severity donut, cost trends
+- **Tickets** — Kanban board with drag-and-drop, search/filter, detail views
+- **Teams** — live status indicators, VM connectivity checks, start/stop controls
+- **Engines** — coding engine management with health checks and BYOK support
+- **Pipeline Editor** — visual workflow editor built on React Flow
+- **Settings** — governance thresholds, cycle config, memory settings
+
+```bash
+cd ui && npm install && npm run dev
+# Opens at http://localhost:5173, proxies API to :8888
+```
+
+---
+
+## Requirements
+
+- **Node.js 20+** + **pnpm** — TypeScript control plane
+- **Python 3.10+** — agent library and tests
+- **[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)** — coding engine
+- **[GitHub CLI](https://cli.github.com/)** (`gh`) — authenticated for issue + PR management
+- **Supabase** — ticket store + semantic memory (pgvector)
+- **Telegram bot** (optional) — notifications
+- **SSH access** to worker VMs (optional) — remote log collection
+
+---
+
+## Roadmap
+
+- [x] Persistent pi-agent daemon with 16 custom tools
+- [x] Engine-agnostic delegation (Claude CLI, Gemini CLI, Copilot, OpenCode)
+- [x] Semantic memory with pgvector embeddings + confidence tracking
+- [x] Full ticket pipeline: import, investigate, develop, review, merge
+- [x] Safety gates: circuit breaker, stability gate, outcome tracker
+- [x] React WebUI with Kanban, pipeline editor, team management
+- [x] Multi-team deployment (alpha/beta/gamma squads)
+- [x] Provider-agnostic plugin architecture
+- [ ] Interactive Telegram bot — bidirectional chatbot for remote control ([#1034](https://github.com/ArtemisAI/SWE-Squad/issues/1034))
+- [ ] Multi-VM deployment automation
+- [ ] npm package: `@swe-squad/control-plane`
+- [ ] Public repo sync and launch
+- [ ] Slack/Discord notification plugins
+- [ ] Metrics and observability (Prometheus/Grafana)
+- [ ] Automated benchmarking suite
 
 ---
 
 ## Contributing
 
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines, branch conventions, and the test requirement (`make test` must pass with zero failures).
+We welcome contributions! Areas where help is most valuable:
 
-Areas that would benefit from community input:
-
-- Additional provider implementations (Slack notifications, Linear issue tracker, Qdrant vector store)
-- CI/CD integration (GitHub Actions, GitLab CI)
+- Additional coding engine adapters
+- Notification channel plugins (Slack, Discord)
+- Interactive Telegram bot ([#1034](https://github.com/ArtemisAI/SWE-Squad/issues/1034))
+- New ticket store backends (Redis, SQLite)
 - Agent prompt optimization and benchmarking
 - Documentation and tutorials
 
@@ -299,15 +604,3 @@ Areas that would benefit from community input:
 ## License
 
 [MIT](LICENSE) — use it, fork it, build on it.
-
----
-
-## Community
-
-- [GitHub Discussions](https://github.com/ArtemisAI/SWE-Squad/discussions) — questions, ideas, show-and-tell
-- [Issues](https://github.com/ArtemisAI/SWE-Squad/issues) — bug reports and feature requests
-- [Contributing Guide](CONTRIBUTING.md) — how to submit a PR
-
-<p align="center">
-  <sub>Made with care by <a href="https://github.com/ArtemisAI">ArtemisAI</a></sub>
-</p>

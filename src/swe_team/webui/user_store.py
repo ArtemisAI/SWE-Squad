@@ -37,6 +37,7 @@ import secrets
 import sqlite3
 import threading
 import time
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional
 
@@ -223,6 +224,28 @@ CREATE TABLE IF NOT EXISTS user_settings (
     settings_json TEXT    NOT NULL DEFAULT '{}',
     updated_at    TEXT    NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS account_secrets (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id      TEXT    NOT NULL,
+    name            TEXT    NOT NULL,
+    encrypted_value TEXT    NOT NULL,
+    created_at      TEXT    NOT NULL,
+    updated_at      TEXT    NOT NULL,
+    expires_at      TEXT,
+    UNIQUE(account_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS project_secrets (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_name    TEXT    NOT NULL,
+    name            TEXT    NOT NULL,
+    encrypted_value TEXT    NOT NULL,
+    created_at      TEXT    NOT NULL,
+    updated_at      TEXT    NOT NULL,
+    expires_at      TEXT,
+    UNIQUE(project_name, name)
+);
 """
 
 
@@ -267,6 +290,12 @@ class UserStore:
             conn = self._connect()
             try:
                 conn.executescript(_SCHEMA_SQL)
+                # Migration: add expires_at column to existing tables
+                for table in ("account_secrets", "project_secrets"):
+                    try:
+                        conn.execute(f"ALTER TABLE {table} ADD COLUMN expires_at TEXT")
+                    except sqlite3.OperationalError:
+                        pass  # Column already exists
                 conn.commit()
             finally:
                 conn.close()
@@ -502,6 +531,161 @@ class UserStore:
                 return result.rowcount > 0
             finally:
                 conn.close()
+
+    # ------------------------------------------------------------------
+    # Account-level secrets
+    # ------------------------------------------------------------------
+
+    def set_account_secret(
+        self, account_id: str, name: str, value: str, ttl_minutes: Optional[int] = None,
+    ) -> None:
+        """Encrypt and store (or update) a named secret scoped to *account_id*.
+
+        If *ttl_minutes* is set, the secret will auto-expire after that duration.
+        """
+        encrypted = self._enc.encrypt(value)
+        now = self._now()
+        expires_at: Optional[str] = None
+        if ttl_minutes is not None and ttl_minutes > 0:
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "INSERT INTO account_secrets (account_id, name, encrypted_value, created_at, updated_at, expires_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)"
+                    " ON CONFLICT(account_id, name) DO UPDATE SET encrypted_value=excluded.encrypted_value,"
+                    " updated_at=excluded.updated_at, expires_at=excluded.expires_at",
+                    (account_id, name, encrypted, now, now, expires_at),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def list_account_secret_names(self, account_id: str) -> List[dict]:
+        """Return secret metadata for *account_id* (values never returned).
+
+        Each entry is ``{"name": str, "expires_at": str | None}``.
+        Expired secrets are excluded from the result.
+        """
+        now = self._now()
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT name, expires_at FROM account_secrets"
+                " WHERE account_id = ? AND (expires_at IS NULL OR expires_at > ?)"
+                " ORDER BY name",
+                (account_id, now),
+            ).fetchall()
+            return [{"name": r["name"], "expires_at": r["expires_at"]} for r in rows]
+        finally:
+            conn.close()
+
+    def delete_account_secret(self, account_id: str, name: str) -> bool:
+        """Delete an account secret. Returns True if a row was deleted."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                result = conn.execute(
+                    "DELETE FROM account_secrets WHERE account_id = ? AND name = ?",
+                    (account_id, name),
+                )
+                conn.commit()
+                return result.rowcount > 0
+            finally:
+                conn.close()
+
+    # ------------------------------------------------------------------
+    # Project-level secrets
+    # ------------------------------------------------------------------
+
+    def set_project_secret(
+        self, project_name: str, name: str, value: str, ttl_minutes: Optional[int] = None,
+    ) -> None:
+        """Encrypt and store (or update) a named secret scoped to *project_name*.
+
+        If *ttl_minutes* is set, the secret will auto-expire after that duration.
+        """
+        encrypted = self._enc.encrypt(value)
+        now = self._now()
+        expires_at: Optional[str] = None
+        if ttl_minutes is not None and ttl_minutes > 0:
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "INSERT INTO project_secrets (project_name, name, encrypted_value, created_at, updated_at, expires_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)"
+                    " ON CONFLICT(project_name, name) DO UPDATE SET encrypted_value=excluded.encrypted_value,"
+                    " updated_at=excluded.updated_at, expires_at=excluded.expires_at",
+                    (project_name, name, encrypted, now, now, expires_at),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def list_project_secret_names(self, project_name: str) -> List[dict]:
+        """Return secret metadata for *project_name* (values never returned).
+
+        Each entry is ``{"name": str, "expires_at": str | None}``.
+        Expired secrets are excluded from the result.
+        """
+        now = self._now()
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT name, expires_at FROM project_secrets"
+                " WHERE project_name = ? AND (expires_at IS NULL OR expires_at > ?)"
+                " ORDER BY name",
+                (project_name, now),
+            ).fetchall()
+            return [{"name": r["name"], "expires_at": r["expires_at"]} for r in rows]
+        finally:
+            conn.close()
+
+    def delete_project_secret(self, project_name: str, name: str) -> bool:
+        """Delete a project secret. Returns True if a row was deleted."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                result = conn.execute(
+                    "DELETE FROM project_secrets WHERE project_name = ? AND name = ?",
+                    (project_name, name),
+                )
+                conn.commit()
+                return result.rowcount > 0
+            finally:
+                conn.close()
+
+    # ------------------------------------------------------------------
+    # Expired secrets cleanup
+    # ------------------------------------------------------------------
+
+    def purge_expired_secrets(self) -> int:
+        """Delete all expired secrets from account_secrets and project_secrets.
+
+        Returns the total number of rows deleted.
+        """
+        now = self._now()
+        total = 0
+        with self._lock:
+            conn = self._connect()
+            try:
+                for table in ("account_secrets", "project_secrets"):
+                    result = conn.execute(
+                        f"DELETE FROM {table} WHERE expires_at IS NOT NULL AND expires_at <= ?",
+                        (now,),
+                    )
+                    total += result.rowcount
+                conn.commit()
+            finally:
+                conn.close()
+        return total
 
     # ------------------------------------------------------------------
     # User settings

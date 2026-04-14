@@ -25,8 +25,8 @@ auth_token*
 
 # -----------------------------------------------------------------------------
 # Internal docs — architecture notes, planning docs, roadmaps
-# docs/ is intentionally tracked for MkDocs GitHub Pages site
 # -----------------------------------------------------------------------------
+# docs/ — unignored: runbooks and architecture docs are tracked
 
 # -----------------------------------------------------------------------------
 # Runtime data — tickets, logs, cache
@@ -107,3 +107,37 @@ temp/
 *.orig
 scratch/
 .claude/worktrees/
+
+# -----------------------------------------------------------------------------
+# Scratch/debug files (ad-hoc queries, VM dumps, analysis artifacts)
+# -----------------------------------------------------------------------------
+find_*.py
+list_*.py
+query_*.py
+vm_*.txt
+gh_issues*.txt
+gh_issues*.json
+analysis_proposal.txt
+opinion.txt
+DIAGNOSIS_REPORT.md
+MIGRATION_*.md
+backups/
+
+# -----------------------------------------------------------------------------
+# React UI (ui/)
+# -----------------------------------------------------------------------------
+node_modules/
+ui/node_modules/
+control-plane/node_modules/
+control-plane/dist/
+ui/dist/
+ui/tsconfig.tsbuildinfo
+ui/.vite/
+data/backups/
+
+# -----------------------------------------------------------------------------
+# Local-only project scratch space (Brain/client deployments, experiments)
+# Not synced to public repo — dev-1 local only
+# -----------------------------------------------------------------------------
+projects/
+docs/GLM-API/

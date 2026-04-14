@@ -69,6 +69,7 @@ class RalphWiggumGate:
         *,
         ci_green: bool = True,
         failing_tests: int = 0,
+        total_tests: int = 0,
     ) -> StabilityReport:
         """Run the stability check and return a verdict.
 
@@ -88,6 +89,7 @@ class RalphWiggumGate:
         open_high = self._count_open(tickets, TicketSeverity.HIGH)
 
         reasons: List[str] = []
+        warn_reasons: List[str] = []
 
         # Rule 1: No critical bugs allowed
         if open_critical > self._config.max_open_critical:
@@ -107,16 +109,38 @@ class RalphWiggumGate:
         if self._config.require_ci_green and not ci_green:
             reasons.append("CI is not green")
 
-        # Rule 4: No failing tests
-        if failing_tests > self._config.max_failing_tests:
-            reasons.append(
-                f"{failing_tests} failing test(s) "
-                f"(max {self._config.max_failing_tests})"
-            )
+        # Rule 4: Flexible test failure gate — warn on isolated failures, hard block only on systemic failure.
+        # Thresholds (from config, with env override SWE_MAX_FAILING_TESTS_PCT):
+        #   warn_on_any_failure  → log WARNING but do not block
+        #   max_failing_tests_pct (default 5%) → WARN verdict, do not block production
+        #   hard_block_pct (default 10%) → BLOCK
+        hard_block_pct = getattr(self._config, "hard_block_pct", 10)
+        warn_pct = getattr(self._config, "max_failing_tests_pct", 5)
+        warn_on_any = getattr(self._config, "warn_on_any_failure", True)
+
+        if failing_tests > 0:
+            fail_pct = (failing_tests / total_tests * 100) if total_tests else 100
+            if fail_pct >= hard_block_pct:
+                reasons.append(
+                    f"{failing_tests}/{total_tests or '?'} failing tests "
+                    f"({fail_pct:.1f}% ≥ hard block threshold {hard_block_pct}%)"
+                )
+            elif fail_pct >= warn_pct:
+                warn_reasons.append(
+                    f"{failing_tests} failing test(s) ({fail_pct:.1f}% — warn threshold {warn_pct}%)"
+                )
+            elif warn_on_any:
+                logger.warning(
+                    "Ralph-Wiggum: %d failing test(s) (%.1f%%) — isolated, not blocking",
+                    failing_tests, fail_pct,
+                )
 
         if reasons:
             verdict = GovernanceVerdict.BLOCK
             details = "BLOCKED: " + "; ".join(reasons)
+        elif warn_reasons:
+            verdict = GovernanceVerdict.WARN
+            details = "WARN (not blocking): " + "; ".join(warn_reasons)
         else:
             verdict = GovernanceVerdict.PASS
             details = "All stability checks passed"

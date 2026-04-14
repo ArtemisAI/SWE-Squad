@@ -61,6 +61,12 @@ class RepoRouter:
                 raise ValueError("No sandbox repos configured — cannot route ticket")
             first = next(iter(self._repos.values()))
             repo_name = first["name"]
+            logger.warning(
+                "Ticket %s has no metadata['repo'] — falling back to default repo '%s'. "
+                "This may indicate cross-repo ticket contamination.",
+                getattr(ticket, "ticket_id", "unknown"),
+                repo_name,
+            )
 
         if repo_name not in self._repos:
             raise ValueError(

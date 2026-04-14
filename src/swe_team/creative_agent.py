@@ -13,6 +13,7 @@ from collections import Counter
 from typing import Iterable, List, Optional
 
 from src.swe_team.models import SWETicket, TicketSeverity, TicketStatus
+from src.swe_team.providers.issue_tracker.base import IssueTracker
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,9 @@ class CreativeAgent:
     """Generate proactive improvement proposals."""
 
     AGENT_NAME = "swe_creative"
+
+    def __init__(self, issue_tracker: Optional[IssueTracker] = None) -> None:
+        self._issue_tracker: Optional[IssueTracker] = issue_tracker
 
     def propose(self, store, limit: int = 3) -> List[SWETicket]:
         """Generate creative proposals from resolved/closed tickets."""
@@ -88,16 +92,39 @@ class CreativeAgent:
             "",
             "_Requires human approval before implementation._",
         ]
-        labels = "swe-team,creative,proposal"
+        body = "\n".join(body_lines)
+        label_list = ["swe-team", "creative", "proposal"]
 
+        if self._issue_tracker is not None:
+            try:
+                ref = self._issue_tracker.create_issue(
+                    issue_title,
+                    body,
+                    labels=label_list,
+                )
+                if ref.url and "/issues/" in ref.url:
+                    return int(ref.url.rsplit("/issues/", 1)[1])
+                if ref.issue_id:
+                    try:
+                        return int(ref.issue_id)
+                    except (ValueError, TypeError):
+                        pass
+                logger.warning("Could not parse creative issue number from ref: %s", ref)
+                return None
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to create creative issue via tracker: %s", exc)
+                return None
+
+        # Fallback: direct gh CLI call (used when no issue tracker is injected)
+        labels_str = ",".join(label_list)
         try:
             result = subprocess.run(
                 [
                     "gh", "issue", "create",
                     "--repo", _REPO,
                     "--title", issue_title,
-                    "--body", "\n".join(body_lines),
-                    "--label", labels,
+                    "--body", body,
+                    "--label", labels_str,
                 ],
                 capture_output=True,
                 text=True,

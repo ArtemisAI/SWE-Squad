@@ -1,0 +1,31 @@
+# =============================================================================
+# SWE-Squad Memory Worker — Dockerfile
+# Runs the claude-mem worker service with Supabase backend
+# =============================================================================
+
+FROM oven/bun:1.1-slim AS base
+WORKDIR /app
+
+# Install Node.js for claude-mem compatibility
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy and install dependencies
+COPY package.json bun.lockb* ./
+RUN bun install --frozen-lockfile 2>/dev/null || bun install
+
+# Copy source
+COPY src/ src/
+COPY tsconfig.json ./
+
+# Build
+RUN bun run build 2>/dev/null || echo "Build step skipped — will run via tsx"
+
+# Data directory
+RUN mkdir -p /data/claude-mem
+
+EXPOSE 37777
+
+# Start the memory worker service
+CMD ["bun", "run", "start"]

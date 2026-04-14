@@ -27,6 +27,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from src.swe_team.cost_tracker import BudgetPolicy
+
 logger = logging.getLogger(__name__)
 
 
@@ -58,6 +60,8 @@ class GuardrailHealth:
     throttle_multiplier: float = 1.0
     queue_depth: int = 0
     dead_letter_count: int = 0
+    budget_status: str = "ok"         # "ok", "warning", "hard_stop", or "unconfigured"
+    budget_percent_used: float = 0.0
 
 
 class GuardrailsCoordinator:
@@ -65,23 +69,75 @@ class GuardrailsCoordinator:
 
     Evaluates gates in strict priority order:
     1. Circuit breaker (hard block if paused — system is unhealthy)
-    2. Usage governor (quota/concurrency limits)
-    3. Stability gate (bug count thresholds)
-    4. Throttle (time/capacity/demand adjustments)
+    2. Budget gate (hard-stop if dollar budget exceeded — #347)
+    3. Usage governor (quota/concurrency limits)
+    4. Stability gate (bug count thresholds)
+    5. Throttle (time/capacity/demand adjustments)
 
     Each gate is optional — if not set, it's skipped. This allows
     incremental adoption: start with just circuit breaker, add gates
     as they become available.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, config: Optional[Any] = None) -> None:
         self._circuit_breaker: Any = None
+        self._team_circuit_breakers: Dict[str, Any] = {}
         self._stability_gate: Any = None
         self._usage_governor: Any = None
         self._throttle_policy: Any = None
         self._queued_dispatcher: Any = None
+        self._cost_tracker: Any = None   # CostTrackerProvider
+        self._team_id: str = ""          # team scope for budget checks
+        self._team_overrides: Dict[str, Dict[str, Any]] = {}
+        self._global_overrides: Dict[str, Any] = {}
+        self._load_overrides_from_config(config)
 
-    def set_circuit_breaker(self, cb: Any) -> None:
+    def _load_overrides_from_config(self, config: Optional[Any]) -> None:
+        if config is None:
+            return
+        if isinstance(config, dict):
+            cfg = dict(config)
+        else:
+            cfg = {}
+            teams_val = getattr(config, "teams", None)
+            if isinstance(teams_val, dict):
+                cfg["teams"] = teams_val
+            for key in ("budget_daily", "max_concurrent", "circuit_breaker_threshold"):
+                val = getattr(config, key, None)
+                if val is not None:
+                    cfg[key] = val
+        teams = cfg.get("teams", {})
+        if isinstance(teams, dict):
+            self._team_overrides = {
+                team_id: team_cfg
+                for team_id, team_cfg in teams.items()
+                if isinstance(team_cfg, dict)
+            }
+        for key in ("budget_daily", "max_concurrent", "circuit_breaker_threshold"):
+            if key in cfg:
+                self._global_overrides[key] = cfg[key]
+
+    def _get_effective_overrides(self, team_id: str) -> Dict[str, Any]:
+        team_cfg = self._team_overrides.get(team_id, {})
+        return {
+            "budget_daily": team_cfg.get(
+                "budget_daily",
+                self._global_overrides.get("budget_daily"),
+            ),
+            "max_concurrent": team_cfg.get(
+                "max_concurrent",
+                self._global_overrides.get("max_concurrent"),
+            ),
+            "circuit_breaker_threshold": team_cfg.get(
+                "circuit_breaker_threshold",
+                self._global_overrides.get("circuit_breaker_threshold"),
+            ),
+        }
+
+    def set_circuit_breaker(self, cb: Any, team_id: str = "") -> None:
+        if team_id:
+            self._team_circuit_breakers[team_id] = cb
+            return
         self._circuit_breaker = cb
 
     def set_stability_gate(self, gate: Any) -> None:
@@ -96,45 +152,139 @@ class GuardrailsCoordinator:
     def set_queued_dispatcher(self, dispatcher: Any) -> None:
         self._queued_dispatcher = dispatcher
 
-    def can_proceed(
+    def set_cost_tracker(self, tracker: Any, team_id: str = "") -> None:
+        """Attach a CostTrackerProvider for budget-gate enforcement."""
+        self._cost_tracker = tracker
+        self._team_id = team_id
+
+    def _apply_team_budget_override(self, team_id: str, overrides: Dict[str, Any]) -> None:
+        if (
+            self._cost_tracker is None
+            or not team_id
+            or "budget_daily" not in overrides
+            or overrides["budget_daily"] is None
+            or not hasattr(self._cost_tracker, "set_budget_policy")
+        ):
+            return
+        policy = BudgetPolicy(team_id=team_id)
+        if hasattr(self._cost_tracker, "get_budget_policy"):
+            try:
+                policy = self._cost_tracker.get_budget_policy(team_id)
+            except Exception:
+                policy = BudgetPolicy(team_id=team_id)
+        try:
+            policy.daily_budget_cents = int(float(overrides["budget_daily"]) * 100)
+            self._cost_tracker.set_budget_policy(policy)
+        except Exception as exc:
+            logger.warning("Failed applying team budget override for %s: %s", team_id, exc)
+
+    @staticmethod
+    def _get_max_agents(decision: Any) -> int:
+        max_agents = getattr(decision, "max_agents", None)
+        if max_agents is None:
+            max_agents = getattr(decision, "max_parallel_agents", 0)
+        return int(max_agents)
+
+    @staticmethod
+    def _safe_float(value: Any) -> Optional[float]:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _safe_int(value: Any) -> Optional[int]:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def evaluate(
         self,
         task_type: str = "investigate",
         ticket_severity: str = "MEDIUM",
         current_agents: int = 0,
+        team_id: Optional[str] = None,
     ) -> GuardrailDecision:
-        """Evaluate all guardrails and return a unified decision.
+        active_team_id = team_id or self._team_id
+        overrides = self._get_effective_overrides(active_team_id)
+        self._apply_team_budget_override(active_team_id, overrides)
+        circuit_breaker = (
+            self._team_circuit_breakers.get(active_team_id) if active_team_id else None
+        ) or self._circuit_breaker
 
-        Parameters
-        ----------
-        task_type:
-            "investigate", "develop", "triage", "deploy"
-        ticket_severity:
-            "CRITICAL", "HIGH", "MEDIUM", "LOW"
-        current_agents:
-            Number of agents currently running.
-
-        Returns
-        -------
-        GuardrailDecision with allowed=True/False and which gate blocked.
-        """
         evaluated = []
 
         # ── Gate 1: Circuit Breaker ────────────────────────────────
-        if self._circuit_breaker is not None:
+        if circuit_breaker is not None:
             evaluated.append("circuit_breaker")
-            if self._circuit_breaker.is_paused:
+            if circuit_breaker.is_paused:
                 return GuardrailDecision(
                     allowed=False,
-                    reason=f"Circuit breaker paused (failure rate {self._circuit_breaker.failure_rate:.0%})",
+                    reason=f"Circuit breaker paused (failure rate {circuit_breaker.failure_rate:.0%})",
                     gate="circuit_breaker",
                     details={
-                        "failure_rate": self._circuit_breaker.failure_rate,
-                        "paused_until": getattr(self._circuit_breaker, "_paused_until", None),
+                        "failure_rate": circuit_breaker.failure_rate,
+                        "paused_until": getattr(circuit_breaker, "_paused_until", None),
+                    },
+                    evaluated_gates=evaluated,
+                )
+            threshold = overrides.get("circuit_breaker_threshold")
+            threshold_value = self._safe_float(threshold)
+            if threshold_value is not None and circuit_breaker.failure_rate >= threshold_value:
+                return GuardrailDecision(
+                    allowed=False,
+                    reason=(
+                        "Circuit breaker threshold exceeded "
+                        f"({circuit_breaker.failure_rate:.0%} >= {threshold_value:.0%})"
+                    ),
+                    gate="circuit_breaker",
+                    details={
+                        "failure_rate": circuit_breaker.failure_rate,
+                        "threshold": threshold_value,
                     },
                     evaluated_gates=evaluated,
                 )
 
-        # ── Gate 2: Usage Governor ─────────────────────────────────
+        # ── Gate 2: Budget Gate ────────────────────────────────────
+        if self._cost_tracker is not None and active_team_id:
+            evaluated.append("budget_gate")
+            try:
+                budget_status = self._cost_tracker.check_budget(active_team_id)
+                if budget_status.is_over_budget:
+                    return GuardrailDecision(
+                        allowed=False,
+                        reason=(
+                            f"Budget hard-stop: {budget_status.percent_used:.1f}% of budget used "
+                            f"(daily ${budget_status.daily_spent / 100:.2f}/"
+                            f"${budget_status.daily_limit / 100:.2f}, "
+                            f"monthly ${budget_status.monthly_spent / 100:.2f}/"
+                            f"${budget_status.monthly_limit / 100:.2f})"
+                        ),
+                        gate="budget_gate",
+                        details={
+                            "status": budget_status.status,
+                            "percent_used": budget_status.percent_used,
+                            "daily_spent_cents": budget_status.daily_spent,
+                            "daily_limit_cents": budget_status.daily_limit,
+                            "monthly_spent_cents": budget_status.monthly_spent,
+                            "monthly_limit_cents": budget_status.monthly_limit,
+                        },
+                        evaluated_gates=evaluated,
+                    )
+                if budget_status.is_warning:
+                    logger.warning(
+                        "Budget warning: team=%s %.1f%% of budget used "
+                        "(daily $%.2f/$%.2f)",
+                        active_team_id,
+                        budget_status.percent_used,
+                        budget_status.daily_spent / 100,
+                        budget_status.daily_limit / 100,
+                    )
+            except Exception as exc:
+                logger.warning("Budget gate check failed: %s — failing open", exc)
+
+        # ── Gate 3: Usage Governor ─────────────────────────────────
         if self._usage_governor is not None:
             evaluated.append("usage_governor")
             try:
@@ -145,7 +295,7 @@ class GuardrailsCoordinator:
                         reason=f"Usage governor: new work blocked ({decision.audit_trail})",
                         gate="usage_governor",
                         details={
-                            "max_agents": decision.max_agents,
+                            "max_agents": self._get_max_agents(decision),
                             "priority_floor": decision.priority_floor,
                             "audit_trail": decision.audit_trail,
                         },
@@ -165,18 +315,23 @@ class GuardrailsCoordinator:
                         evaluated_gates=evaluated,
                     )
                 # Check agent count
-                if current_agents >= decision.max_agents:
+                max_agents = self._get_max_agents(decision)
+                max_concurrent_override = overrides.get("max_concurrent")
+                max_concurrent = self._safe_int(max_concurrent_override)
+                if max_concurrent is not None:
+                    max_agents = min(max_agents, max_concurrent)
+                if current_agents >= max_agents:
                     return GuardrailDecision(
                         allowed=False,
-                        reason=f"Usage governor: {current_agents} agents running (max {decision.max_agents})",
+                        reason=f"Usage governor: {current_agents} agents running (max {max_agents})",
                         gate="usage_governor",
-                        details={"current": current_agents, "max": decision.max_agents},
+                        details={"current": current_agents, "max": max_agents},
                         evaluated_gates=evaluated,
                     )
             except Exception as exc:
                 logger.warning("Usage governor check failed: %s — failing open for now", exc)
 
-        # ── Gate 3: Stability Gate ─────────────────────────────────
+        # ── Gate 4: Stability Gate ─────────────────────────────────
         if self._stability_gate is not None and task_type in ("deploy", "creative"):
             evaluated.append("stability_gate")
             try:
@@ -197,7 +352,7 @@ class GuardrailsCoordinator:
             except Exception as exc:
                 logger.warning("Stability gate check failed: %s", exc)
 
-        # ── Gate 4: Throttle ───────────────────────────────────────
+        # ── Gate 5: Throttle ───────────────────────────────────────
         if self._throttle_policy is not None:
             evaluated.append("throttle")
             # Throttle adjusts limits but doesn't hard-block; it's informational
@@ -211,19 +366,46 @@ class GuardrailsCoordinator:
             evaluated_gates=evaluated,
         )
 
-    def health(self) -> GuardrailHealth:
+    def can_proceed(
+        self,
+        task_type: str = "investigate",
+        ticket_severity: str = "MEDIUM",
+        current_agents: int = 0,
+        team_id: Optional[str] = None,
+    ) -> GuardrailDecision:
+        """Backward-compatible wrapper around evaluate()."""
+        return self.evaluate(
+            task_type=task_type,
+            ticket_severity=ticket_severity,
+            current_agents=current_agents,
+            team_id=team_id,
+        )
+
+    def health(self, team_id: Optional[str] = None) -> GuardrailHealth:
         """Return a health snapshot of all guardrail components."""
         h = GuardrailHealth()
+        active_team_id = team_id or self._team_id
+        circuit_breaker = (
+            self._team_circuit_breakers.get(active_team_id) if active_team_id else None
+        ) or self._circuit_breaker
 
-        if self._circuit_breaker is not None:
-            h.circuit_breaker_paused = self._circuit_breaker.is_paused
-            h.circuit_breaker_failure_rate = self._circuit_breaker.failure_rate
+        if circuit_breaker is not None:
+            h.circuit_breaker_paused = circuit_breaker.is_paused
+            h.circuit_breaker_failure_rate = circuit_breaker.failure_rate
 
         if self._usage_governor is not None:
             try:
                 decision = self._usage_governor.get_concurrency_decision()
                 h.governor_allow_new_work = decision.allow_new_work
-                h.governor_max_agents = decision.max_agents
+                h.governor_max_agents = self._get_max_agents(decision)
+                overrides = self._get_effective_overrides(active_team_id)
+                max_concurrent_override = overrides.get("max_concurrent")
+                max_concurrent = self._safe_int(max_concurrent_override)
+                if max_concurrent is not None:
+                    h.governor_max_agents = min(
+                        h.governor_max_agents,
+                        max_concurrent,
+                    )
             except Exception:
                 pass
 
@@ -241,5 +423,16 @@ class GuardrailsCoordinator:
                 h.dead_letter_count = qh.get("dead_letter_count", 0)
             except Exception:
                 pass
+
+        if self._cost_tracker is not None and active_team_id:
+            self._apply_team_budget_override(active_team_id, self._get_effective_overrides(active_team_id))
+            try:
+                budget = self._cost_tracker.check_budget(active_team_id)
+                h.budget_status = budget.status
+                h.budget_percent_used = budget.percent_used
+            except Exception:
+                h.budget_status = "error"
+        else:
+            h.budget_status = "unconfigured"
 
         return h

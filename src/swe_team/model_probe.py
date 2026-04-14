@@ -57,11 +57,11 @@ _EMBEDDING_FALLBACKS = [
     "qwen3-embedding",   # fallback
 ]
 _EXTRACTION_FALLBACKS = [
-    "deepseek-v3.1:671b-cloud",   # primary — reliable, strong reasoning
-    "gemini-2.5-flash-thinking",  # fallback
-    "qwen3-coder:30b",            # code-aware fallback
-    "deepseek-r1:14b",            # strong reasoning fallback
-    "qwen3:8b",                   # lightweight last resort
+    "deepseek-v3.1:671b-cloud",   # primary - reliable, strong reasoning
+    "gemini-2.5-flash",           # fast, stable fallback
+    "deepseek-v3.2:cloud",        # newer deepseek variant
+    "qwen3-coder-next:cloud",     # updated naming
+    "gemini-3-flash-preview",     # fast preview model
 ]
 _T1_FALLBACKS = [                 # cheap/fast tasks via BASE_LLM proxy
     "gemini-2.5-flash-thinking",
@@ -125,7 +125,7 @@ def probe_embedding_model(
         return False
     try:
         from openai import OpenAI
-        client = OpenAI(base_url=url, api_key=key, timeout=10, max_retries=0)
+        client = OpenAI(base_url=url, api_key=key, timeout=30, max_retries=0)
         resp = client.embeddings.create(model=model, input="probe")
         ok = bool(resp.data and resp.data[0].embedding)
         if not ok:
@@ -156,7 +156,7 @@ def probe_chat_model(
         return False
     try:
         from openai import OpenAI
-        client = OpenAI(base_url=url, api_key=key, timeout=10, max_retries=0)
+        client = OpenAI(base_url=url, api_key=key, timeout=30, max_retries=0)
         resp = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": "ping"}],

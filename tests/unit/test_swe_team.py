@@ -17,7 +17,7 @@ import tempfile
 import threading
 import urllib.error
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -281,7 +281,8 @@ class TestLoadConfig:
         ) as f:
             f.write("enabled: true\n")
             f.flush()
-            with patch.dict(os.environ, {"SWE_TEAM_CONFIG": f.name}):
+            with patch.dict(os.environ, {"SWE_TEAM_CONFIG": f.name}, clear=False):
+                os.environ.pop("SWE_TEAM_ENABLED", None)
                 cfg = load_config()
         os.unlink(f.name)
         assert cfg.enabled is True
@@ -626,6 +627,140 @@ class TestTriageAgent:
         assert len(events) == 1
         assert events[0].event == SWEEventType.TRIAGE_COMPLETE
 
+    def test_hitl_captcha_ticket(self):
+        """Tickets mentioning CAPTCHA are flagged for human intervention."""
+        ticket = SWETicket(
+            ticket_id="hitl-captcha-001",
+            title="CAPTCHA blocking hard apply — no retry",
+            severity=TicketSeverity.HIGH,
+            status=TicketStatus.OPEN,
+            description="reCAPTCHA is blocking the application submission.",
+            source_module="easy_apply",
+        )
+        agent = TriageAgent(self._make_config())
+        result = agent.triage(ticket)
+        assert result.metadata.get("needs_hitl")
+        assert result.assigned_to.startswith("human:")
+
+    def test_hitl_already_flagged_in_metadata(self):
+        """Tickets already flagged needs_hitl in metadata are routed to human."""
+        ticket = SWETicket(
+            ticket_id="hitl-meta-001",
+            title="Some previously escalated issue",
+            severity=TicketSeverity.HIGH,
+            status=TicketStatus.OPEN,
+            description="Normal description",
+            source_module="unknown",
+            metadata={"needs_hitl": True, "hitl_reason": "Previously escalated"},
+        )
+        agent = TriageAgent(self._make_config())
+        result = agent.triage(ticket)
+        assert result.metadata.get("needs_hitl")
+        assert result.assigned_to.startswith("human:")
+
+    def test_hitl_chronic_failure(self):
+        """Tickets with >= 3 consecutive failed attempts are escalated to human."""
+        ticket = SWETicket(
+            ticket_id="hitl-chronic-001",
+            title="Recurring fix failure",
+            severity=TicketSeverity.HIGH,
+            status=TicketStatus.OPEN,
+            description="Some bug",
+            source_module="unknown",
+            metadata={
+                "attempts": [
+                    {"result": "fail", "error": "timeout"},
+                    {"result": "fail", "error": "timeout"},
+                    {"result": "fail", "error": "timeout"},
+                ]
+            },
+        )
+        agent = TriageAgent(self._make_config())
+        result = agent.triage(ticket)
+        assert result.metadata.get("needs_hitl")
+        assert result.assigned_to.startswith("human:")
+
+    def test_normal_ticket_not_hitl(self):
+        """Normal bug tickets are routed to an investigator, not flagged HITL."""
+        ticket = SWETicket(
+            ticket_id="normal-001",
+            title="KeyError in data processor",
+            severity=TicketSeverity.HIGH,
+            status=TicketStatus.OPEN,
+            description="Traceback shows KeyError at line 42",
+            source_module="database",
+        )
+        agent = TriageAgent(self._make_config())
+        result = agent.triage(ticket)
+        assert not result.metadata.get("needs_hitl")
+        assert not result.assigned_to.startswith("human:")
+
+    def test_hitl_api_key_401(self):
+        """API key 401 errors are escalated to human for credential rotation."""
+        ticket = SWETicket(
+            ticket_id="hitl-401-001",
+            title="LLM proxy API keys all returning 401 — pipeline broken",
+            severity=TicketSeverity.HIGH,
+            status=TicketStatus.OPEN,
+            description="All requests to proxy return 401 Unauthorized. API keys expired.",
+            source_module="a2a",
+        )
+        agent = TriageAgent(self._make_config())
+        result = agent.triage(ticket)
+        assert result.metadata.get("needs_hitl")
+        assert result.assigned_to.startswith("human:")
+
+    def test_classify_bug_with_error_log(self):
+        """Tickets with an error log are classified as BUG."""
+        from src.swe_team.models import TicketType
+        config = self._make_config()
+        ticket = SWETicket(
+            ticket_id="type-bug-001",
+            title="Something broke",
+            description="",
+            severity=TicketSeverity.HIGH,
+            status=TicketStatus.OPEN,
+            error_log="Traceback (most recent call last):\n  File 'app.py'\nKeyError: 'user_id'",
+        )
+        agent = TriageAgent(config)
+        result = agent.triage(ticket)
+        assert result.ticket_type == TicketType.BUG, f"Expected BUG, got {result.ticket_type}"
+
+    def test_classify_feature_request(self):
+        """Tickets asking to add a feature are classified as FEATURE."""
+        from src.swe_team.models import TicketType
+        config = self._make_config()
+        ticket = SWETicket(
+            ticket_id="type-feat-001",
+            title="Add LinkedIn messaging automation",
+            severity=TicketSeverity.MEDIUM,
+            status=TicketStatus.OPEN,
+            description="Please add ability to send connection requests automatically.",
+        )
+        agent = TriageAgent(config)
+        result = agent.triage(ticket)
+        assert result.ticket_type == TicketType.FEATURE, f"Expected FEATURE, got {result.ticket_type}"
+
+    def test_classify_infrastructure(self):
+        """Infrastructure/deploy tasks are classified as INFRASTRUCTURE."""
+        from src.swe_team.models import TicketType
+        config = self._make_config()
+        ticket = SWETicket(
+            ticket_id="type-infra-001",
+            title="Deploy new VM for browser automation",
+            severity=TicketSeverity.MEDIUM,
+            status=TicketStatus.OPEN,
+            description="Set up new VM with docker container for scraping.",
+        )
+        agent = TriageAgent(config)
+        result = agent.triage(ticket)
+        assert result.ticket_type == TicketType.INFRASTRUCTURE, f"Expected INFRASTRUCTURE, got {result.ticket_type}"
+
+    def test_needs_info_status_exists(self):
+        """NEEDS_INFO and BLOCKED are valid ticket statuses."""
+        assert TicketStatus.NEEDS_INFO.value == "needs_info"
+        assert TicketStatus.BLOCKED.value == "blocked"
+
 
 # ======================================================================
 # Ralph-Wiggum Gate
@@ -686,9 +821,8 @@ class TestRalphWiggumGate:
         ticket = SWETicket(
             title="resolved", description="x",
             severity=TicketSeverity.CRITICAL,
-            metadata={"resolution_note": "manual_override"},
         )
-        ticket.transition(TicketStatus.RESOLVED, force=True)
+        ticket.status = TicketStatus.RESOLVED
         report = gate.evaluate([ticket], ci_green=True, failing_tests=0)
         assert report.verdict == GovernanceVerdict.PASS
 
@@ -861,7 +995,7 @@ class TestTicketStore:
             store = TicketStore(path)
             t1 = SWETicket(title="open", description="x")
             t2 = SWETicket(title="resolved", description="y")
-            t2.transition(TicketStatus.RESOLVED, force=True)
+            t2.status = TicketStatus.RESOLVED
             store.add(t1)
             store.add(t2)
             assert len(store.list_open()) == 1
@@ -970,7 +1104,7 @@ class TestEmbeddings:
                 patch.dict(
                     os.environ,
                     {
-                        "BASE_LLM_API_URL": "http://llm-proxy.example.com/v1/",
+                        "BASE_LLM_API_URL": "http://api.example.com/v1/",
                         "BASE_LLM_API_KEY": "k",
                         "EXTRACTION_MODEL": "gemini-3-flash",
                     },
@@ -980,9 +1114,12 @@ class TestEmbeddings:
             ):
                 result = extract_memory_facts(ticket)
         assert result == "Root cause: upstream timeout"
-        call_kwargs = mock_openai.call_args.kwargs if mock_openai.call_args else {}
-        assert call_kwargs.get("base_url") == "http://llm-proxy.example.com/v1/"
-        assert call_kwargs.get("api_key") == "k"
+        mock_openai.assert_called_once_with(
+            base_url="http://api.example.com/v1/",
+            api_key="k",
+            timeout=30.0,
+            max_retries=2,
+        )
         extraction_model_reads = [
             call.args for call in wrapped_getenv.call_args_list if call.args and call.args[0] == "EXTRACTION_MODEL"
         ]
@@ -1215,11 +1352,17 @@ class TestSupabaseSemanticMemory:
 class TestSupabaseKeepAlive:
     """Tests for SupabaseTicketStore.keep_alive() — prevents free-tier pause."""
 
-    def _make_store(self):
+    def _make_store(self, tmp_path=None):
+        """Create a store with a temporary activity file for isolation."""
+        import tempfile
+        if tmp_path is None:
+            tmp_path = Path(tempfile.mkdtemp())
+        activity_file = tmp_path / "supabase_last_activity.json"
         return SupabaseTicketStore(
             supabase_url="https://example.supabase.co",
             supabase_key="test-key",
             team_id="team-a",
+            activity_file=activity_file,
         )
 
     def test_last_activity_updated_on_request(self):
@@ -1246,8 +1389,10 @@ class TestSupabaseKeepAlive:
         from datetime import datetime, timezone
 
         store = self._make_store()
-        # Activity just happened (default in __init__)
-        store._last_activity = datetime.now(timezone.utc)
+        # Persist a recent activity timestamp to disk
+        now = datetime.now(timezone.utc)
+        store._last_activity = now
+        store._save_last_activity(now)
 
         with patch.object(store, "_request") as mock_request:
             result = store.keep_alive(threshold_days=5)
@@ -1261,11 +1406,10 @@ class TestSupabaseKeepAlive:
 
         store = self._make_store()
         stale_time = datetime.now(timezone.utc) - timedelta(days=6)
+        store._last_activity = stale_time
+        store._save_last_activity(stale_time)
 
-        with (
-            patch.object(store, "_load_last_activity", return_value=stale_time),
-            patch.object(store, "_request", return_value=[]) as mock_request,
-        ):
+        with patch.object(store, "_request", return_value=[]) as mock_request:
             result = store.keep_alive(threshold_days=5)
 
         assert result is True
@@ -1281,11 +1425,10 @@ class TestSupabaseKeepAlive:
 
         store = self._make_store()
         stale_time = datetime.now(timezone.utc) - timedelta(days=10)
+        store._last_activity = stale_time
+        store._save_last_activity(stale_time)
 
-        with (
-            patch.object(store, "_load_last_activity", return_value=stale_time),
-            patch.object(store, "_request", side_effect=urllib.error.URLError("timeout")),
-        ):
+        with patch.object(store, "_request", side_effect=urllib.error.URLError("timeout")):
             result = store.keep_alive(threshold_days=5)
 
         assert result is False
@@ -1296,33 +1439,30 @@ class TestSupabaseKeepAlive:
 
         store = self._make_store()
         # Activity 3 days ago — should skip with default (5) but fire with 2
-        recent_time = datetime.now(timezone.utc) - timedelta(days=3)
+        three_days_ago = datetime.now(timezone.utc) - timedelta(days=3)
+        store._last_activity = three_days_ago
+        store._save_last_activity(three_days_ago)
 
-        with (
-            patch.object(store, "_load_last_activity", return_value=recent_time),
-            patch.object(store, "_request", return_value=[]) as mock_request,
-        ):
+        with patch.object(store, "_request", return_value=[]) as mock_request:
             result_skip = store.keep_alive(threshold_days=5)
         assert result_skip is False
         mock_request.assert_not_called()
 
-        with (
-            patch.object(store, "_load_last_activity", return_value=recent_time),
-            patch.object(store, "_request", return_value=[]) as mock_request,
-        ):
+        with patch.object(store, "_request", return_value=[]) as mock_request:
             result_fire = store.keep_alive(threshold_days=2)
         assert result_fire is True
         mock_request.assert_called_once()
 
     def test_last_activity_set_on_init(self):
-        """_last_activity is loaded from persistent storage on construction."""
-        from datetime import datetime, timedelta, timezone
+        """_last_activity should be datetime.min when no activity file exists.
 
-        # With no activity file, _last_activity defaults to datetime.min (UTC)
-        # which ensures keep_alive always fires on first run after a fresh install.
+        With file-based persistence, a fresh store (no activity file) starts
+        with datetime.min so the keepalive fires on the first invocation.
+        """
+        from datetime import datetime, timezone
+
         store = self._make_store()
-        # The loaded value should be a valid UTC datetime
-        assert store._last_activity.tzinfo is not None
+        assert store._last_activity == datetime.min.replace(tzinfo=timezone.utc)
 
 
 class TestRunnerKeepAlive:
@@ -1421,7 +1561,7 @@ class TestNotifier:
             mock_send.assert_not_called()
 
     def test_notify_new_tickets_sends_for_high(self):
-        """HIGH tickets should trigger a Telegram message."""
+        """Only CRITICAL tickets should trigger a Telegram message; HIGH should be silent."""
         from src.swe_team.notifier import notify_new_tickets
 
         high = SWETicket(
@@ -1431,19 +1571,28 @@ class TestNotifier:
         )
         with patch("src.swe_team.notifier._send", return_value=True) as mock_send:
             notify_new_tickets([high])
+            mock_send.assert_not_called()
+
+        critical = SWETicket(
+            title="Scraper crash", description="x",
+            severity=TicketSeverity.CRITICAL, source_module="scraping",
+            assigned_to="browser_investigator",
+        )
+        with patch("src.swe_team.notifier._send", return_value=True) as mock_send:
+            notify_new_tickets([critical])
             mock_send.assert_called_once()
             msg = mock_send.call_args[0][0]
-            assert "HIGH" in msg
+            assert "CRITICAL" in msg
             assert "Scraper crash" in msg
             assert "scraping" in msg
 
     def test_notify_new_tickets_groups_multiple(self):
-        """Multiple tickets should be grouped into a single message."""
+        """Multiple CRITICAL tickets should be grouped into a single message; HIGH is silent."""
         from src.swe_team.notifier import notify_new_tickets
 
         tickets = [
             SWETicket(title="Bug A", description="x", severity=TicketSeverity.CRITICAL),
-            SWETicket(title="Bug B", description="x", severity=TicketSeverity.HIGH),
+            SWETicket(title="Bug B", description="x", severity=TicketSeverity.CRITICAL),
         ]
         with patch("src.swe_team.notifier._send", return_value=True) as mock_send:
             notify_new_tickets(tickets)
@@ -1508,13 +1657,26 @@ class TestNotifier:
                 assert "HIGH" in msg
 
     def test_notify_investigation_summary_sends(self):
-        """Should send an investigation summary when report exists."""
+        """Should send an investigation summary only for CRITICAL tickets."""
         from src.swe_team.notifier import notify_investigation_summary
 
-        ticket = SWETicket(
+        # HIGH ticket should be silent
+        high_ticket = SWETicket(
             title="Scraper crash",
             description="x",
             severity=TicketSeverity.HIGH,
+            source_module="scraping",
+            investigation_report="Root cause: timeout\nDetails...",
+        )
+        with patch("src.swe_team.notifier._send", return_value=True) as mock_send:
+            notify_investigation_summary(high_ticket)
+            mock_send.assert_not_called()
+
+        # CRITICAL ticket should fire
+        ticket = SWETicket(
+            title="Scraper crash",
+            description="x",
+            severity=TicketSeverity.CRITICAL,
             source_module="scraping",
             investigation_report="Root cause: timeout\nDetails...",
         )
@@ -1523,7 +1685,7 @@ class TestNotifier:
             mock_send.assert_called_once()
             msg = mock_send.call_args[0][0]
             assert "Investigation complete" in msg
-            assert "HIGH" in msg
+            assert "CRITICAL" in msg
             assert "Scraper crash" in msg
             assert "Root cause" in msg
 
@@ -1540,13 +1702,13 @@ class TestNotifier:
             mock_send.assert_not_called()
 
     def test_notify_investigation_summary_send_failure(self):
-        """Should attempt sending even if the send helper returns False."""
+        """Should attempt sending for CRITICAL even if the send helper returns False."""
         from src.swe_team.notifier import notify_investigation_summary
 
         ticket = SWETicket(
             title="Scraper crash",
             description="Timeout during job fetch",
-            severity=TicketSeverity.HIGH,
+            severity=TicketSeverity.CRITICAL,
             source_module="scraping",
             investigation_report="Root cause: timeout",
         )
@@ -1567,6 +1729,11 @@ class TestNotifier:
 
 class TestGitHubIntegration:
     """Tests for src.swe_team.github_integration — gh CLI integration."""
+
+    def setup_method(self):
+        """Reset the GitHub CLI circuit breaker before each test to prevent cross-test pollution."""
+        from src.swe_team.github_integration import _reset_github_circuit_breaker_state
+        _reset_github_circuit_breaker_state()
 
     def test_create_issue_skips_low_severity(self):
         """Should return None for LOW/MEDIUM tickets."""
@@ -1591,7 +1758,7 @@ class TestGitHubIntegration:
         ticket = SWETicket(
             title="Scraper crash", description="Something broke",
             severity=TicketSeverity.CRITICAL, source_module="scraping",
-            error_log="ERROR: boom", metadata={"fingerprint": "abc123"},
+            error_log="ERROR: boom", metadata={"fingerprint": "abc123", "repo": "owner/repo"},
         )
         mock_result = type("R", (), {
             "returncode": 0,
@@ -1599,7 +1766,7 @@ class TestGitHubIntegration:
             "stderr": "",
         })()
         with patch("src.swe_team.github_integration.subprocess.run", return_value=mock_result) as mock_run:
-            issue_num = create_github_issue(ticket, repo="example-org/example-repo")
+            issue_num = create_github_issue(ticket)
             assert issue_num == 42
             call_args = mock_run.call_args[0][0]
             assert "gh" in call_args
@@ -1616,7 +1783,10 @@ class TestGitHubIntegration:
         """Should return None when gh fails."""
         from src.swe_team.github_integration import create_github_issue
 
-        ticket = SWETicket(title="crash", description="x", severity=TicketSeverity.HIGH)
+        ticket = SWETicket(
+            title="crash", description="x", severity=TicketSeverity.HIGH,
+            metadata={"repo": "owner/repo"},
+        )
         mock_result = type("R", (), {"returncode": 1, "stdout": "", "stderr": "auth error"})()
         with patch("src.swe_team.github_integration.subprocess.run", return_value=mock_result):
             assert create_github_issue(ticket) is None
@@ -1627,7 +1797,7 @@ class TestGitHubIntegration:
 
         mock_result = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
         with patch("src.swe_team.github_integration.subprocess.run", return_value=mock_result) as mock_run:
-            result = comment_on_issue(42, "Update: fixed", repo="example-org/example-repo")
+            result = comment_on_issue(42, "Update: fixed", repo="owner/repo")
             assert result is True
             call_args = mock_run.call_args[0][0]
             assert "42" in call_args
@@ -1639,7 +1809,7 @@ class TestGitHubIntegration:
 
         mock_result = type("R", (), {"returncode": 1, "stdout": "", "stderr": "not found"})()
         with patch("src.swe_team.github_integration.subprocess.run", return_value=mock_result):
-            assert comment_on_issue(999, "test") is False
+            assert comment_on_issue(999, "test", repo="owner/repo") is False
 
     def test_find_existing_issue_by_fingerprint(self):
         """Should find issue by fingerprint in body."""
@@ -1708,27 +1878,38 @@ class TestInvestigatorAgent:
         ticket.transition(TicketStatus.TRIAGED)
         ticket.metadata["github_issue"] = 42
 
-        mock_result = type(
-            "R",
-            (),
-            {"returncode": 0, "stdout": "Root cause: X\n", "stderr": "Cost: $0.04"},
-        )()
+        from src.swe_team.providers.coding_engine.base import EngineResult
+        from unittest.mock import MagicMock
+
+        _valid_report = (
+            "Root Cause: A retry loop silently swallowed a timeout from the upstream proxy, "
+            "so the worker emitted incomplete diagnostics and the orchestrator persisted an invalid response.\n\n"
+            "Affected Files: src/swe_team/investigator.py, src/swe_team/developer.py, tests/unit/test_investigator.py\n\n"
+            "Fix Plan: Validate report structure before persistence, reject known Claude error envelopes, "
+            "require minimum report length, and keep sectioned investigation output for downstream automation."
+        )
+
+        mock_engine = MagicMock()
+        mock_engine.run.return_value = EngineResult(
+            stdout=_valid_report + "\n", stderr="Cost: $0.04", returncode=0,
+        )
 
         with (
-            patch("src.swe_team.investigator.subprocess.run", return_value=mock_result) as mock_run,
-            patch("src.swe_team.investigator.notify_investigation_summary") as mock_notify,
-            patch("src.swe_team.investigator.comment_on_issue") as mock_comment,
+            patch("src.swe_team.notifier.notify_investigation_summary") as mock_notify,
+            patch("src.swe_team.github_integration.comment_on_issue") as mock_comment,
+            patch("src.swe_team.github_integration.find_comment_by_text", return_value=None),
         ):
-            agent = InvestigatorAgent(program_path=program, claude_path="/usr/bin/claude")
+            agent = InvestigatorAgent(program_path=program, engine=mock_engine)
             result = agent.investigate(ticket)
 
         assert result is True
         assert ticket.status == TicketStatus.INVESTIGATION_COMPLETE
-        assert ticket.investigation_report == "Root cause: X"
+        assert ticket.investigation_report == _valid_report
         assert ticket.metadata["investigation"]["status"] == "complete"
         mock_notify.assert_called_once()
         mock_comment.assert_called_once()
-        assert "claude" in mock_run.call_args[0][0][0]
+        # Verify the engine was called (not subprocess)
+        mock_engine.run.assert_called_once()
 
     def test_investigator_skips_low_severity(self, tmp_path):
         program = tmp_path / "investigate.md"
@@ -1874,6 +2055,31 @@ class TestSWETeamAdapter:
 
         assert result["count"] == 1
 
+    def test_list_actions(self, tmp_path):
+        from src.a2a.adapters.swe_team import SWETeamAdapter
+
+        store = TicketStore(str(tmp_path / "tickets.json"))
+        adapter = SWETeamAdapter(config=SWETeamConfig(), store=store)
+        actions = adapter.list_actions()
+        assert set(actions) == {"monitor_scan", "triage_ticket", "investigate_ticket", "check_stability"}
+
+    def test_unknown_action_lists_available(self, tmp_path):
+        from src.a2a.adapters.swe_team import SWETeamAdapter
+
+        store = TicketStore(str(tmp_path / "tickets.json"))
+        adapter = SWETeamAdapter(config=SWETeamConfig(), store=store)
+        with pytest.raises(ValueError, match="Unknown SWE Team action.*Available"):
+            adapter.handle_action("nonexistent_action", {})
+
+    def test_agent_card_skills_match_dispatch_table(self, tmp_path):
+        from src.a2a.adapters.swe_team import SWETeamAdapter
+
+        store = TicketStore(str(tmp_path / "tickets.json"))
+        adapter = SWETeamAdapter(config=SWETeamConfig(), store=store)
+        card_skill_ids = {s.id for s in adapter.agent_card().skills}
+        handler_keys = set(adapter.list_actions())
+        assert card_skill_ids == handler_keys
+
     def test_swe_event_to_pipeline_event(self):
         from src.a2a.adapters.swe_team import swe_event_to_pipeline_event
 
@@ -1906,11 +2112,11 @@ class TestCreativeAgent:
 
         store = TicketStore(str(tmp_path / "tickets.json"))
         t1 = SWETicket(title="A", description="x", source_module="scraping")
-        t1.transition(TicketStatus.RESOLVED, force=True)
+        t1.status = TicketStatus.RESOLVED
         t2 = SWETicket(title="B", description="x", source_module="scraping")
-        t2.transition(TicketStatus.RESOLVED, force=True)
+        t2.status = TicketStatus.RESOLVED
         t3 = SWETicket(title="C", description="x", source_module="auth")
-        t3.transition(TicketStatus.RESOLVED, force=True)
+        t3.status = TicketStatus.RESOLVED
         store.add(t1)
         store.add(t2)
         store.add(t3)
@@ -2154,24 +2360,25 @@ class TestFetchGithubTickets:
 
         with patch("scripts.ops.swe_team_runner.subprocess.run", return_value=mock_result):
             tickets = runner.fetch_github_tickets(
-                store, github_account="test-bot", repos=["test-org/test-repo"]
+                store, github_account="test-bot", repos=["owner/repo"],
             )
 
         assert len(tickets) == 1
         assert tickets[0].title == "[GH-42] Fix scraper timeout"
         assert tickets[0].severity == TicketSeverity.HIGH
         assert tickets[0].metadata["github_issue"] == 42
-        assert tickets[0].metadata["fingerprint"] == "gh-issue-test-org/test-repo-42"
+        assert tickets[0].metadata["fingerprint"] == "gh-issue-owner/repo-42"
+        assert tickets[0].metadata["repo"] == "owner/repo"
 
     def test_fetch_github_tickets_dedup(self, tmp_path):
         import scripts.ops.swe_team_runner as runner
 
         store = TicketStore(str(tmp_path / "tickets.json"))
-        # Pre-populate a ticket with the same fingerprint
+        # Pre-populate a ticket with the new repo-scoped fingerprint
         existing = SWETicket(
             title="[GH-42] existing",
             description="already tracked",
-            metadata={"fingerprint": "gh-issue-test-org/test-repo-42"},
+            metadata={"fingerprint": "gh-issue-owner/repo-42"},
         )
         store.add(existing)
 
@@ -2182,7 +2389,7 @@ class TestFetchGithubTickets:
 
         with patch("scripts.ops.swe_team_runner.subprocess.run", return_value=mock_result):
             tickets = runner.fetch_github_tickets(
-                store, github_account="test-bot", repos=["test-org/test-repo"]
+                store, github_account="test-bot", repos=["owner/repo"],
             )
 
         assert len(tickets) == 0
@@ -2195,7 +2402,7 @@ class TestFetchGithubTickets:
 
         with patch("scripts.ops.swe_team_runner.subprocess.run", return_value=mock_result):
             tickets = runner.fetch_github_tickets(
-                store, github_account="test-bot", repos=["test-org/test-repo"]
+                store, github_account="test-bot", repos=["owner/repo"],
             )
 
         assert tickets == []
@@ -2207,7 +2414,7 @@ class TestFetchGithubTickets:
 
         with patch("scripts.ops.swe_team_runner.subprocess.run", side_effect=Exception("network")):
             tickets = runner.fetch_github_tickets(
-                store, github_account="test-bot", repos=["test-org/test-repo"]
+                store, github_account="test-bot", repos=["owner/repo"],
             )
 
         assert tickets == []
@@ -2223,7 +2430,7 @@ class TestFetchGithubTickets:
 
         with patch("scripts.ops.swe_team_runner.subprocess.run", return_value=mock_result):
             tickets = runner.fetch_github_tickets(
-                store, github_account="test-bot", repos=["test-org/test-repo"]
+                store, github_account="test-bot", repos=["owner/repo"],
             )
 
         assert len(tickets) == 1
@@ -2273,11 +2480,11 @@ class TestListRecentlyResolved:
         from datetime import datetime, timezone
 
         t1 = SWETicket(title="Bug A", description="x")
-        t1.transition(TicketStatus.RESOLVED, force=True)
+        t1.status = TicketStatus.RESOLVED
         store.add(t1)
 
         t2 = SWETicket(title="Bug B", description="y")
-        t2.transition(TicketStatus.RESOLVED, force=True)
+        t2.status = TicketStatus.RESOLVED
         store.add(t2)
 
         # An open ticket should NOT appear
@@ -2295,7 +2502,7 @@ class TestListRecentlyResolved:
         from datetime import datetime, timedelta, timezone
 
         t = SWETicket(title="Old bug", description="x")
-        t.transition(TicketStatus.RESOLVED, force=True)
+        t.status = TicketStatus.RESOLVED
         # Backdate updated_at to 48 hours ago
         t.updated_at = (
             datetime.now(timezone.utc) - timedelta(hours=48)
@@ -2371,7 +2578,7 @@ class TestCheckRegressions:
             proposed_fix="Fix the config",
             metadata={"fingerprint": "abc123"},
         )
-        parent.transition(TicketStatus.RESOLVED, force=True)
+        parent.status = TicketStatus.RESOLVED
         store.add(parent)
 
         # Mock a monitor that finds the same fingerprint in fresh scan
@@ -2406,7 +2613,7 @@ class TestCheckRegressions:
             severity=TicketSeverity.HIGH,
             metadata={"fingerprint": "def456"},
         )
-        parent.transition(TicketStatus.RESOLVED, force=True)
+        parent.status = TicketStatus.RESOLVED
         store.add(parent)
 
         config = SWETeamConfig(regression_window_hours=24)
@@ -2433,7 +2640,7 @@ class TestCheckRegressions:
             proposed_fix="Add connection timeout and pool recycling",
             metadata={"fingerprint": "db-fp-001"},
         )
-        parent.transition(TicketStatus.RESOLVED, force=True)
+        parent.status = TicketStatus.RESOLVED
         store.add(parent)
 
         config = SWETeamConfig(regression_window_hours=24)
@@ -2468,7 +2675,7 @@ class TestCheckRegressions:
                 },
             },
         )
-        parent.transition(TicketStatus.RESOLVED, force=True)
+        parent.status = TicketStatus.RESOLVED
         store.add(parent)
 
         config = SWETeamConfig(regression_window_hours=24)
@@ -2500,7 +2707,7 @@ class TestCheckRegressions:
             severity=TicketSeverity.MEDIUM,
             metadata={"fingerprint": "fp-below-3"},
         )
-        parent.transition(TicketStatus.RESOLVED, force=True)
+        parent.status = TicketStatus.RESOLVED
         store.add(parent)
 
         config = SWETeamConfig(regression_window_hours=24)
@@ -2548,7 +2755,7 @@ class TestRegressionRouting:
         assert model == "opus"
 
     def test_non_regression_medium_uses_sonnet(self):
-        """Normal MEDIUM tickets use sonnet."""
+        """Normal MEDIUM tickets route to Sonnet via Claude Code CLI — never Gemini."""
         investigator = InvestigatorAgent(timeout_seconds=5)
         ticket = SWETicket(
             title="Normal bug",
@@ -2557,6 +2764,7 @@ class TestRegressionRouting:
         )
         model = investigator._select_model(ticket)
         assert model == "sonnet"
+        assert model != "gemini"
 
     def test_regression_context_in_prompt(self):
         """Regression tickets include regression context in the prompt."""
@@ -2790,7 +2998,7 @@ class TestDaemonSignalHandling:
 
         call_count = {"n": 0}
 
-        def mock_run_cycle(cfg, st, dry_run=False, creative=False):
+        def mock_run_cycle(cfg, st, dry_run=False, creative=False, **kwargs):
             call_count["n"] += 1
             # Return a minimal result
             return {"gate_verdict": "pass"}
@@ -2828,7 +3036,7 @@ class TestDaemonSignalHandling:
 
         call_count = {"n": 0}
 
-        def mock_run_cycle(cfg, st, dry_run=False, creative=False):
+        def mock_run_cycle(cfg, st, dry_run=False, creative=False, **kwargs):
             call_count["n"] += 1
             if call_count["n"] == 1:
                 raise RuntimeError("Simulated crash")
@@ -2867,7 +3075,7 @@ class TestDaemonSignalHandling:
 
         call_count = {"n": 0}
 
-        def mock_run_cycle(cfg, st, dry_run=False, creative=False):
+        def mock_run_cycle(cfg, st, dry_run=False, creative=False, **kwargs):
             call_count["n"] += 1
             return {"gate_verdict": "pass"}
 
@@ -2905,6 +3113,41 @@ class TestDaemonSignalHandling:
         # The formula in main(): max(60, int(config.monitor.scan_interval_minutes * 60))
         expected = max(60, int(15 * 60))
         assert expected == 900
+
+    def test_daemon_reloads_config_each_cycle(self, tmp_path):
+        """Daemon reloads config per cycle so runtime setting toggles are respected."""
+        import scripts.ops.swe_team_runner as runner
+
+        initial_config = SWETeamConfig(enabled=True, monitor=MonitorConfig(enabled=True))
+        store = TicketStore(str(tmp_path / "tickets.json"))
+        status_path = str(tmp_path / "status.json")
+
+        seen_monitor_enabled: list[bool] = []
+
+        def mock_run_cycle(cfg, st, dry_run=False, creative=False, **kwargs):
+            seen_monitor_enabled.append(bool(cfg.monitor.enabled))
+            return {"gate_verdict": "pass"}
+
+        reloaded_a = SWETeamConfig(enabled=True, monitor=MonitorConfig(enabled=True))
+        reloaded_b = SWETeamConfig(enabled=True, monitor=MonitorConfig(enabled=False))
+
+        with (
+            patch.object(runner, "load_config", side_effect=[reloaded_a, reloaded_b]) as load_mock,
+            patch.object(runner, "run_cycle", side_effect=mock_run_cycle),
+            patch.object(threading.Event, "wait", return_value=False),
+        ):
+            runner.daemon_loop(
+                initial_config,
+                store,
+                interval_seconds=1,
+                dry_run=True,
+                status_path=status_path,
+                max_cycles=2,
+                config_path=str(tmp_path / "config.yaml"),
+            )
+
+        assert load_mock.call_count == 2
+        assert seen_monitor_enabled == [True, False]
 
 
 # ======================================================================
@@ -3003,13 +3246,162 @@ class TestDeveloperTestExecution:
 
 
 # ======================================================================
+# Developer Branch Push on Failure (issue #645)
+# ======================================================================
+
+class TestDeveloperBranchPushOnFailure:
+    """Verify that partial work branches are pushed before escalation."""
+
+    def test_branch_pushed_on_all_attempts_exhausted(self, tmp_path):
+        """When all dev attempts fail, the branch should still be pushed to origin."""
+        program = tmp_path / "fix.md"
+        program.write_text("Fix {ticket_id}: {investigation_report}")
+
+        ticket = SWETicket(
+            title="Lost branch bug",
+            description="Test",
+            severity=TicketSeverity.HIGH,
+            source_module="test_mod",
+            investigation_report="Root cause found",
+        )
+        ticket.transition(TicketStatus.INVESTIGATION_COMPLETE)
+        ticket.transition(TicketStatus.IN_DEVELOPMENT)
+
+        dev = DeveloperAgent(
+            repo_root=tmp_path,
+            program_path=program,
+            max_attempts=2,
+        )
+        branch = "swe-fix/ticket-" + ticket.ticket_id
+
+        with patch.object(dev, "_git", side_effect=RuntimeError("CLI timeout")), \
+             patch.object(dev, "_build_prompt", return_value="fix this"), \
+             patch.object(dev, "_select_model", return_value="sonnet"), \
+             patch.object(dev, "_send_telegram"), \
+             patch.object(dev, "_push_branch_best_effort") as mock_push, \
+             patch("src.swe_team.developer.enforce_code_generation_boundary"), \
+             patch.object(dev._cooldown_manager, "should_use_engine", return_value=True):
+
+            result = dev._fix_loop(ticket, branch, [])
+
+        assert result is False
+        mock_push.assert_called_once_with(branch, ticket.ticket_id)
+
+    def test_branch_pushed_on_rate_limit_escalation(self, tmp_path):
+        """When rate-limited, the branch should be pushed before raising."""
+        from src.swe_team.rate_limiter import RateLimitExhausted, RateLimitCooldown
+
+        program = tmp_path / "fix.md"
+        program.write_text("Fix {ticket_id}: {investigation_report}")
+
+        ticket = SWETicket(
+            title="Rate limit branch bug",
+            description="Test",
+            severity=TicketSeverity.HIGH,
+            source_module="test_mod",
+            investigation_report="Root cause found",
+        )
+        ticket.transition(TicketStatus.INVESTIGATION_COMPLETE)
+        ticket.transition(TicketStatus.IN_DEVELOPMENT)
+
+        dev = DeveloperAgent(
+            repo_root=tmp_path,
+            program_path=program,
+            max_attempts=3,
+        )
+        branch = "swe-fix/ticket-" + ticket.ticket_id
+
+        call_order = []
+
+        def mock_git(cmd):
+            if "rev-parse" in cmd:
+                return "abc123\n"
+            return ""
+
+        def mock_push_best_effort(b, tid):
+            call_order.append("push")
+            return True
+
+        def backoff_execute_raises(fn, context=None):
+            """Simulate backoff that immediately raises RateLimitExhausted."""
+            try:
+                fn()
+            except RateLimitExhausted:
+                raise
+
+        with patch.object(dev, "_git", side_effect=mock_git), \
+             patch.object(dev, "_build_prompt", return_value="fix this"), \
+             patch.object(dev, "_select_model", return_value="sonnet"), \
+             patch.object(dev, "_run_claude", side_effect=RateLimitExhausted("429")), \
+             patch.object(dev, "_send_telegram"), \
+             patch.object(dev, "_send_rate_limit_alert"), \
+             patch.object(dev, "_push_branch_best_effort", side_effect=mock_push_best_effort), \
+             patch("src.swe_team.developer.enforce_code_generation_boundary"), \
+             patch.object(dev._cooldown_manager, "should_use_engine", return_value=True), \
+             patch.object(dev._cooldown_manager, "mark_failure", return_value={"status": "rate_limited"}), \
+             patch.object(dev._cooldown_manager, "remaining_cooldown_seconds", return_value=120.0), \
+             patch.object(dev, "_try_fallback_agents", return_value=False), \
+             patch.object(dev, "_reset_to"), \
+             patch.object(dev._backoff, "execute", side_effect=backoff_execute_raises):
+
+            with pytest.raises(RateLimitCooldown):
+                dev._fix_loop(ticket, branch, [])
+
+        assert "push" in call_order
+
+    def test_push_failure_does_not_mask_original_error(self, tmp_path):
+        """If the best-effort push fails, it should not mask the original failure."""
+        program = tmp_path / "fix.md"
+        program.write_text("Fix {ticket_id}: {investigation_report}")
+
+        ticket = SWETicket(
+            title="Push failure test",
+            description="Test",
+            severity=TicketSeverity.HIGH,
+            source_module="test_mod",
+            investigation_report="Root cause found",
+        )
+        ticket.transition(TicketStatus.INVESTIGATION_COMPLETE)
+        ticket.transition(TicketStatus.IN_DEVELOPMENT)
+
+        dev = DeveloperAgent(
+            repo_root=tmp_path,
+            program_path=program,
+            max_attempts=1,
+        )
+        branch = "swe-fix/ticket-" + ticket.ticket_id
+
+        call_count = {"push": 0}
+
+        def mock_git(cmd):
+            if "push" in cmd:
+                call_count["push"] += 1
+                raise RuntimeError("network unreachable")
+            if "rev-parse" in cmd:
+                if f"origin/{branch}" in cmd:
+                    raise RuntimeError("unknown revision")
+                return "abc123\n"
+            return ""
+
+        with patch.object(dev, "_git", side_effect=mock_git), \
+             patch.object(dev, "_build_prompt", return_value="fix this"), \
+             patch.object(dev, "_select_model", return_value="sonnet"), \
+             patch.object(dev, "_run_claude", side_effect=RuntimeError("CLI crashed")), \
+             patch.object(dev, "_send_telegram"), \
+             patch("src.swe_team.developer.enforce_code_generation_boundary"), \
+             patch.object(dev._cooldown_manager, "should_use_engine", return_value=True):
+
+            result = dev._fix_loop(ticket, branch, [])
+
+        assert result is False
+        assert ticket.status == TicketStatus.FAILED
+        assert call_count["push"] >= 1
+
+
+# ======================================================================
 # ModelProbe
 # ======================================================================
 
-@pytest.mark.skipif(
-    not __import__("importlib.util", fromlist=["find_spec"]).find_spec("openai"),
-    reason="openai package not installed",
-)
 class TestListAvailableModels:
     """Unit tests for model_probe.list_available_models()."""
 
@@ -3094,8 +3486,8 @@ class TestModelProbeValidateAndPatch:
         probe._available = ["mxbai-embed-large", "gemini-3-flash"]  # bge-m3 missing
 
         with patch.dict(os.environ, {"EMBEDDING_MODEL": "bge-m3"}, clear=False), \
-             patch("src.swe_team.model_probe.probe_embedding_model", return_value=True), \
-             patch("src.swe_team.model_probe.probe_chat_model", return_value=True):
+             patch("src.swe_team.model_probe.probe_embedding_model", side_effect=lambda m, *a, **k: m in probe._available), \
+             patch("src.swe_team.model_probe.probe_chat_model", side_effect=lambda m, *a, **k: m in probe._available):
             patches = probe.validate_and_patch_env()
             assert "EMBEDDING_MODEL" in patches
             assert patches["EMBEDDING_MODEL"] == "mxbai-embed-large"
@@ -3108,8 +3500,8 @@ class TestModelProbeValidateAndPatch:
         probe._available = ["bge-m3", "gemini-3-flash"]
 
         with patch.dict(os.environ, {"EMBEDDING_MODEL": "bge-m3", "EXTRACTION_MODEL": "gemini-3-flash"}, clear=False), \
-             patch("src.swe_team.model_probe.probe_embedding_model", return_value=True), \
-             patch("src.swe_team.model_probe.probe_chat_model", return_value=True):
+             patch("src.swe_team.model_probe.probe_embedding_model", side_effect=lambda m, *a, **k: m in probe._available), \
+             patch("src.swe_team.model_probe.probe_chat_model", side_effect=lambda m, *a, **k: m in probe._available):
             patches = probe.validate_and_patch_env()
 
         assert patches == {}
@@ -3176,3 +3568,323 @@ class TestRunnerModelProbeIntegration:
 
         mock_probe_cls.assert_called_once()
         mock_probe_inst.validate_and_patch_env.assert_called_once()
+
+
+# ======================================================================
+# CodeReviewerAgent
+# ======================================================================
+
+class TestCodeReviewerAgent:
+    """Tests for src.swe_team.code_reviewer.CodeReviewerAgent."""
+
+    def _make_ticket(self, branch: str = "swe-fix/ticket-abc123", repo: str = "your-org/example-app") -> SWETicket:
+        """Create a minimal IN_REVIEW ticket that passes resolution_audit()."""
+        ticket = SWETicket(
+            title="Test bug fix",
+            description="Something broke in production",
+            severity=TicketSeverity.HIGH,
+            status=TicketStatus.IN_REVIEW,
+            investigation_report="Root cause: connection timeout in database pool. "
+                                 "The pool exhaustion is triggered by long-running queries. "
+                                 "Fix: increase pool size and add query timeout. "
+                                 "This change has been tested in staging with no regressions.",
+            metadata={
+                "branch": branch,
+                "repo": repo,
+                "attempts": [{"result": "success", "branch": branch}],
+            },
+        )
+        return ticket
+
+    def _make_store(self):
+        """Create a simple in-memory mock store."""
+        class MockStore:
+            def __init__(self):
+                self.saved = []
+            def save(self, ticket):
+                self.saved.append(ticket)
+        return MockStore()
+
+    def test_approve_path(self):
+        """On APPROVE response, RBAC enforcement marks pr_approved/awaiting_merge.
+        Ticket stays in IN_REVIEW — merge is a separate privileged action."""
+        from src.swe_team.code_reviewer import CodeReviewerAgent
+
+        ticket = self._make_ticket()
+        store = self._make_store()
+
+        # Mock subprocess: push ok, no existing PR, create PR ok, diff ok, claude says APPROVE
+        def fake_run(cmd, **kwargs):
+            result = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+            if cmd[0] == "git" and cmd[1] == "push":
+                result.stdout = ""
+            elif cmd[0] == "gh" and "list" in cmd:
+                result.stdout = "[]"
+            elif cmd[0] == "gh" and "create" in cmd:
+                result.stdout = "https://github.com/your-org/example-app/pull/42\n"
+            elif cmd[0] == "git" and cmd[1] == "diff":
+                result.stdout = "diff --git a/foo.py b/foo.py\n+x = 1\n"
+            elif cmd[0] == "claude":
+                result.stdout = "APPROVE\nThe fix correctly addresses the root cause."
+            return result
+
+        mock_engine = MagicMock()
+        mock_engine.run.return_value = type("R", (), {"success": True, "stdout": "APPROVE\nThe fix correctly addresses the root cause.", "stderr": "", "returncode": 0})()
+
+        with patch("src.swe_team.code_reviewer.subprocess.run", side_effect=fake_run):
+            reviewer = CodeReviewerAgent(model="sonnet", engine=mock_engine)
+            approved, feedback = reviewer.review(ticket, store, repo_root="/tmp/fake_repo")
+
+        assert approved is True
+        assert "approved" in feedback
+        # RBAC: no auto-merge; ticket stays in IN_REVIEW with pr_approved flag set
+        assert ticket.status == TicketStatus.IN_REVIEW
+        assert ticket.metadata.get("pr_approved") is True
+        assert ticket.metadata.get("awaiting_merge") is True
+        assert len(store.saved) >= 1
+
+    def test_request_changes_bounces_to_development(self):
+        """On REQUEST_CHANGES, ticket should go back to IN_DEVELOPMENT with feedback."""
+        from src.swe_team.code_reviewer import CodeReviewerAgent
+
+        ticket = self._make_ticket()
+        store = self._make_store()
+
+        def fake_run(cmd, **kwargs):
+            result = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+            if cmd[0] == "git" and cmd[1] == "push":
+                result.stdout = ""
+            elif cmd[0] == "gh" and "list" in cmd:
+                result.stdout = "[]"
+            elif cmd[0] == "gh" and "create" in cmd:
+                result.stdout = "https://github.com/your-org/example-app/pull/7\n"
+            elif cmd[0] == "git" and cmd[1] == "diff":
+                result.stdout = "diff --git a/foo.py b/foo.py\n-x = 1\n+x = 2\n"
+            elif cmd[0] == "claude":
+                result.stdout = "REQUEST_CHANGES\nThe fix introduces a security vulnerability (SQL injection)."
+            elif cmd[0] == "gh" and "close" in cmd:
+                result.stdout = ""
+            return result
+
+        mock_engine = MagicMock()
+        mock_engine.run.return_value = type("R", (), {"success": True, "stdout": "REQUEST_CHANGES\nThe fix introduces a security vulnerability (SQL injection).", "stderr": "", "returncode": 0})()
+
+        with patch("src.swe_team.code_reviewer.subprocess.run", side_effect=fake_run):
+            reviewer = CodeReviewerAgent(model="sonnet", engine=mock_engine)
+            approved, feedback = reviewer.review(ticket, store, repo_root="/tmp/fake_repo")
+
+        assert approved is False
+        assert "rejected" in feedback
+        assert ticket.status == TicketStatus.IN_DEVELOPMENT
+        assert "review_feedback" in ticket.metadata
+        assert ticket.metadata["review_rejections"] == 1
+        # Feedback stored in last attempt
+        assert ticket.metadata["attempts"][-1].get("review_feedback") is not None
+
+    def test_hitl_after_max_rejections(self):
+        """After max_rejections, needs_hitl should be set and ticket stays in current state."""
+        from src.swe_team.code_reviewer import CodeReviewerAgent
+
+        ticket = self._make_ticket()
+        # Pre-load 2 rejections (one more will hit max of 3)
+        ticket.metadata["review_rejections"] = 2
+        store = self._make_store()
+
+        def fake_run(cmd, **kwargs):
+            result = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+            if cmd[0] == "git" and cmd[1] == "push":
+                result.stdout = ""
+            elif cmd[0] == "gh" and "list" in cmd:
+                result.stdout = "[]"
+            elif cmd[0] == "gh" and "create" in cmd:
+                result.stdout = "https://github.com/your-org/example-app/pull/8\n"
+            elif cmd[0] == "git" and cmd[1] == "diff":
+                result.stdout = "diff --git a/foo.py b/foo.py\n"
+            elif cmd[0] == "claude":
+                result.stdout = "REQUEST_CHANGES\nStill not safe to merge — missing test coverage."
+            return result
+
+        mock_engine = MagicMock()
+        mock_engine.run.return_value = type("R", (), {"success": True, "stdout": "REQUEST_CHANGES\nStill not safe to merge — missing test coverage.", "stderr": "", "returncode": 0})()
+
+        with patch("src.swe_team.code_reviewer.subprocess.run", side_effect=fake_run):
+            reviewer = CodeReviewerAgent(model="sonnet", max_rejections=3, engine=mock_engine)
+            approved, feedback = reviewer.review(ticket, store, repo_root="/tmp/fake_repo")
+
+        assert approved is False
+        assert "hitl" in feedback
+        assert ticket.metadata.get("needs_hitl") is True
+        assert ticket.metadata["review_rejections"] == 3
+        # Ticket should NOT have been transitioned to IN_DEVELOPMENT — stays for HITL
+        assert ticket.status == TicketStatus.IN_REVIEW
+
+    def test_no_branch_returns_false(self):
+        """If no branch is recorded in metadata, review returns (False, 'no branch recorded')."""
+        from src.swe_team.code_reviewer import CodeReviewerAgent
+
+        ticket = self._make_ticket(branch="")
+        store = self._make_store()
+
+        reviewer = CodeReviewerAgent()
+        approved, feedback = reviewer.review(ticket, store, repo_root="/tmp/fake_repo")
+
+        assert approved is False
+        assert "no branch" in feedback
+
+    def test_push_failure_triggers_pr_gate(self):
+        """If push fails and no PR exists, the PR-gate blocks resolution (issue #367)."""
+        from src.swe_team.code_reviewer import CodeReviewerAgent
+
+        ticket = self._make_ticket()
+        # Remove repo so no PR creation is attempted either
+        ticket.metadata["repo"] = ""
+        store = self._make_store()
+
+        def fake_run(cmd, **kwargs):
+            result = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+            if cmd[0] == "git" and cmd[1] == "push":
+                result.returncode = 128
+                result.stderr = "fatal: remote error: permission denied"
+            elif cmd[0] == "git" and cmd[1] == "diff":
+                result.stdout = "diff --git a/foo.py b/foo.py\n+x = 1\n"
+            elif cmd[0] == "claude":
+                result.stdout = "APPROVE\nFix looks good."
+            return result
+
+        mock_engine = MagicMock()
+        mock_engine.run.return_value = type("R", (), {"success": True, "stdout": "APPROVE\nFix looks good.", "stderr": "", "returncode": 0})()
+
+        with patch("src.swe_team.code_reviewer.subprocess.run", side_effect=fake_run):
+            reviewer = CodeReviewerAgent(engine=mock_engine)
+            approved, feedback = reviewer.review(ticket, store, repo_root="/tmp/fake_repo")
+
+        # PR-gate (issue #367): no PR means no resolution — ticket held until PR exists
+        assert approved is False
+        assert ticket.status == TicketStatus.IN_DEVELOPMENT
+        assert ticket.metadata.get("needs_pr") is True
+
+
+class TestInvestigateBatchParallel:
+    """Tests for parallel investigate_batch with on_complete and max_workers."""
+
+    def _make_triaged_ticket(self, title="Test ticket", severity=TicketSeverity.HIGH):
+        t = SWETicket(title=title, description="desc", severity=severity,
+                      source_module="mod", error_log="err")
+        t.transition(TicketStatus.TRIAGED)
+        return t
+
+    def _mock_result(self, report=None):
+        if report is None:
+            report = (
+                "## Root Cause\n"
+                "The error is caused by a null pointer dereference in the authentication module "
+                "when the session token expires during an active request.\n\n"
+                "## Affected Files\n"
+                "- src/auth/session.py (line 142)\n"
+                "- src/middleware/auth_check.py (line 89)\n\n"
+                "## Fix Plan\n"
+                "Add a null check before dereferencing the session token in session.py "
+                "and ensure the middleware handles expired tokens gracefully.\n"
+            )
+        return type("R", (), {"returncode": 0, "stdout": report, "stderr": "Cost: $0.01"})()
+
+    def test_batch_runs_all_tickets_in_parallel(self, tmp_path):
+        """All eligible tickets are investigated; results returned."""
+        program = tmp_path / "investigate.md"
+        program.write_text("Error: {error_log}\nModule: {source_module}\n")
+        tickets = [self._make_triaged_ticket(f"Ticket {i}") for i in range(4)]
+
+        with (
+            patch("src.swe_team.investigator.subprocess.run", return_value=self._mock_result()),
+            patch("src.swe_team.notifier.notify_investigation_summary"),
+            patch("src.swe_team.github_integration.comment_on_issue"),
+        ):
+            agent = InvestigatorAgent(program_path=program, claude_path="/usr/bin/claude")
+            results = agent.investigate_batch(tickets, max_workers=4)
+
+        assert len(results) == 4
+        for t in results:
+            assert t.status == TicketStatus.INVESTIGATION_COMPLETE
+
+    def test_on_complete_called_per_ticket(self, tmp_path):
+        """on_complete callback fires once per successfully investigated ticket."""
+        program = tmp_path / "investigate.md"
+        program.write_text("Error: {error_log}\nModule: {source_module}\n")
+        tickets = [self._make_triaged_ticket(f"Ticket {i}") for i in range(3)]
+        persisted = []
+
+        with (
+            patch("src.swe_team.investigator.subprocess.run", return_value=self._mock_result()),
+            patch("src.swe_team.notifier.notify_investigation_summary"),
+            patch("src.swe_team.github_integration.comment_on_issue"),
+        ):
+            agent = InvestigatorAgent(program_path=program, claude_path="/usr/bin/claude")
+            agent.investigate_batch(tickets, on_complete=persisted.append, max_workers=3)
+
+        assert len(persisted) == 3
+        assert all(t.status == TicketStatus.INVESTIGATION_COMPLETE for t in persisted)
+
+    def test_on_complete_not_called_for_failed_ticket(self, tmp_path):
+        """on_complete is NOT called when investigation returns False (ineligible)."""
+        program = tmp_path / "investigate.md"
+        program.write_text("Error: {error_log}\nModule: {source_module}\n")
+        low = SWETicket(title="Low", description="x", severity=TicketSeverity.LOW)
+        low.transition(TicketStatus.TRIAGED)
+        persisted = []
+
+        with patch("src.swe_team.investigator.subprocess.run"):
+            agent = InvestigatorAgent(program_path=program)
+            agent.investigate_batch([low], on_complete=persisted.append)
+
+        assert persisted == []
+
+    def test_limit_caps_number_of_investigations(self, tmp_path):
+        """limit parameter caps how many tickets are investigated."""
+        program = tmp_path / "investigate.md"
+        program.write_text("Error: {error_log}\nModule: {source_module}\n")
+        tickets = [self._make_triaged_ticket(f"Ticket {i}") for i in range(6)]
+
+        with (
+            patch("src.swe_team.investigator.subprocess.run", return_value=self._mock_result()),
+            patch("src.swe_team.notifier.notify_investigation_summary"),
+            patch("src.swe_team.github_integration.comment_on_issue"),
+        ):
+            agent = InvestigatorAgent(program_path=program, claude_path="/usr/bin/claude")
+            results = agent.investigate_batch(tickets, limit=3, max_workers=3)
+
+        assert len(results) == 3
+
+    def test_on_complete_exception_does_not_abort_batch(self, tmp_path):
+        """A crashing on_complete callback doesn't kill the rest of the batch."""
+        program = tmp_path / "investigate.md"
+        program.write_text("Error: {error_log}\nModule: {source_module}\n")
+        tickets = [self._make_triaged_ticket(f"Ticket {i}") for i in range(2)]
+        calls = []
+
+        def bad_callback(t):
+            calls.append(t.ticket_id)
+            raise RuntimeError("persist exploded")
+
+        with (
+            patch("src.swe_team.investigator.subprocess.run", return_value=self._mock_result()),
+            patch("src.swe_team.notifier.notify_investigation_summary"),
+            patch("src.swe_team.github_integration.comment_on_issue"),
+        ):
+            agent = InvestigatorAgent(program_path=program, claude_path="/usr/bin/claude")
+            results = agent.investigate_batch(tickets, on_complete=bad_callback, max_workers=2)
+
+        # Both investigations still completed even though callback raised
+        assert len(results) == 2
+        assert len(calls) == 2
+
+    def test_max_investigation_workers_in_config(self):
+        """CycleConfig.max_investigation_workers is read from dict and defaults to 8."""
+        from src.swe_team.config import CycleConfig
+        default = CycleConfig()
+        assert default.max_investigation_workers == 8
+
+        custom = CycleConfig.from_dict({"max_investigation_workers": 16})
+        assert custom.max_investigation_workers == 16
+
+        roundtrip = CycleConfig.from_dict(custom.to_dict())
+        assert roundtrip.max_investigation_workers == 16

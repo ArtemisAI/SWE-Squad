@@ -49,6 +49,7 @@ def check_fix_complexity(
     max_files: int = 5,
     max_lines: int = 200,
     allowed_modules: Optional[Set[str]] = None,
+    allow_dependency_changes: bool = False,
 ) -> Tuple[bool, str]:
     """Validate fix complexity against SWE team constraints.
 
@@ -77,7 +78,7 @@ def check_fix_complexity(
         return False, f"Too many lines changed ({lines_changed} > {max_lines})"
 
     normalized = {Path(f).as_posix() for f in files_changed}
-    if normalized & _DEPENDENCY_FILES:
+    if not allow_dependency_changes and normalized & _DEPENDENCY_FILES:
         return False, "Dependency changes are not allowed"
 
     modules = {_module_for_path(f) for f in files_changed}

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import statistics
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -27,7 +28,7 @@ from typing import Any, Dict, List, Optional, Set
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.swe_team.models import SWETicket, TicketSeverity, TicketStatus
+from src.swe_team.models import SWETicket, TicketStatus
 
 logger = logging.getLogger(__name__)
 MAX_WEBUI_TITLE_LENGTH = 120
@@ -192,6 +193,19 @@ def _build_github_summary(
     }
 
 
+def _percentile(values: List[float], pct: float) -> float:
+    if not values:
+        return 0.0
+    sorted_values = sorted(values)
+    if len(sorted_values) == 1:
+        return float(sorted_values[0])
+    rank = (pct / 100.0) * (len(sorted_values) - 1)
+    lower = int(rank)
+    upper = min(lower + 1, len(sorted_values) - 1)
+    weight = rank - lower
+    return float(sorted_values[lower] * (1 - weight) + sorted_values[upper] * weight)
+
+
 
 def generate_dashboard_data(
     store,
@@ -223,14 +237,23 @@ def generate_dashboard_data(
     cutoff = now - timedelta(hours=hours)
 
     # ── Fetch all tickets ──────────────────────────────────────────────
+    # In dashboard mode, prefer the all-teams methods (no team_id filter) so
+    # the overview shows tickets from every squad, not just the one whose
+    # SWE_TEAM_ID is set on the webui VM.
     try:
-        all_tickets = store.list_all()
+        if hasattr(store, "list_all_teams"):
+            all_tickets = store.list_all_teams()
+        else:
+            all_tickets = store.list_all()
     except Exception as exc:
         logger.warning("Failed to list tickets: %s", exc)
         all_tickets = []
 
     try:
-        open_tickets = store.list_open()
+        if hasattr(store, "list_open_all_teams"):
+            open_tickets = store.list_open_all_teams()
+        else:
+            open_tickets = store.list_open()
     except Exception as exc:
         logger.warning("Failed to list open tickets: %s", exc)
         open_tickets = []
@@ -304,6 +327,7 @@ def generate_dashboard_data(
             "title": t.title[:MAX_WEBUI_TITLE_LENGTH],
             "severity": t.severity.value,
             "status": t.status.value,
+            "project_id": t.project_id or meta.get("project_id") or "",
             "assigned_to": t.assigned_to or "",
             "updated_at": t.updated_at,
             "related_tickets": list(t.related_tickets),
@@ -397,6 +421,81 @@ def generate_dashboard_data(
         "avg_confidence": avg_confidence,
     }
 
+    # ── PR lifecycle metrics ───────────────────────────────────────────
+    review_durations_minutes: List[float] = []
+    review_cycle_values: List[float] = []
+    created_total = 0
+    created_24h = 0
+    merged_total = 0
+    merged_24h = 0
+    reviewed_total = 0
+    verification_started_total = 0
+    verification_pass_total = 0
+    verification_regression_total = 0
+    resolved_total = 0
+
+    for t in all_tickets:
+        meta = t.metadata if isinstance(t.metadata, dict) else {}
+        lifecycle = meta.get("pr_lifecycle")
+        if not isinstance(lifecycle, dict):
+            continue
+
+        pr_created_at = _parse_timestamp(lifecycle.get("pr_created_at"))
+        first_review_at = _parse_timestamp(lifecycle.get("first_review_at"))
+        merged_at = _parse_timestamp(lifecycle.get("merged_at"))
+        verification_started_at = _parse_timestamp(lifecycle.get("verification_started_at"))
+        resolved_at = _parse_timestamp(lifecycle.get("resolved_at"))
+        verification_result = str(lifecycle.get("verification_result", "")).lower()
+
+        if pr_created_at:
+            created_total += 1
+            if pr_created_at >= cutoff:
+                created_24h += 1
+        if merged_at:
+            merged_total += 1
+            if merged_at >= cutoff:
+                merged_24h += 1
+        if first_review_at:
+            reviewed_total += 1
+            if pr_created_at and first_review_at >= pr_created_at:
+                review_durations_minutes.append((first_review_at - pr_created_at).total_seconds() / 60.0)
+        if isinstance(lifecycle.get("review_cycles"), int):
+            review_cycle_values.append(float(lifecycle["review_cycles"]))
+        if verification_started_at:
+            verification_started_total += 1
+        if verification_result == "pass":
+            verification_pass_total += 1
+        elif verification_result == "regression":
+            verification_regression_total += 1
+        if resolved_at:
+            resolved_total += 1
+
+    verification_completed = verification_pass_total + verification_regression_total
+    pr_lifecycle_metrics = {
+        "prs_created_total": created_total,
+        "prs_created_24h": created_24h,
+        "prs_reviewed_total": reviewed_total,
+        "prs_merged_total": merged_total,
+        "prs_merged_24h": merged_24h,
+        "merge_rate": round((merged_total / created_total), 3) if created_total else 0.0,
+        "verification_started_total": verification_started_total,
+        "verification_pass_total": verification_pass_total,
+        "verification_regression_total": verification_regression_total,
+        "verification_pass_rate": round((verification_pass_total / verification_completed), 3)
+        if verification_completed
+        else 0.0,
+        "resolved_total": resolved_total,
+        "median_time_to_first_review_minutes": round(statistics.median(review_durations_minutes), 2)
+        if review_durations_minutes
+        else 0.0,
+        "p95_time_to_first_review_minutes": round(_percentile(review_durations_minutes, 95), 2)
+        if review_durations_minutes
+        else 0.0,
+        "median_review_cycles": round(statistics.median(review_cycle_values), 2)
+        if review_cycle_values
+        else 0.0,
+    }
+
     # ── Rate limit events ──────────────────────────────────────────────
     rate_limit_events_24h = 0
     if rate_limit_tracker:
@@ -453,6 +552,7 @@ def generate_dashboard_data(
         "tickets_by_state": tickets_by_state,
         "agent_performance": agent_performance,
         "memory_stats": memory_stats,
+        "pr_lifecycle_metrics": pr_lifecycle_metrics,
         "rate_limit_events_24h": rate_limit_events_24h,
         "last_cycle": last_cycle,
         "base_llm_status": base_llm_status,
@@ -478,6 +578,7 @@ def format_dashboard_telegram(data: Dict[str, Any]) -> str:
     ts = data.get("ticket_summary", {})
     ap = data.get("agent_performance", {})
     ms = data.get("memory_stats", {})
+    pm = data.get("pr_lifecycle_metrics", {})
     lc = data.get("last_cycle") or {}
 
     # Severity emoji mapping
@@ -516,6 +617,16 @@ def format_dashboard_telegram(data: Dict[str, Any]) -> str:
         f"  Fixes attempted: {ap.get('fixes_attempted_24h', 0)}",
         f"  Fixes succeeded: {ap.get('fixes_succeeded_24h', 0)}",
         f"  Success rate: {ap.get('fix_success_rate', 0):.0%}",
+    ])
+
+    lines.extend([
+        "",
+        "<b>PR Lifecycle</b>",
+        f"  PRs created (24h): {pm.get('prs_created_24h', 0)}",
+        f"  PRs merged (24h): {pm.get('prs_merged_24h', 0)}",
+        f"  Merge rate: {pm.get('merge_rate', 0):.0%}",
+        f"  Median time to first review: {pm.get('median_time_to_first_review_minutes', 0)} min",
+        f"  Verification pass rate: {pm.get('verification_pass_rate', 0):.0%}",
     ])
 
     # Rate limits

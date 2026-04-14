@@ -8,7 +8,7 @@ Covers:
 - _find_existing_pr() — found, not found, timeout
 - _create_pr() — success with URL parsing, failure
 - _get_diff() — success, truncation, failure
-- _handle_approve() — dry_run skips subprocess, ticket transitions to RESOLVED
+- _handle_approve() — dry_run skips subprocess, ticket transitions to VERIFYING
 - _handle_request_changes() — increments rejections, bounces to IN_DEVELOPMENT,
   escalates to HITL at max_rejections
 - _store_save helper
@@ -21,6 +21,7 @@ src.swe_team.agent_rbac.check_permission.
 from __future__ import annotations
 
 import subprocess
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -52,7 +53,7 @@ def _ticket(
         investigation_report="Root cause: something. " * 12,
         metadata={
             "branch": branch,
-            "repo": "test-org/test-repo",
+            "repo": "your-org/SWE-Squad",
             "resolution_note": "fix_succeeded",
         },
     )
@@ -104,17 +105,17 @@ class TestParseResponse:
     def test_none_response_defaults_to_reject(self):
         approved, reason = CodeReviewerAgent._parse_response(None)
         assert approved is False
-        assert "SEC-68" in reason
+        assert "REJECT" in reason
 
     def test_empty_string_defaults_to_reject(self):
         approved, reason = CodeReviewerAgent._parse_response("")
         assert approved is False
-        assert "SEC-68" in reason
+        assert "REJECT" in reason
 
     def test_unparseable_first_line_defaults_to_reject(self):
         approved, reason = CodeReviewerAgent._parse_response("MAYBE\nI don't know.")
         assert approved is False
-        assert "SEC-68" in reason
+        assert "REJECT" in reason
 
     def test_reasoning_captured(self):
         _, reason = CodeReviewerAgent._parse_response("APPROVE\nLine 2\nLine 3")
@@ -192,7 +193,7 @@ class TestCreatePr:
     def test_success_parses_pr_number(self):
         reviewer = _reviewer()
         ticket = _ticket()
-        url = "https://github.com/test-org/test-repo/pull/99"
+        url = "https://github.com/your-org/SWE-Squad/pull/99"
         with patch("subprocess.run", return_value=_proc(0, stdout=url)):
             result = reviewer._create_pr("fix/branch", "owner/repo", ticket)
         assert result == 99
@@ -277,6 +278,7 @@ class TestReview:
              patch.object(reviewer, "_get_diff", return_value="diff content"), \
              patch.object(reviewer, "_call_claude",
                           return_value="APPROVE\nCode looks correct."), \
+             patch.object(reviewer, "_merge_pr", return_value=True), \
              patch(_RBAC_PATCH, return_value=(True, "allowed")), \
              patch("subprocess.run", return_value=_proc(0)):
             approved, feedback = reviewer.review(ticket, store, repo_root="/repo")
@@ -330,22 +332,32 @@ class TestReview:
 
         assert approved is False
 
-    def test_push_fails_but_review_still_proceeds(self):
-        """Even if push fails, review continues with local diff."""
+    def test_push_fails_blocks_resolution_via_pr_gate(self):
+        """When push fails, _ensure_pr is skipped and the PR gate blocks resolution.
+
+        Previously the reviewer would approve even without a PR; now the
+        PR-verification gate (issue #367) catches this and returns the ticket
+        to IN_DEVELOPMENT with needs_pr=True.
+        """
         reviewer = _reviewer()
         ticket = _ticket()
+        # No PR metadata — simulates a push-failed scenario
+        ticket.metadata.pop("pr_url", None)
+        ticket.metadata.pop("pr_number", None)
         store = _store()
 
         with patch.object(reviewer, "_push_branch", return_value=False), \
              patch.object(reviewer, "_get_diff", return_value="diff content"), \
              patch.object(reviewer, "_call_claude",
                           return_value="APPROVE\nLooks good."), \
-             patch(_RBAC_PATCH, return_value=(True, "allowed")), \
              patch("subprocess.run", return_value=_proc(0)):
             approved, feedback = reviewer.review(ticket, store, repo_root="/repo")
 
-        # push failed, so _ensure_pr was not called (push_ok=False)
-        assert approved is True
+        # push failed → no PR → gate blocks resolution
+        assert approved is False
+        assert "pr_gate" in feedback
+        assert ticket.metadata.get("needs_pr") is True
+        assert ticket.status == TicketStatus.IN_DEVELOPMENT
 
 
 # ---------------------------------------------------------------------------
@@ -408,26 +420,41 @@ class TestHandleRequestChanges:
         assert ticket.status == original_status
         store.save.assert_not_called()
 
+    def test_request_changes_does_not_auto_close_pr(self):
+        reviewer = _reviewer(max_rejections=3)
+        reviewer._close_pr = MagicMock()
+        ticket = _ticket()
+        store = _store()
+
+        reviewer._handle_request_changes(
+            ticket, store, repo="your-org/SWE-Squad", pr_number=565,
+            reasoning="needs manual follow-up", dry_run=False,
+        )
+
+        reviewer._close_pr.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # _handle_approve
 # ---------------------------------------------------------------------------
 
 class TestHandleApprove:
-    def test_transitions_ticket_to_resolved(self):
+    def test_transitions_ticket_to_verifying(self):
+        """RBAC enforcement: _handle_approve no longer merges; it marks pr_approved
+        and awaiting_merge, staying in IN_REVIEW until the SWE-Manager merges."""
         reviewer = _reviewer()
         ticket = _ticket()
         store = _store()
 
-        with patch(_RBAC_PATCH, return_value=(True, "ok")), \
-             patch("subprocess.run", return_value=_proc(0)):
-            approved, feedback = reviewer._handle_approve(
-                ticket, store, repo="owner/repo", pr_number=10,
-                reasoning="all good", dry_run=False,
-            )
+        approved, feedback = reviewer._handle_approve(
+            ticket, store, repo="owner/repo", pr_number=10,
+            reasoning="all good", dry_run=False,
+        )
 
         assert approved is True
-        assert ticket.status == TicketStatus.RESOLVED
+        assert ticket.status == TicketStatus.IN_REVIEW  # stays in review; merge is separate
+        assert ticket.metadata.get("pr_approved") is True
+        assert ticket.metadata.get("awaiting_merge") is True
         assert "approved" in feedback
 
     def test_dry_run_does_not_transition(self):
@@ -542,6 +569,25 @@ class TestCodingEngineInjection:
 
         assert result is None
 
+    def test_engine_timeout_returns_none(self):
+        """When engine.run() returns timeout error_type, _call_claude() returns None."""
+        from src.swe_team.providers.coding_engine.base import EngineResult
+
+        mock_engine = MagicMock()
+        mock_engine.run.return_value = EngineResult(
+            stdout="", stderr="timeout after 300s", returncode=124,
+            metadata={"error_type": "timeout"},
+        )
+        reviewer = _reviewer(engine=mock_engine)
+
+        result = reviewer._call_claude("review this")
+
+        assert result is None
+        # Verify the call included raise_on_timeout=False and timeout=300
+        call_args = mock_engine.run.call_args
+        assert call_args.kwargs.get("raise_on_timeout") is False
+        assert call_args.kwargs.get("timeout") == 300
+
 
 # ---------------------------------------------------------------------------
 # IssueTracker injection
@@ -585,3 +631,222 @@ class TestIssueTrackerInjection:
         mock_tracker.comment.assert_called_once()
         # Fell back to subprocess
         mock_run.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# PR Verification Gate (issue #367)
+# ---------------------------------------------------------------------------
+
+class TestPRVerificationGate:
+    """Ticket resolution is BLOCKED without a PR; resolves normally with one."""
+
+    # -- _handle_approve blocks when no PR present ---------------------------
+
+    def test_handle_approve_blocked_without_pr(self):
+        """_handle_approve returns False and sets needs_pr when pr_number is None
+        and ticket.metadata has no pr_url/pr_number."""
+        reviewer = _reviewer()
+        ticket = _ticket()
+        # Remove any residual pr metadata
+        ticket.metadata.pop("pr_url", None)
+        ticket.metadata.pop("pr_number", None)
+        store = _store()
+
+        approved, feedback = reviewer._handle_approve(
+            ticket, store, repo="owner/repo", pr_number=None,
+            reasoning="looks good", dry_run=False,
+        )
+
+        assert approved is False
+        assert "pr_gate" in feedback
+        assert ticket.metadata.get("needs_pr") is True
+        assert ticket.status == TicketStatus.IN_DEVELOPMENT
+
+    def test_handle_approve_blocked_persists_ticket(self):
+        """When blocked by PR gate, ticket is persisted via store."""
+        reviewer = _reviewer()
+        ticket = _ticket()
+        ticket.metadata.pop("pr_url", None)
+        ticket.metadata.pop("pr_number", None)
+        store = _store()
+
+        reviewer._handle_approve(
+            ticket, store, repo="owner/repo", pr_number=None,
+            reasoning="ok", dry_run=False,
+        )
+
+        store.save.assert_called_once_with(ticket)
+
+    def test_handle_approve_verifies_with_pr_number(self):
+        """When pr_number is provided, RBAC enforcement marks pr_approved/awaiting_merge
+        without merging. Ticket stays in IN_REVIEW awaiting authorized merge."""
+        reviewer = _reviewer()
+        ticket = _ticket()
+        store = _store()
+
+        approved, feedback = reviewer._handle_approve(
+            ticket, store, repo="owner/repo", pr_number=42,
+            reasoning="all good", dry_run=False,
+        )
+
+        assert approved is True
+        assert ticket.status == TicketStatus.IN_REVIEW
+        assert ticket.metadata.get("pr_approved") is True
+        assert ticket.metadata.get("awaiting_merge") is True
+
+    def test_handle_approve_blocks_resolution_when_merge_fails(self):
+        """RBAC enforcement: _handle_approve never calls _merge_pr.
+        The ticket is approved (pr_approved=True) and stays in IN_REVIEW
+        awaiting an authorized merge by SWE-Manager or human."""
+        reviewer = _reviewer()
+        ticket = _ticket()
+        store = _store()
+
+        approved, feedback = reviewer._handle_approve(
+            ticket, store, repo="owner/repo", pr_number=42,
+            reasoning="all good", dry_run=False,
+        )
+
+        assert approved is True  # RBAC: approval succeeds; merge is deferred
+        assert "approved" in feedback
+        assert ticket.status == TicketStatus.IN_REVIEW
+        assert ticket.metadata.get("pr_approved") is True
+        assert ticket.metadata.get("awaiting_merge") is True
+        assert "merged_at" not in ticket.metadata.get("pr_lifecycle", {})
+
+    def test_handle_approve_verifies_with_pr_url_in_metadata(self):
+        """When pr_number=None but pr_url is in metadata, the PR gate passes
+        (has_pr=True). RBAC enforcement returns approved=True with the ticket
+        staying in IN_REVIEW awaiting an authorized merge."""
+        reviewer = _reviewer()
+        ticket = _ticket()
+        ticket.metadata["pr_url"] = "https://github.com/owner/repo/pull/7"
+        ticket.metadata.pop("pr_number", None)
+        store = _store()
+
+        approved, feedback = reviewer._handle_approve(
+            ticket, store, repo="owner/repo", pr_number=None,
+            reasoning="looks great", dry_run=False,
+        )
+
+        assert approved is True
+        assert ticket.status == TicketStatus.IN_REVIEW
+        assert "approved" in feedback
+
+    def test_handle_approve_verifies_with_pr_number_in_metadata(self):
+        """When pr_number arg is None but metadata has it, RBAC enforcement marks
+        pr_approved/awaiting_merge. Ticket stays in IN_REVIEW (no auto-merge)."""
+        reviewer = _reviewer()
+        ticket = _ticket()
+        ticket.metadata["pr_number"] = 55
+        ticket.metadata.pop("pr_url", None)
+        store = _store()
+
+        approved, feedback = reviewer._handle_approve(
+            ticket, store, repo="owner/repo", pr_number=None,
+            reasoning="ship it", dry_run=False,
+        )
+
+        assert approved is True
+        assert ticket.status == TicketStatus.IN_REVIEW
+        assert ticket.metadata.get("pr_approved") is True
+        assert ticket.metadata.get("awaiting_merge") is True
+
+    # -- _create_pr stores metadata ------------------------------------------
+
+    def test_create_pr_stores_pr_url_and_number(self):
+        """Successful _create_pr() writes pr_url and pr_number to ticket.metadata."""
+        reviewer = _reviewer()
+        ticket = _ticket()
+        url = "https://github.com/owner/repo/pull/123"
+        with patch("subprocess.run", return_value=_proc(0, stdout=url)):
+            pr_num = reviewer._create_pr("fix/branch", "owner/repo", ticket)
+
+        assert pr_num == 123
+        assert ticket.metadata["pr_url"] == url
+        assert ticket.metadata["pr_number"] == 123
+        assert datetime.fromisoformat(ticket.metadata["pr_lifecycle"]["pr_created_at"])
+
+    def test_review_tracks_first_review_and_cycles(self):
+        reviewer = _reviewer()
+        ticket = _ticket()
+        store = _store()
+
+        with patch.object(reviewer, "_push_branch", return_value=True), \
+             patch.object(reviewer, "_ensure_pr", return_value=5), \
+             patch.object(reviewer, "_get_diff", return_value="diff content"), \
+             patch.object(reviewer, "_call_claude",
+                          return_value="REQUEST_CHANGES\nFix the bug first."), \
+             patch("subprocess.run", return_value=_proc(0)):
+            reviewer.review(ticket, store, repo_root="/repo")
+            reviewer.review(ticket, store, repo_root="/repo")
+
+        lifecycle = ticket.metadata["pr_lifecycle"]
+        assert lifecycle["review_decision"] == "changes_requested"
+        assert lifecycle["review_cycles"] == 2
+        assert datetime.fromisoformat(lifecycle["first_review_at"])
+
+    def test_create_pr_failure_does_not_store_metadata(self):
+        """Failed PR creation must not store pr_url/pr_number."""
+        reviewer = _reviewer()
+        ticket = _ticket()
+        # Ensure clean metadata
+        ticket.metadata.pop("pr_url", None)
+        ticket.metadata.pop("pr_number", None)
+
+        with patch("subprocess.run", return_value=_proc(1, stderr="auth error")):
+            pr_num = reviewer._create_pr("fix/branch", "owner/repo", ticket)
+
+        assert pr_num is None
+        assert "pr_url" not in ticket.metadata
+        assert "pr_number" not in ticket.metadata
+
+    def test_create_pr_timeout_does_not_store_metadata(self):
+        """Timeout during PR creation must not leave stale pr metadata."""
+        reviewer = _reviewer()
+        ticket = _ticket()
+        ticket.metadata.pop("pr_url", None)
+        ticket.metadata.pop("pr_number", None)
+
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("gh", 60)):
+            pr_num = reviewer._create_pr("fix/branch", "owner/repo", ticket)
+
+        assert pr_num is None
+        assert "pr_url" not in ticket.metadata
+        assert "pr_number" not in ticket.metadata
+
+    # -- _ensure_pr stores metadata on existing PR ---------------------------
+
+    def test_ensure_pr_stores_metadata_for_existing_pr(self):
+        """Reusing an existing PR populates pr_number (and pr_url) in metadata."""
+        reviewer = _reviewer()
+        ticket = _ticket()
+        ticket.metadata.pop("pr_url", None)
+        ticket.metadata.pop("pr_number", None)
+
+        with patch.object(reviewer, "_find_existing_pr", return_value=77):
+            pr_num = reviewer._ensure_pr("fix/branch", "owner/repo", ticket)
+
+        assert pr_num == 77
+        assert ticket.metadata["pr_number"] == 77
+        assert "pr_url" in ticket.metadata
+
+    # -- dry_run bypasses PR gate --------------------------------------------
+
+    def test_handle_approve_dry_run_skips_pr_gate(self):
+        """In dry_run mode the gate is not evaluated (no mutations happen at all)."""
+        reviewer = _reviewer()
+        ticket = _ticket()
+        ticket.metadata.pop("pr_url", None)
+        ticket.metadata.pop("pr_number", None)
+        store = _store()
+
+        approved, _ = reviewer._handle_approve(
+            ticket, store, repo="owner/repo", pr_number=None,
+            reasoning="dry", dry_run=True,
+        )
+
+        # dry_run returns True (no real gate evaluation)
+        assert approved is True
+        assert ticket.status == TicketStatus.IN_REVIEW  # not mutated
+        store.save.assert_not_called()

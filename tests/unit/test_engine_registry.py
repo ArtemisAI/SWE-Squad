@@ -7,7 +7,10 @@ from src.swe_team.providers.coding_engine import (
     resolve_engine,
     register_engine,
     list_engines,
+    get_engine_parameters,
+    list_engine_parameters,
     _REGISTRY,
+    _PARAMETER_SCHEMAS,
 )
 from src.swe_team.providers.coding_engine.base import CodingEngine
 
@@ -62,10 +65,13 @@ class TestRegisterEngine:
 
     def test_register_overwrites(self):
         original = _REGISTRY.get("claude")
+        original_schema = _PARAMETER_SCHEMAS.get("claude")
         register_engine("claude", lambda cfg: "replaced")
         assert _REGISTRY["claude"]({}) == "replaced"
         # Restore
         _REGISTRY["claude"] = original
+        if original_schema is not None:
+            _PARAMETER_SCHEMAS["claude"] = original_schema
 
 
 class TestListEngines:
@@ -76,3 +82,18 @@ class TestListEngines:
     def test_list_sorted(self):
         engines = list_engines()
         assert engines == sorted(engines)
+
+
+class TestEngineParameters:
+    def test_get_engine_parameters_for_claude(self):
+        params = get_engine_parameters("claude")
+        names = {p["name"] for p in params}
+        assert "default_model" in names
+        assert "timeout_seconds" in names
+        assert "claude_path" in names
+
+    def test_list_engine_parameters_has_known_engines(self):
+        schemas = list_engine_parameters()
+        assert "claude" in schemas
+        assert "gemini" in schemas
+        assert isinstance(schemas["gemini"], list)

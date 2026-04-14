@@ -124,7 +124,14 @@ class TestInvestigatorWithNotifier:
         program.write_text("Error: {error_log}\nModule: {source_module}\n")
 
         ticket = _make_ticket(severity="critical")
-        mock_result = type("R", (), {"returncode": 0, "stdout": "Root cause\n", "stderr": "Cost: $0.01"})()
+        _valid_report = (
+            "Root Cause: A retry loop silently swallowed a timeout from the upstream proxy, "
+            "so the worker emitted incomplete diagnostics and the orchestrator persisted an invalid response.\n\n"
+            "Affected Files: src/swe_team/investigator.py, src/swe_team/developer.py, tests/unit/test_investigator.py\n\n"
+            "Fix Plan: Validate report structure before persistence, reject known Claude error envelopes, "
+            "require minimum report length, and keep sectioned investigation output for downstream automation."
+        )
+        mock_result = type("R", (), {"returncode": 0, "stdout": _valid_report + "\n", "stderr": "Cost: $0.01"})()
         notifier = _mock_notifier()
 
         with patch("src.swe_team.investigator.subprocess.run", return_value=mock_result):
@@ -148,7 +155,14 @@ class TestInvestigatorWithNotifier:
 
         ticket = _make_ticket(severity="critical")
         ticket.metadata["github_issue"] = 42
-        mock_result = type("R", (), {"returncode": 0, "stdout": "Root cause\n", "stderr": "Cost: $0.01"})()
+        _valid_report = (
+            "Root Cause: A retry loop silently swallowed a timeout from the upstream proxy, "
+            "so the worker emitted incomplete diagnostics and the orchestrator persisted an invalid response.\n\n"
+            "Affected Files: src/swe_team/investigator.py, src/swe_team/developer.py, tests/unit/test_investigator.py\n\n"
+            "Fix Plan: Validate report structure before persistence, reject known Claude error envelopes, "
+            "require minimum report length, and keep sectioned investigation output for downstream automation."
+        )
+        mock_result = type("R", (), {"returncode": 0, "stdout": _valid_report + "\n", "stderr": "Cost: $0.01"})()
         tracker = _mock_issue_tracker()
 
         with patch("src.swe_team.investigator.subprocess.run", return_value=mock_result):

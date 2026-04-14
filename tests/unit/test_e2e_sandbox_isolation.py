@@ -38,16 +38,16 @@ from src.swe_team.agent_rbac import PermissionDeniedError
 # ---------------------------------------------------------------------------
 
 SANDBOX_REPOS = [
-    {"name": "test-org/SWE-Sandbox", "local_path": "/home/agent/Projects/SWE-Sandbox"},
-    {"name": "test-org/SWE-Sandbox-HealthTrack", "local_path": "/home/agent/Projects/SWE-Sandbox-HealthTrack"},
-    {"name": "test-org/SWE-Sandbox-ShopStream", "local_path": "/home/agent/Projects/SWE-Sandbox-ShopStream"},
-    {"name": "test-org/SWE-Sandbox-GreenGrid", "local_path": "/home/agent/Projects/SWE-Sandbox-GreenGrid"},
-    {"name": "test-org/SWE-Sandbox-EduPath", "local_path": "/home/agent/Projects/SWE-Sandbox-EduPath"},
+    {"name": "your-org/SWE-Sandbox", "local_path": "/home/agent/Projects/SWE-Sandbox"},
+    {"name": "your-org/SWE-Sandbox-HealthTrack", "local_path": "/home/agent/Projects/SWE-Sandbox-HealthTrack"},
+    {"name": "your-org/SWE-Sandbox-ShopStream", "local_path": "/home/agent/Projects/SWE-Sandbox-ShopStream"},
+    {"name": "your-org/SWE-Sandbox-GreenGrid", "local_path": "/home/agent/Projects/SWE-Sandbox-GreenGrid"},
+    {"name": "your-org/SWE-Sandbox-EduPath", "local_path": "/home/agent/Projects/SWE-Sandbox-EduPath"},
 ]
 
 REPO_NAMES = [r["name"] for r in SANDBOX_REPOS]
 
-GITHUB_ACCOUNT = "test-bot"
+GITHUB_ACCOUNT = "swe-squad-alpha"
 
 
 # ---------------------------------------------------------------------------
@@ -215,9 +215,9 @@ class TestMultiRoundIsolation:
         should be created (all deduped by fingerprint)."""
         # Fixed set of issues across 3 repos
         repo_issues = {
-            "test-org/SWE-Sandbox": [_make_gh_issue(1), _make_gh_issue(2)],
-            "test-org/SWE-Sandbox-HealthTrack": [_make_gh_issue(3)],
-            "test-org/SWE-Sandbox-ShopStream": [_make_gh_issue(4), _make_gh_issue(5)],
+            "your-org/SWE-Sandbox": [_make_gh_issue(1), _make_gh_issue(2)],
+            "your-org/SWE-Sandbox-HealthTrack": [_make_gh_issue(3)],
+            "your-org/SWE-Sandbox-ShopStream": [_make_gh_issue(4), _make_gh_issue(5)],
         }
 
         for round_num in range(20):
@@ -251,8 +251,8 @@ class TestMultiRoundIsolation:
     def test_round_isolation_repo_a_issues_never_in_repo_b(self, tmp_store):
         """Issues from HealthTrack NEVER appear in ShopStream's pipeline
         and vice versa."""
-        ht_repo = "test-org/SWE-Sandbox-HealthTrack"
-        ss_repo = "test-org/SWE-Sandbox-ShopStream"
+        ht_repo = "your-org/SWE-Sandbox-HealthTrack"
+        ss_repo = "your-org/SWE-Sandbox-ShopStream"
 
         for round_num in range(20):
             repo_issues = {
@@ -497,13 +497,13 @@ class TestRepoRouterFailClosed:
 
     def test_unknown_repo_raises_valueerror(self, router):
         """Ticket with repo not in config raises ValueError."""
-        ticket = _make_ticket("test-org/Unknown-Repo", 1)
+        ticket = _make_ticket("your-org/Unknown-Repo", 1)
         with pytest.raises(ValueError, match="not in the configured sandbox list"):
             router.resolve(ticket)
 
     def test_production_repo_rejected(self, router):
         """Ticket targeting a real production repo is rejected."""
-        ticket = _make_ticket("test-org/my-app", 42)
+        ticket = _make_ticket("your-org/example-app", 42)
         with pytest.raises(ValueError, match="not in the configured sandbox list"):
             router.resolve(ticket)
 
@@ -554,7 +554,7 @@ class TestNoAssignedTicketsSilent:
 
     def test_no_assigned_issues_returns_empty(self, tmp_store):
         """When gh returns no issues assigned to bot, fetch returns []."""
-        repo_issues: Dict[str, List[Dict]] = {"test-org/SWE-Sandbox": []}
+        repo_issues: Dict[str, List[Dict]] = {"your-org/SWE-Sandbox": []}
         tickets = _simulate_fetch_all(repo_issues, tmp_store)
         assert tickets == []
 
@@ -594,7 +594,7 @@ class TestTicketOverlapPrevention:
     def test_same_issue_fetched_twice_only_one_ticket(self, tmp_store):
         """Same issue appearing in two cycles creates only 1 ticket."""
         issue = _make_gh_issue(42, "Duplicate bug")
-        repo = "test-org/SWE-Sandbox"
+        repo = "your-org/SWE-Sandbox"
 
         # Cycle 1
         tickets_1 = _simulate_fetch_all({repo: [issue]}, tmp_store)
@@ -608,7 +608,7 @@ class TestTicketOverlapPrevention:
 
     def test_store_add_idempotent(self, tmp_store):
         """Adding same ticket twice doesn't create duplicate."""
-        ticket = _make_ticket("test-org/SWE-Sandbox", 1)
+        ticket = _make_ticket("your-org/SWE-Sandbox", 1)
         tmp_store.add(ticket)
         tmp_store.add(ticket)
 
@@ -619,7 +619,7 @@ class TestTicketOverlapPrevention:
 
     def test_fingerprint_based_dedup(self, tmp_store):
         """Two issues with same fingerprint: second is skipped."""
-        repo = "test-org/SWE-Sandbox"
+        repo = "your-org/SWE-Sandbox"
         issue = _make_gh_issue(99, "Same bug")
 
         tickets_1 = _simulate_fetch_all({repo: [issue]}, tmp_store)
@@ -634,7 +634,7 @@ class TestTicketOverlapPrevention:
     def test_status_transition_no_overwrite(self, tmp_store):
         """Ticket in INVESTIGATING cannot be overwritten by a new OPEN ticket
         with same fingerprint."""
-        repo = "test-org/SWE-Sandbox"
+        repo = "your-org/SWE-Sandbox"
         ticket = _make_ticket(repo, 55, status=TicketStatus.INVESTIGATING)
         tmp_store.add(ticket)
 
@@ -650,7 +650,7 @@ class TestTicketOverlapPrevention:
 
     def test_metadata_preserved_across_updates(self, tmp_store):
         """Updating ticket preserves original metadata (repo, fingerprint)."""
-        repo = "test-org/SWE-Sandbox-GreenGrid"
+        repo = "your-org/SWE-Sandbox-GreenGrid"
         ticket = _make_ticket(repo, 10)
         original_fp = ticket.metadata["fingerprint"]
         original_repo = ticket.metadata["repo"]
@@ -841,7 +841,7 @@ class TestEndToEndPipelineRounds:
 
     def test_pipeline_stale_ticket_not_reprocessed(self, tmp_store, router, queue):
         """Ticket resolved in round 5 is never reprocessed in rounds 6-20."""
-        repo = "test-org/SWE-Sandbox"
+        repo = "your-org/SWE-Sandbox"
         issue = _make_gh_issue(500, "Will be resolved early")
 
         resolved_ticket_id = None

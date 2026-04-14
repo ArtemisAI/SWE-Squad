@@ -1,187 +1,755 @@
-# =============================================================================
-# Autonomous SWE Team Configuration
-# =============================================================================
-# Controls the self-healing development agents that monitor, triage,
-# investigate, fix, test, and deploy changes autonomously.
-#
-# Environment variable overrides: SWE_TEAM_CONFIG (path), SWE_TEAM_ENABLED
-# =============================================================================
-
-# Kill switch — set to true to activate SWE team agents.
-# Override via environment variable: SWE_TEAM_ENABLED=true
+repos:
+- name: your-org/SWE-Sandbox
+  local_path: /home/agent/Projects/SWE-Sandbox
+  description: SWE-Squad self-testing sandbox
+  priority: medium
+- name: your-org/SWE-Sandbox-HealthTrack
+  local_path: /home/agent/Projects/SWE-Sandbox-HealthTrack
+  description: "Fictional client: HealthTrack Inc. \u2014 Healthcare SaaS (Python/Flask)"
+  priority: medium
+- name: your-org/SWE-Sandbox-ShopStream
+  local_path: /home/agent/Projects/SWE-Sandbox-ShopStream
+  description: "Fictional client: ShopStream Ltd. \u2014 E-commerce platform (Node.js/React)"
+  priority: medium
+- name: your-org/SWE-Sandbox-GreenGrid
+  local_path: /home/agent/Projects/SWE-Sandbox-GreenGrid
+  description: "Fictional client: GreenGrid Energy \u2014 IoT energy dashboard (Python/FastAPI)"
+  priority: medium
+- name: your-org/SWE-Sandbox-EduPath
+  local_path: /home/agent/Projects/SWE-Sandbox-EduPath
+  description: "Fictional client: EduPath Academy \u2014 EdTech LMS (Django/Vue.js)"
+  priority: low
+- name: your-org/example-site
+  local_path: /home/agent/Projects/example-site
+  description: "Production: example.com portfolio \u2014 Vue.js 3 migration (Vite\
+    \ + Vue Router + Pinia)"
+  priority: high
+- name: your-org/notebook-lm-automations
+  local_path: /home/agent/Projects/notebook-lm-automations
+  description: "NotebookLM browser automation \u2014 API actions, pipeline, DOM detection"
+  priority: medium
+- name: your-org/SWE-Squad-web
+  local_path: /home/agent/Projects/SWE-Squad-web
+  description: "SWE-Squad product website \u2014 Astro + Tailwind portfolio and docs"
+  priority: critical
+- name: your-org/SWE-Squad-Website
+  local_path: /home/agent/Projects/SWE-Squad-Website
+  description: "SWE-Squad Website v2 \u2014 Astro + Tailwind, foundation through polish"
+  priority: critical
+- name: your-org/SWE-Squad
+  local_path: /home/agent/Projects/SWE-Squad
+  description: SWE-Squad development repository (self-modification for own bugs)
+  priority: critical
+- name: SWE-Squad
+  local_path: ~/Projects/SWE-Squad
+  branches: []
+github_repos:
+- ArtemisAI/SWE-Squad
+- ArtemisAI/SWE-Squad-web
+- ArtemisAI/SWE-Squad-Website
+- ArtemisAI/notebook-lm-automations
+providers:
+  usage_governor:
+    provider: adaptive
+    hard_limits:
+      max_agents_absolute: 10
+      min_agents_absolute: 1
+    operator_overrides:
+    - name: anthropic_2x_window
+      description: 2x capacity window from Anthropic for Claude Code
+      days:
+      - mon
+      - tue
+      - wed
+      - thu
+      - fri
+      - sat
+      - sun
+      start_hour: 14
+      end_hour: 8
+      timezone: America/Toronto
+      multiplier: 2.0
+      active: true
+    - name: peak_reduction
+      description: Reduce during business hours to save quota
+      days:
+      - mon
+      - tue
+      - wed
+      - thu
+      - fri
+      start_hour: 8
+      end_hour: 14
+      timezone: America/Toronto
+      multiplier: 0.1
+      active: true
+    quota:
+      tokens_per_5h_block: 500000
+      tokens_per_day: 2400000
+    concurrency:
+      max_agents: 5
+      tiers:
+      - remaining_pct: 70
+        max_agents: 5
+        priority_floor: low
+      - remaining_pct: 50
+        max_agents: 3
+        priority_floor: medium
+      - remaining_pct: 30
+        max_agents: 2
+        priority_floor: high
+      - remaining_pct: 10
+        max_agents: 1
+        priority_floor: critical
+        allow_new_work: false
+    schedule:
+      timezone: America/Toronto
+      windows:
+      - name: weekday_peak
+        days:
+        - mon
+        - tue
+        - wed
+        - thu
+        - fri
+        hours:
+        - 9
+        - 18
+        concurrency_multiplier: 0.6
+      - name: weekday_offpeak
+        days:
+        - mon
+        - tue
+        - wed
+        - thu
+        - fri
+        hours:
+        - 18
+        - 9
+        concurrency_multiplier: 1.0
+      - name: weekend
+        days:
+        - sat
+        - sun
+        hours:
+        - 0
+        - 24
+        concurrency_multiplier: 1.5
+    bonus_detection:
+      enabled: true
+      throughput_multiplier_threshold: 1.5
+    alerts:
+      quota_warning_pct: 20
+      quota_critical_pct: 10
+      burn_rate_spike_multiplier: 2.0
+      throttle_minutes: 60
+  coding_engine:
+    provider: claude
+    timeout_seconds: 300
+  sandbox:
+    provider: proxmox
+    gateway_url: ''
+    api_key: ''
+    node: IO
+    default_cpu: 2
+    default_ram_gb: 4
+    default_disk_gb: 20
+    default_ttl_hours: 2
+    vmid_start: 1100
+    vmid_end: 1199
+    image: python:3.11-slim
+    network: none
+    auto_install_deps: true
+    cpu_limit: 1.0
+    memory_mb: 512
+  workspace:
+    provider: git-worktree
+  env:
+    provider: dotenv
+env_allowlists:
+  investigator:
+  - PATH
+  - HOME
+  - LANG
+  - PYTHONPATH
+  - SWE_TEAM_ID
+  - SWE_REPO_PATH
+  - SWE_TEAM_CONFIG
+  developer:
+  - PATH
+  - HOME
+  - LANG
+  - PYTHONPATH
+  - SWE_TEAM_ID
+  - SWE_GITHUB_REPO
+  - SWE_GITHUB_ACCOUNT
+  - GH_TOKEN
+  - GIT_AUTHOR_NAME
+  - GIT_AUTHOR_EMAIL
+  test_runner:
+  - PATH
+  - HOME
+  - LANG
+  - PYTHONPATH
+  - SWE_TEAM_ID
+  reviewer:
+  - PATH
+  - HOME
+  - LANG
+  - PYTHONPATH
+  - SWE_TEAM_ID
+  - SWE_GITHUB_REPO
+  - GH_TOKEN
+  claude_cli:
+  - PATH
+  - HOME
+  - LANG
+  - PYTHONPATH
+  - ANTHROPIC_AUTH_TOKEN
+  - ANTHROPIC_BASE_URL
+  - ANTHROPIC_API_KEY
+  - API_TIMEOUT_MS
+  - ANTHROPIC_DEFAULT_OPUS_MODEL
+  - ANTHROPIC_DEFAULT_SONNET_MODEL
+  - ANTHROPIC_DEFAULT_HAIKU_MODEL
+  - SWE_TEAM_ID
+  notification:
+    provider: telegram
+  issue_tracker:
+    provider: github
+notifications:
+  min_alert_severity: critical
+  suppress_investigation_complete: true
+  suppress_cycle_summary: true
 enabled: false
+teams:
+  alpha:
+    vm: swe-squad-1
+    github_account: swe-squad-alpha
+    role: full
+    max_concurrent: 5
+    cost_budget_daily: 90.0
+    specialization:
+    - critical
+    - architecture
+    - orchestration
+    - complex
+    - security
+    engine: claude
+    tier: senior
+  beta:
+    vm: worker-1
+    github_account: your-bot-beta
+    role: developer
+    max_concurrent: 5
+    cost_budget_daily: 50.0
+    specialization:
+    - frontend
+    - webui
+    - react
+    - typescript
+    - feature
+    - enhancement
+    - WebUI
+    engine: claudez
+    tier: standard
+  gamma:
+    vm: worker-2
+    github_account: your-bot-gamma
+    role: investigator
+    max_concurrent: 5
+    cost_budget_daily: 300.0
+    specialization:
+    - investigation
+    - triage
+    - research
+    - analysis
+    - documentation
+    engine: claudep
+    tier: economy
+team_id: swe-squad-dev
+github_account: ''
+auto_accept_invites: false
+invite_allowlist: []
+# Override via A2A_HUB_URL env var (e.g. http://<your-hub-ip>:18790)
+a2a_hub_url: http://localhost:18790
+ticket_store_path: data/swe_team/tickets.json
+orchestrator:
+  enabled: true
+  cycle_interval_minutes: 30
+  auto_fix: true
+  thresholds:
+    idle_with_work_minutes: 30
+    stuck_ticket_hours: 6
+    throughput_drop_percent: 50
+    max_circuit_breaker_resets_per_day: 3
+  vms:
+  # Configure VM IPs via environment or override this section per-deployment
+  - name: worker-1
+    ip: ${SWE_VM_2_IP:-127.0.0.1}
+    ssh_alias: worker-1
+    team_id: your-bot-beta
+  - name: worker-2
+    ip: ${SWE_VM_3_IP:-127.0.0.1}
+    ssh_alias: worker-2
+    team_id: your-bot-gamma
+worktree:
+  base_dir: data/worktrees
+  max_age_hours: 48
+  max_concurrent: 10
+# V2 delegation config — engine-agnostic role-to-engine mapping
+delegation:
+  investigator:
+    engine: claude-cli
+    model: sonnet
+    read_only: true
+    timeout: 1800
+  developer:
+    engine: claude-cli
+    model: sonnet
+    timeout: 3600
+  reviewer:
+    engine: claude-cli
+    model: sonnet
+    read_only: true
+    timeout: 900
 
-# Team identity — scopes tickets so multiple SWE teams don't overlap.
-# Override via: SWE_TEAM_ID, SWE_GITHUB_ACCOUNT
-team_id: "default"
-github_account: ""        # Dedicated GitHub bot account for this team
+# V2 daemon config
+daemon:
+  heartbeat_interval_seconds: 300
+  initial_prompt: "Management cycle. Steps: 1) call check_health + check_stability. 2) call ticket_list with status=pipeline to see the full pipeline in ONE call. 3) Advance ONE ticket — pick by priority (flush right-to-left, complete nearest-done first): testing with review approved→run_tests then approve_pr + merge_pr, in_review→delegate_review, investigation_complete→delegate_development, in_development with metadata.reviewVerdict=changes_requested→delegate_development (rework with review feedback), in_development with no assigned_to and no reviewVerdict→ticket_update status=investigation_complete (orphaned, reset for dev retry), investigating with no assigned_to→ticket_update status=open (orphaned reset for retry), open/triaged→delegate_investigation (skip tickets with investigationAttempts >= 3). 4) If stability=BLOCK or all engines unhealthy, send_notification and stop. Take action — call one delegation tool. Do NOT write reports or use bash. CALL THE TOOL."
+  max_session_age: 86400
+  graceful_shutdown_timeout: 30
 
-# A2A hub for inter-agent communication
-a2a_hub_url: "http://localhost:18790"
-
-# Persistent ticket storage (JSON file, lightweight default).
-# Set SUPABASE_URL + SUPABASE_ANON_KEY in .env to use Supabase instead.
-ticket_store_path: "data/swe_team/tickets.json"
-
-# ---------------------------------------------------------------------------
-# Ralph-Wiggum Stability Gate
-# ---------------------------------------------------------------------------
 governance:
-  enabled: true
-  max_open_critical: 0        # Block ALL new work if any critical bugs
-  max_open_high: 3            # Block if more than 3 high bugs
-  max_failing_tests: 0        # Block if any test failures
-  require_ci_green: true      # Block if CI pipeline is red
-  check_interval_hours: 6     # Run stability check every 6 hours
-
-# ---------------------------------------------------------------------------
-# Error Monitor
-# ---------------------------------------------------------------------------
+  enabled: false
+  max_open_critical: 100
+  max_open_high: 200
+  max_failing_tests: 5
+  max_failing_tests_pct: 5
+  require_ci_green: false
+  check_interval_hours: 6
+  warn_on_any_failure: true
+  hard_block_pct: 10
 monitor:
-  enabled: true
-  scan_interval_minutes: 30
+  enabled: false
+  scan_interval_minutes: 15
   dedup_window_hours: 72
   log_directories:
-    - "logs/"
+  - logs/
   log_patterns:
-    - "ERROR"
-    - "CRITICAL"
-    - "Traceback"
-    - "FAILED"
-    - "reCAPTCHA"
-    - "TimeoutError"
+  - ERROR
+  - CRITICAL
+  - Traceback
+  - FAILED
+  - reCAPTCHA
+  - TimeoutError
   exclude_patterns:
-    - "swe_team"
-    - "swe_team_runner"
-
-# ---------------------------------------------------------------------------
-# Model Cost Tiers
-# ---------------------------------------------------------------------------
-# Route tasks to the right model tier for cost efficiency.
-# Override via environment variables: T1_MODEL, T2_MODEL, T3_MODEL
+  - swe_team
+  - swe_team_runner
+  - health_check
+  - logs/remote
+  - cron
+  worker_module_map:
+    browser:
+    - worker-browser-2
+    bot:
+    - worker-bot-2
+    scraper:
+    - worker-hp-laptop
+  remote_workers:
+  - name: worker-browser-2
+    ssh: worker-browser-2
+    log_dir: ~/Projects/example-app/logs
+  - name: worker-bot-2
+    ssh: worker-bot-2
+    log_dir: ~/Projects/example-app/logs
+  - name: worker-hp-laptop
+    ssh: worker-hp-laptop
+    log_dir: ~/Projects/example-app/logs
+cycle:
+  severity_filter: low
+  max_new_tickets_per_cycle: 10
+  max_investigations_per_cycle: 20
+  max_developments_per_cycle: 10
+  max_open_investigating: 40
+  max_investigation_workers: 8
+  stale_ticket_timeouts:
+    blocked_ticket_timeout_hours: 4
+    blocked_ticket_escalation_hours: 24
+pipeline:
+  verification_window_minutes: 30
+  propagation_wait_minutes: 2
 models:
-  t1_heavy: "opus"      # Architecture, orchestration, critical bugs
-  t2_standard: "sonnet"  # Feature implementation, routine fixes
-  t3_fast: "haiku"       # Docs, scanning, simple tasks
-
-# ---------------------------------------------------------------------------
-# Semantic Memory (pgvector embeddings + similar ticket retrieval)
-# ---------------------------------------------------------------------------
+  t1_heavy: opus
+  t2_standard: opus
+  t3_fast: haiku
+engine_routing:
+  investigate: claudep
+  triage: claudep
+  develop: claude
+  review: claudez
+  fallback: claudez
+rate_limits:
+  max_retries_on_429: 5
+  initial_backoff_seconds: 60
+  max_backoff_seconds: 900
+fallback_agents:
+- name: claudep
+  command: /usr/bin/claude
+  args_template:
+  - --print
+  - '{prompt}'
+  default_model: sonnet
+  enabled: true
+  priority: 30
+  timeout: 300
+  prompt_via_stdin: true
+  skills:
+  - investigate
+  - develop
+  - review
+  - fix
+  env_vars:
+    # Override via ANTHROPIC_BASE_URL env var
+    ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+- name: gemini-cli
+  command: /usr/bin/gemini
+  args_template:
+  - -p
+  - '{prompt}'
+  default_model: gemini-3-pro-high
+  enabled: true
+  priority: 50
+  timeout: 180
+  prompt_via_stdin: false
+  skills:
+  - investigate
+  - review
+  - dashboard
+  - websearch
+- name: opencode
+  command: /usr/local/bin/opencode
+  args_template:
+  - run
+  - -m
+  - '{prompt}'
+  default_model: ''
+  enabled: false
+  priority: 60
+  timeout: 180
+  prompt_via_stdin: false
+  skills:
+  - investigate
+  - fix
+  - refactor
+routing:
+  external_agents_enabled: false
+  complexity_threshold: 50
+  capability_map:
+    investigation: gemini-cli
+    code_generation: opencode
 memory:
-  embedding_model: "bge-m3"
+  embedding_model: bge-m3
   embedding_dimensions: 1024
   top_k: 5
   similarity_floor: 0.75
   store_on_investigation_complete: true
-
-# ---------------------------------------------------------------------------
-# Agent Definitions
-# ---------------------------------------------------------------------------
+  # Memory worker service — flip enabled to true once the worker is deployed
+  enabled: false
+  worker_host: 127.0.0.1
+  worker_port: 37777
 agents:
-  # ---- Monitoring ----
-  - name: "swe_monitor"
-    role: "monitor"
-    description: "Scans logs and metrics for errors, creates tickets"
-    model: "sonnet"
-    tools: ["log_scanner", "github_issues"]
-    max_concurrent_tasks: 1
-    enabled: true
-    node: "primary"
+- name: swe_monitor
+  role: monitor
+  description: Scans logs and metrics for errors, creates tickets
+  model: sonnet
+  tools:
+  - log_scanner
+  - github_issues
+  max_concurrent_tasks: 1
+  enabled: true
+  node: primary
+- name: swe_triage
+  role: triage
+  description: Classifies tickets by severity and assigns to investigators
+  model: sonnet
+  tools:
+  - ticket_manager
+  max_concurrent_tasks: 3
+  enabled: true
+  node: primary
+- name: browser_investigator
+  role: investigator
+  description: Diagnoses browser automation and scraping issues
+  model: sonnet
+  tools:
+  - log_scanner
+  - code_search
+  - browser_debug
+  max_concurrent_tasks: 2
+  enabled: true
+  node: worker
+- name: db_investigator
+  role: investigator
+  description: Diagnoses database and query issues
+  model: sonnet
+  tools:
+  - log_scanner
+  - code_search
+  - db_query
+  max_concurrent_tasks: 1
+  enabled: true
+  node: primary
+- name: infra_investigator
+  role: investigator
+  description: Diagnoses A2A hub, networking, and infrastructure issues
+  model: sonnet
+  tools:
+  - log_scanner
+  - code_search
+  - health_check
+  max_concurrent_tasks: 1
+  enabled: true
+  node: primary
+- name: swe_developer
+  role: developer
+  description: Implements fixes and features via acpx/Claude Code
+  model: sonnet
+  tools:
+  - code_editor
+  - acpx
+  - git
+  max_concurrent_tasks: 1
+  enabled: true
+  node: primary
+- name: swe_reviewer
+  role: reviewer
+  description: Reviews code changes and approves for testing
+  model: sonnet
+  tools:
+  - code_review
+  - git
+  max_concurrent_tasks: 2
+  enabled: true
+  node: primary
+- name: swe_qa
+  role: qa
+  description: Runs build verification, visual tests, and regression checks before
+    merge
+  model: sonnet
+  tools:
+  - pytest
+  - playwright
+  - npm
+  max_concurrent_tasks: 2
+  enabled: true
+  node: primary
+- name: swe_tester
+  role: tester
+  description: Runs tests in sandboxed environment
+  model: sonnet
+  tools:
+  - pytest
+  - sandbox
+  max_concurrent_tasks: 1
+  enabled: true
+  node: primary
+- name: swe_deployer
+  role: deployer
+  description: Injects fixes into production and monitors rollback
+  model: sonnet
+  tools:
+  - git
+  - deploy
+  - health_check
+  max_concurrent_tasks: 1
+  enabled: true
+  node: primary
+- name: swe_documenter
+  role: documenter
+  description: Keeps docs, tracking, and architecture docs up-to-date
+  model: sonnet
+  tools:
+  - code_editor
+  - git
+  max_concurrent_tasks: 1
+  enabled: true
+  node: primary
+- name: swe_creative
+  role: creative
+  description: Proposes workflow optimisations and improvements
+  model: sonnet
+  tools:
+  - code_search
+  - research
+  - deep_wiki
+  max_concurrent_tasks: 1
+  enabled: true
+  node: primary
 
-  # ---- Triage ----
-  - name: "swe_triage"
-    role: "triage"
-    description: "Classifies tickets by severity and assigns to investigators"
-    model: "sonnet"
-    tools: ["ticket_manager"]
-    max_concurrent_tasks: 3
-    enabled: true
-    node: "primary"
+# ---------------------------------------------------------------------------
+# Proposed new agents (disabled pending implementation — see docs/skills-integration.md)
+# ---------------------------------------------------------------------------
 
-  # ---- Investigation ----
-  - name: "browser_investigator"
-    role: "investigator"
-    description: "Diagnoses browser automation and scraping issues"
-    model: "sonnet"
-    tools: ["log_scanner", "code_search", "browser_debug"]
-    max_concurrent_tasks: 2
-    enabled: true
-    node: "worker"
+- name: security_investigator
+  role: investigator
+  description: >
+    Security-focused investigator for credential leaks, vulnerable dependencies,
+    supply chain risks, and CI/CD pipeline exposure. Runs on SECURITY-labelled
+    tickets and whenever credential_scanner raises an alert.
+  model: sonnet
+  tools:
+  - code_search
+  - credential_scan
+  - acpx
+  max_concurrent_tasks: 1
+  enabled: false  # TODO: implement src/swe_team/security_investigator.py
+  node: primary
+  specialization:
+  - security
+  - credentials
+  - dependencies
+  - ci_cd
+  skill: .claude/skills/guard/SKILL.md
 
-  - name: "db_investigator"
-    role: "investigator"
-    description: "Diagnoses database and query issues"
-    model: "sonnet"
-    tools: ["log_scanner", "code_search", "db_query"]
-    max_concurrent_tasks: 1
-    enabled: true
-    node: "primary"
+- name: perf_investigator
+  role: investigator
+  description: >
+    Performance regression investigator. Establishes baselines then hunts
+    regressions in page load times, Core Web Vitals, bundle size, and API
+    latency. Triggered by PERF-labelled tickets or post-deploy canary alerts.
+  model: sonnet
+  tools:
+  - code_search
+  - browser_debug
+  - acpx
+  max_concurrent_tasks: 1
+  enabled: false  # TODO: implement src/swe_team/perf_investigator.py
+  node: worker
+  specialization:
+  - performance
+  - benchmarks
+  - web_vitals
+  - latency
+  skill: .claude/skills/benchmark/SKILL.md
 
-  - name: "infra_investigator"
-    role: "investigator"
-    description: "Diagnoses A2A hub, networking, and infrastructure issues"
-    model: "sonnet"
-    tools: ["log_scanner", "code_search", "health_check"]
-    max_concurrent_tasks: 1
-    enabled: true
-    node: "primary"
+- name: plan_reviewer
+  role: reviewer
+  description: >
+    Multi-axis plan reviewer. Runs autoplan (CEO + eng + design + DX review)
+    on CRITICAL/HIGH tickets before execution begins. Ensures plans are
+    ambitious, architecturally sound, and developer-friendly.
+  model: opus
+  tools:
+  - code_search
+  - acpx
+  max_concurrent_tasks: 1
+  enabled: false  # TODO: implement src/swe_team/plan_reviewer.py
+  node: primary
+  specialization:
+  - planning
+  - architecture
+  - strategy
+  skill: .claude/skills/autoplan/SKILL.md
 
-  # ---- Development ----
-  - name: "swe_developer"
-    role: "developer"
-    description: "Implements fixes and features via acpx/Claude Code"
-    model: "sonnet"
-    tools: ["code_editor", "acpx", "git"]
-    max_concurrent_tasks: 1
-    enabled: true
-    node: "primary"
+- name: devex_agent
+  role: creative
+  description: >
+    Developer experience auditor. Proactively navigates documentation, tests
+    getting-started flows, audits CLI ergonomics, and files actionable issues
+    when DX degrades. Runs weekly and after significant docs or API changes.
+  model: sonnet
+  tools:
+  - browser_debug
+  - code_search
+  - github_issues
+  max_concurrent_tasks: 1
+  enabled: false  # TODO: implement src/swe_team/devex_agent.py
+  node: primary
+  specialization:
+  - developer_experience
+  - docs
+  - onboarding
+  - cli
+  skill: .claude/skills/devex-review/SKILL.md
 
-  # ---- Review ----
-  - name: "swe_reviewer"
-    role: "reviewer"
-    description: "Reviews code changes and approves for testing"
-    model: "sonnet"
-    tools: ["code_review", "git"]
-    max_concurrent_tasks: 2
-    enabled: true
-    node: "primary"
-
-  # ---- Testing ----
-  - name: "swe_tester"
-    role: "tester"
-    description: "Runs tests in sandboxed environment"
-    model: "sonnet"
-    tools: ["pytest", "sandbox"]
-    max_concurrent_tasks: 1
-    enabled: true
-    node: "primary"
-
-  # ---- Deployment ----
-  - name: "swe_deployer"
-    role: "deployer"
-    description: "Injects fixes into production and monitors rollback"
-    model: "sonnet"
-    tools: ["git", "deploy", "health_check"]
-    max_concurrent_tasks: 1
-    enabled: true
-    node: "primary"
-
-  # ---- Documentation ----
-  - name: "swe_documenter"
-    role: "documenter"
-    description: "Keeps docs, tracking, and architecture docs up-to-date"
-    model: "sonnet"
-    tools: ["code_editor", "git"]
-    max_concurrent_tasks: 1
-    enabled: true
-    node: "primary"
-
-  # ---- Creative / Optimisation ----
-  - name: "swe_creative"
-    role: "creative"
-    description: "Proposes workflow optimisations and improvements"
-    model: "sonnet"
-    tools: ["code_search", "research", "deep_wiki"]
-    max_concurrent_tasks: 1
-    enabled: true
-    node: "primary"
+scheduler:
+  enabled: true
+  tick_interval_seconds: 30
+  max_workers: 3
+  peak_start_hour: 13
+  peak_end_hour: 19
+  peak_days: 0,1,2,3,4
+  default_jobs:
+  - name: SWE monitoring cycle
+    schedule_type: cron
+    cron_expression: '*/15 * * * *'
+    priority: critical
+    instructions: run_cycle
+    respect_peak_hours: false
+  - name: Daily summary report
+    schedule_type: cron
+    cron_expression: 0 8 * * *
+    priority: normal
+    instructions: daily_summary
+  - name: PR sync to knowledge graph
+    schedule_type: cron
+    cron_expression: '*/5 * * * *'
+    priority: low
+    instructions: pr_sync
+throttle:
+  enabled: true
+  time_bands:
+    peak_reduction:
+      start_hour: 7
+      end_hour: 10
+      timezone: America/New_York
+      multiplier: 0.1
+    overnight_low:
+      start_hour: 0
+      end_hour: 6
+      timezone: America/New_York
+      multiplier: 0.3
+    daytime:
+      start_hour: 10
+      end_hour: 24
+      timezone: America/New_York
+      multiplier: 0.5
+  capacity:
+    warn_usage_pct: 80
+    warn_days_remaining: 2
+    warn_multiplier: 0.5
+    critical_usage_pct: 95
+    critical_multiplier: 0.1
+  demand:
+    high_backlog_threshold: 200
+    high_backlog_multiplier: 1.5
+    critical_backlog_threshold: 20
+    surge_multiplier: 2.0
+execution:
+  mode: adaptive
+  profiles:
+    base:
+      max_concurrent_investigations: 2
+      max_concurrent_developments: 1
+      cycle_interval_seconds: 900
+    burst:
+      max_concurrent_investigations: 2
+      max_concurrent_developments: 3
+      cycle_interval_seconds: 300
+    max:
+      max_concurrent_investigations: 3
+      max_concurrent_developments: 3
+      cycle_interval_seconds: 120
+  adaptive:
+    schedule:
+    - hours: 0-8
+      profile: burst
+    - hours: 8-17
+      profile: base
+    - hours: 17-24
+      profile: burst
+    backlog_burst_threshold: 30
+    backlog_max_threshold: 80
+    quota_multiplier: 1.0

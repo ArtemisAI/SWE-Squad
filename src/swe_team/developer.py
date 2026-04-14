@@ -7,6 +7,7 @@ and only keep changes that pass tests and complexity gates.
 
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
 import shutil
@@ -19,7 +20,13 @@ from typing import Any, List, Optional, Tuple, Union
 
 from src.swe_team.governance import check_fix_complexity
 from src.swe_team.model_boundary import enforce_code_generation_boundary
-from src.swe_team.models import SWETicket, TicketStatus
+from src.swe_team.models import (
+    DevelopmentPhaseOutput,
+    EngineHandover,
+    HandoverConstraints,
+    SWETicket,
+    TicketStatus,
+)
 from src.swe_team.preflight import PreflightCheck
 from src.swe_team.rbac_middleware import require_permission
 from src.swe_team.providers.coding_engine.base import CodingEngine
@@ -27,9 +34,21 @@ from src.swe_team.providers.env.base import EnvProvider, EnvSpec
 from src.swe_team.providers.env.dotenv_provider import DotenvEnvProvider
 from src.swe_team.providers.notification.base import NotificationProvider
 from src.swe_team.proxy_model_policy import ProxyModelPolicyResolver
-from src.swe_team.rate_limiter import ExponentialBackoff, RateLimitExhausted, RateLimitTracker
+from src.swe_team.rate_limiter import (
+    EngineCooldownManager,
+    ExponentialBackoff,
+    MonthlyLimitExhausted,
+    RateLimitCooldown,
+    RateLimitExhausted,
+    RateLimitTracker,
+)
 
 logger = logging.getLogger(__name__)
+
+try:
+    from memory.src.client import MemoryClient
+except ImportError:
+    MemoryClient = None  # type: ignore[assignment,misc]
 
 
 def _estimate_tokens(text: str) -> int:
@@ -39,6 +58,14 @@ def _estimate_tokens(text: str) -> int:
 
 # Type alias for fallback agent adapters (duck-typed — must have .invoke())
 _FallbackAgent = Any
+
+
+class _SafeFormatDict(dict):
+    """Dict that returns '{key}' for missing keys, preventing KeyError from stray
+    curly braces in user-supplied content (error logs, descriptions, etc.)."""
+
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
 
 # Model tier defaults — always read from env so the orchestrator can override at runtime.
 # These are ONLY used when no ModelConfig is injected (e.g. unit tests).
@@ -82,6 +109,9 @@ class DeveloperAgent:
         engine: Optional[CodingEngine] = None,
         rbac_engine: Optional[object] = None,
         preflight: Optional[PreflightCheck] = None,
+        cooldown_manager: Optional[EngineCooldownManager] = None,
+        team_id: str = "",
+        memory_client: Optional[object] = None,
     ) -> None:
         self._repo_root = Path(repo_root)
         self._program_path = Path(program_path)
@@ -105,20 +135,25 @@ class DeveloperAgent:
         self._preflight_override: Optional[PreflightCheck] = preflight
         # Session store — lazy-initialized in _fix_loop
         self._session_store: Optional[object] = None
+        self._team_id = team_id or os.environ.get("SWE_TEAM_ID", "default")
+        self._memory_client = memory_client
         if engine is not None:
             self._engine: CodingEngine = engine
         else:
             from src.swe_team.providers.coding_engine.claude import ClaudeCodeEngine
             self._engine = ClaudeCodeEngine()
         self._proxy_policy = ProxyModelPolicyResolver()
+        self._cooldown_manager = cooldown_manager or EngineCooldownManager(team_id=self._team_id)
 
         # Rate limit backoff
         rl = rate_limit_config
         self._backoff = ExponentialBackoff(
-            max_retries=getattr(rl, "max_retries_on_429", 3) if rl else 3,
-            initial_delay=getattr(rl, "initial_backoff_seconds", 30) if rl else 30,
-            max_delay=getattr(rl, "max_backoff_seconds", 300) if rl else 300,
+            max_retries=getattr(rl, "max_retries_on_429", 5) if rl else 5,
+            initial_delay=getattr(rl, "initial_backoff_seconds", 60) if rl else 60,
+            max_delay=getattr(rl, "max_backoff_seconds", 900) if rl else 900,
             tracker=rate_limit_tracker,
+            engine_name=getattr(self._engine, "name", "claude"),
+            cooldown_manager=self._cooldown_manager,
         )
 
     @require_permission("code_generation")
@@ -256,6 +291,39 @@ class DeveloperAgent:
 
                 model = self._select_model(ticket)
                 enforce_code_generation_boundary(model, task="develop")
+                engine_name = getattr(self._engine, "name", "claude")
+                if not self._cooldown_manager.should_use_engine(
+                    engine_name,
+                    probe_fn=getattr(self._engine, "health_check", None),
+                ):
+                    if prompt and self._try_fallback_agents(prompt, ticket, timebox):
+                        tests_ok, test_error = self._run_tests(deadline, source_module=ticket.source_module)
+                        if tests_ok:
+                            lines_changed, files_changed = self._diff_stats()
+                            if files_changed:
+                                self._git(["git", "add", "-A"])
+                                if self._git(["git", "diff", "--cached", "--name-only"]).strip():
+                                    self._git(["git", "commit", "-m", f"swe-fix: {ticket.ticket_id} (fallback)"])
+                                    self._record_automation(ticket)
+                                    try:
+                                        self._git(["git", "push", "--force-with-lease", "origin", branch])
+                                        attempt_record["pushed"] = True
+                                    except Exception as push_exc:
+                                        attempt_record["push_error"] = str(push_exc)
+                                    attempt_record["result"] = "pass"
+                                    attempt_record["fallback_agent"] = ticket.metadata.get("fallback_agent_used")
+                                    attempts.append(attempt_record)
+                                    ticket.transition(TicketStatus.IN_REVIEW)
+                                    ticket.metadata["attempts"] = attempts
+                                    return True
+                    cooldown_seconds = max(60.0, self._cooldown_manager.remaining_cooldown_seconds(engine_name))
+                    raise RateLimitCooldown(
+                        f"Engine {engine_name} in cooldown for {cooldown_seconds:.0f}s",
+                        cooldown_seconds=cooldown_seconds,
+                        global_pause=False,
+                        engine_name=engine_name,
+                        status=str(self._cooldown_manager.get_status(engine_name).get("status", "")),
+                    )
                 # Session continuity: prefer ticket.metadata["dev_session_id"] for
                 # daemon restarts, then a stored resumable session, then fork from
                 # investigator on the very first attempt.
@@ -326,6 +394,40 @@ class DeveloperAgent:
                     )
                 except Exception:
                     pass
+
+                # Record dollar-denominated cost (best-effort, never blocks development)
+                try:
+                    _cost_tracker = getattr(self, "_cost_tracker", None)
+                    if _cost_tracker is not None:
+                        _team_id = getattr(self, "_team_id", "") or ""
+                        er = getattr(self, "_last_engine_result", None)
+                        _in = er.input_tokens if (er and er.input_tokens is not None) else _estimate_tokens(prompt)
+                        _out = er.output_tokens if (er and er.output_tokens is not None) else max(1, _estimate_tokens(prompt) // 2)
+                        _cost_tracker.record_cost(
+                            team_id=_team_id,
+                            model=model,
+                            input_tokens=_in,
+                            output_tokens=_out,
+                            operation="develop",
+                            ticket_id=ticket.ticket_id,
+                        )
+                except Exception:
+                    pass  # Cost tracking is best-effort, never blocks
+
+                # Record observation in memory service (fire-and-forget)
+                if self._memory_client is not None:
+                    try:
+                        _er = getattr(self, "_last_engine_result", None)
+                        self._memory_client.record_observation(
+                            session_id=f"dev-{ticket.ticket_id}",
+                            tool_name="developer_fix_attempt",
+                            tool_input={"ticket_id": ticket.ticket_id, "attempt": getattr(ticket, 'development_attempts', 0)},
+                            tool_response=(_er.stdout[:1000] if _er and hasattr(_er, 'stdout') and _er.stdout else ""),
+                            cwd=str(self._repo_root),
+                            project=ticket.metadata.get("repo", "") if ticket.metadata else "",
+                        )
+                    except Exception:
+                        pass
 
                 # Detect if Claude CLI committed code during its session.
                 # Claude runs with auto-permissions and often commits directly.
@@ -421,6 +523,21 @@ class DeveloperAgent:
                     self._git(["git", "commit", "-m", f"swe-fix: {ticket.ticket_id}"])
                 self._record_automation(ticket)
 
+                # WebUI build + visual test gate
+                if self._is_webui_ticket(ticket):
+                    build_ok, build_err = self._run_webui_build(deadline)
+                    if not build_ok:
+                        last_error = f"WebUI build failed: {build_err}"
+                        logger.warning("WebUI build failed for %s: %s", ticket.ticket_id, build_err[:200])
+                        self._reset_to(base_sha)
+                        continue
+                    vt_ok, vt_report = self._run_visual_tests(deadline)
+                    if not vt_ok:
+                        last_error = f"Visual test failed: {vt_report}"
+                        logger.warning("Visual test failed for %s: %s", ticket.ticket_id, vt_report[:200])
+                        self._reset_to(base_sha)
+                        continue
+
                 # Push branch to origin BEFORE worktree cleanup can destroy it
                 try:
                     self._git(["git", "push", "--force-with-lease", "origin", branch])
@@ -438,6 +555,32 @@ class DeveloperAgent:
 
                 ticket.transition(TicketStatus.IN_REVIEW)
                 ticket.metadata["attempts"] = attempts
+                dev_output = DevelopmentPhaseOutput(
+                    branch=branch,
+                    diff=f"{len(files_changed)} files / {lines_changed} lines",
+                    test_results={
+                        "passed": True,
+                        "error": None,
+                    },
+                    commit_message=f"swe-fix: {ticket.ticket_id}",
+                )
+                handover = EngineHandover(
+                    task_id=ticket.ticket_id,
+                    phase="develop",
+                    source_engine=getattr(self._engine, "name", "unknown"),
+                    target_engine=ticket.metadata.get("target_engine_verify", "cline"),
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    context=dev_output.to_dict(),
+                    constraints=HandoverConstraints(
+                        budget_remaining_usd=float(ticket.metadata.get("budget_remaining_usd", 0.0) or 0.0),
+                        time_limit_seconds=int(ticket.metadata.get("handover_time_limit_seconds", self._timebox_seconds(ticket)) or self._timebox_seconds(ticket)),
+                        model_tier="T3" if model == _MODEL_T1 else "T2",
+                        retry_count=int(len(attempts)),
+                        max_retries=int(self._max_attempts),
+                    ),
+                )
+                ticket.metadata["handover_develop_to_verify"] = handover.to_dict()
+                self._cooldown_manager.mark_healthy(getattr(self._engine, "name", "claude"))
                 # Mark session as completed on success
                 if _session_record and self._session_store:
                     try:
@@ -449,6 +592,12 @@ class DeveloperAgent:
                 return True
 
             except RateLimitExhausted as exc:
+                engine_name = getattr(self._engine, "name", "claude")
+                cooldown_row = self._cooldown_manager.mark_failure(
+                    engine_name,
+                    exc,
+                    fallback_engine=str(ticket.metadata.get("fallback_agent_used") or ""),
+                )
                 # Try fallback agents before giving up
                 if prompt and self._try_fallback_agents(prompt, ticket, timebox):
                     # Fallback succeeded — check tests and complexity
@@ -460,6 +609,21 @@ class DeveloperAgent:
                             if self._git(["git", "diff", "--cached", "--name-only"]).strip():
                                 self._git(["git", "commit", "-m", f"swe-fix: {ticket.ticket_id} (fallback)"])
                                 self._record_automation(ticket)
+
+                                # WebUI build + visual test gate (fallback path)
+                                if self._is_webui_ticket(ticket):
+                                    build_ok, build_err = self._run_webui_build(deadline)
+                                    if not build_ok:
+                                        last_error = f"WebUI build failed: {build_err}"
+                                        logger.warning("WebUI build failed for %s: %s", ticket.ticket_id, build_err[:200])
+                                        self._reset_to(base_sha)
+                                        break
+                                    vt_ok, vt_report = self._run_visual_tests(deadline)
+                                    if not vt_ok:
+                                        last_error = f"Visual test failed: {vt_report}"
+                                        logger.warning("Visual test failed for %s: %s", ticket.ticket_id, vt_report[:200])
+                                        self._reset_to(base_sha)
+                                        break
 
                                 # Push fallback branch to origin before worktree cleanup
                                 try:
@@ -483,6 +647,14 @@ class DeveloperAgent:
                 attempt_record["error"] = str(exc)
                 ticket.metadata["rate_limited"] = True
                 ticket.metadata["rate_limited_at"] = datetime.now(timezone.utc).isoformat()
+                if isinstance(exc, MonthlyLimitExhausted):
+                    ticket.metadata["rate_limit_type"] = "monthly_exhausted"
+                    if getattr(exc, "reset_at", ""):
+                        ticket.metadata["rate_limit_reset_at"] = exc.reset_at
+                else:
+                    ticket.metadata["rate_limit_type"] = "transient"
+                ticket.metadata["engine_cooldown_status"] = cooldown_row.get("status", "rate_limited")
+                cooldown_seconds = max(60.0, self._cooldown_manager.remaining_cooldown_seconds(engine_name))
                 if base_sha:
                     self._reset_to(base_sha)
                 attempts.append(attempt_record)
@@ -495,7 +667,20 @@ class DeveloperAgent:
                         )
                     except Exception:
                         logger.debug("Failed to suspend session on rate limit", exc_info=True)
-                break  # No point retrying more attempts after rate limit exhaustion
+                # Issue #645: push partial work before raising so the branch
+                # is preserved on origin even when rate-limited.
+                self._push_branch_best_effort(branch, ticket.ticket_id)
+                # Raise RateLimitCooldown so the runner can pause ALL work
+                raise RateLimitCooldown(
+                    f"Rate limit exhausted for ticket {ticket.ticket_id}; "
+                    f"pausing engine {engine_name} for {cooldown_seconds:.0f}s",
+                    cooldown_seconds=cooldown_seconds,
+                    global_pause=False,
+                    engine_name=engine_name,
+                    status=str(cooldown_row.get("status", "rate_limited")),
+                    reset_at=str(cooldown_row.get("reset_at", "")),
+                    fallback_engine=str(ticket.metadata.get("fallback_agent_used", "")),
+                )
             except (subprocess.TimeoutExpired, RuntimeError, OSError) as exc:
                 attempt_record["error"] = str(exc)
                 if base_sha and self._repo_root.exists():
@@ -549,6 +734,10 @@ class DeveloperAgent:
                 "Ticket %s → FAILED after %d attempt(s)",
                 ticket.ticket_id, len(attempts),
             )
+
+        # Issue #645: push the branch before escalation so partial work is
+        # preserved on origin even when all attempts failed.
+        self._push_branch_best_effort(branch, ticket.ticket_id)
 
         self._escalate(ticket)
         return False
@@ -618,6 +807,103 @@ class DeveloperAgent:
             TicketStatus.IN_DEVELOPMENT,
         )
 
+    def _is_webui_ticket(self, ticket: SWETicket) -> bool:
+        """Detect WebUI/frontend tickets from labels or title."""
+        labels = {l.lower() for l in (ticket.labels if hasattr(ticket, 'labels') and ticket.labels else [])}
+        if "webui" in labels or "frontend" in labels:
+            return True
+        title = (ticket.title or "").lower()
+        return "[webui]" in title or "webui" in (ticket.source_module or "").lower()
+
+    def _run_webui_build(self, deadline: float) -> Tuple[bool, str]:
+        """Run npm build + tsc check for WebUI tickets. Returns (ok, error_msg)."""
+        ui_dir = Path(self._repo_root) / "ui"
+        if not ui_dir.is_dir():
+            return True, ""
+        remaining = max(60, int(deadline - time.monotonic()))
+        try:
+            result = subprocess.run(
+                ["npx", "tsc", "--noEmit"],
+                cwd=str(ui_dir), capture_output=True, text=True,
+                timeout=min(remaining, 120),
+            )
+            if result.returncode != 0:
+                return False, f"TypeScript errors:\n{(result.stdout + result.stderr)[-500:]}"
+            result = subprocess.run(
+                ["npm", "run", "build"],
+                cwd=str(ui_dir), capture_output=True, text=True,
+                timeout=min(remaining, 120),
+            )
+            if result.returncode != 0:
+                return False, f"Build failed:\n{(result.stdout + result.stderr)[-500:]}"
+            return True, ""
+        except subprocess.TimeoutExpired:
+            return False, "WebUI build timed out"
+        except Exception as exc:
+            logger.warning("WebUI build check failed: %s", exc)
+            return True, ""  # non-fatal, don't block
+
+    def _run_visual_tests(self, deadline: float) -> Tuple[bool, str]:
+        """Run Playwright visual tests for WebUI tickets. Returns (ok, error_msg)."""
+        ui_dir = Path(self._repo_root) / "ui"
+        visual_test_script = Path(self._repo_root) / "scripts" / "ops" / "webui_visual_test.py"
+        if not ui_dir.is_dir():
+            return True, ""
+        if not visual_test_script.exists():
+            logger.debug("No visual test script found — skipping visual tests")
+            return True, ""
+        remaining = max(60, int(deadline - time.monotonic()))
+        try:
+            result = subprocess.run(
+                ["python3", str(visual_test_script), "--screenshot-dir", "/tmp/webui-tests"],
+                cwd=str(self._repo_root), capture_output=True, text=True,
+                timeout=min(remaining, 180),
+            )
+            if result.returncode != 0:
+                return False, f"Visual test failures:\n{result.stdout[-500:]}"
+            return True, ""
+        except subprocess.TimeoutExpired:
+            return False, "Visual tests timed out"
+        except Exception as exc:
+            logger.warning("Visual tests failed to run: %s", exc)
+            return True, ""  # non-fatal
+
+    def _push_branch_best_effort(self, branch: str, ticket_id: str) -> bool:
+        """Push the current branch to origin, ignoring errors.
+
+        Called before escalation / failure to preserve partial work that
+        would otherwise be stranded on the local VM (issue #645).
+
+        Returns True if the push succeeded, False otherwise.
+        """
+        try:
+            # Only push if the branch has commits beyond origin
+            current_sha = self._git(["git", "rev-parse", "HEAD"]).strip()
+            try:
+                remote_sha = self._git(
+                    ["git", "rev-parse", f"origin/{branch}"]
+                ).strip()
+            except RuntimeError:
+                remote_sha = ""  # Branch doesn't exist on origin yet
+            if current_sha == remote_sha:
+                logger.debug(
+                    "Branch %s already up-to-date on origin — skipping push", branch,
+                )
+                return False
+            self._git(["git", "push", "--force-with-lease", "origin", branch])
+            logger.info(
+                "Best-effort push of branch %s for ticket %s succeeded",
+                branch, ticket_id,
+            )
+            return True
+        except Exception as push_exc:
+            logger.warning(
+                "Best-effort push of branch %s for ticket %s failed: %s — "
+                "partial work remains on local disk only",
+                branch, ticket_id, push_exc,
+            )
+            return False
+
     def _ensure_branch(self, ticket: SWETicket) -> str:
         branch = f"swe-fix/ticket-{ticket.ticket_id}"
         # Pre-flight: abort if index has unresolved merge conflicts.
@@ -662,10 +948,27 @@ class DeveloperAgent:
         all subsequent git/test/claude operations run inside the worktree.
         """
         branch = f"swe-fix/ticket-{ticket.ticket_id}"
-        worktree_dir = Path(f"/tmp/swe-agent-{ticket.ticket_id}")
 
         # Resolve the correct repo root based on the ticket's source repository
         repo_name = ticket.metadata.get("repo")
+
+        # Cross-repo contamination guard: warn if metadata repo doesn't match fingerprint
+        fingerprint = ticket.metadata.get("fingerprint", "")
+        if repo_name and fingerprint.startswith("gh-issue-"):
+            # Fingerprint format: gh-issue-{owner}-{repo}-{number}
+            fp_parts = fingerprint.split("-", 4)  # ['gh', 'issue', owner, repo, number]
+            if len(fp_parts) >= 4:
+                fp_repo = f"{fp_parts[2]}/{fp_parts[3]}"
+                if fp_repo != repo_name:
+                    logger.warning(
+                        "Ticket %s: metadata repo '%s' does not match fingerprint repo '%s' "
+                        "(fingerprint: %s). Possible cross-repo ticket contamination.",
+                        ticket.ticket_id,
+                        repo_name,
+                        fp_repo,
+                        fingerprint,
+                    )
+
         if repo_name and repo_name in self._repos_map:
             base_repo_root = Path(self._repos_map[repo_name])
             logger.info(
@@ -677,34 +980,66 @@ class DeveloperAgent:
         else:
             base_repo_root = self._repo_root
 
-        # Remove stale worktree from a previous crashed run
-        if worktree_dir.exists():
-            try:
-                subprocess.run(
-                    ["git", "worktree", "remove", "--force", str(worktree_dir)],
-                    cwd=base_repo_root,
-                    capture_output=True,
-                    text=True,
+        # Create worktree inside the sandbox repo at {base_repo_root}/.worktrees/{ticket_id}/
+        worktree_dir = base_repo_root / ".worktrees" / ticket.ticket_id
+
+        # Acquire file-based lock to serialize worktree creation for the same base repo
+        lock_file_path = base_repo_root / ".worktrees" / ".lock"
+        lock_file_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = None
+        try:
+            lock_fd = open(lock_file_path, 'w')
+            # Try to acquire lock with timeout
+            start = time.monotonic()
+            while time.monotonic() - start < 30:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    logger.debug("Acquired worktree lock for %s", base_repo_root)
+                    break
+                except (BlockingIOError, IOError):
+                    logger.debug(
+                        "Worktree lock busy for %s, waiting...", base_repo_root
+                    )
+                    time.sleep(0.1)
+            else:
+                raise RuntimeError(
+                    f"Timeout waiting for worktree lock for {base_repo_root}"
                 )
-            except Exception:
-                shutil.rmtree(worktree_dir, ignore_errors=True)
 
-        # Prune dead worktree references before adding a new one
-        subprocess.run(
-            ["git", "worktree", "prune"],
-            cwd=base_repo_root,
-            capture_output=True,
-            text=True,
-        )
+            # Remove stale worktree from a previous crashed run
+            if worktree_dir.exists():
+                try:
+                    subprocess.run(
+                        ["git", "worktree", "remove", "--force", str(worktree_dir)],
+                        cwd=base_repo_root,
+                        capture_output=True,
+                        text=True,
+                    )
+                except Exception:
+                    shutil.rmtree(worktree_dir, ignore_errors=True)
 
-        result = subprocess.run(
-            ["git", "worktree", "add", str(worktree_dir), "-b", branch],
-            cwd=base_repo_root,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or "git worktree add failed")
+            # Prune dead worktree references before adding a new one
+            subprocess.run(
+                ["git", "worktree", "prune"],
+                cwd=base_repo_root,
+                capture_output=True,
+                text=True,
+            )
+
+            result = subprocess.run(
+                ["git", "worktree", "add", str(worktree_dir), "-b", branch],
+                cwd=base_repo_root,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.strip() or "git worktree add failed")
+
+        finally:
+            if lock_fd:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                lock_fd.close()
+                logger.debug("Released worktree lock for %s", base_repo_root)
 
         # Redirect all subsequent operations to the worktree directory
         self._active_worktree = worktree_dir
@@ -764,14 +1099,17 @@ class DeveloperAgent:
             template = self._load_program()
         if not template:
             return None
+        issue_type = getattr(ticket.ticket_type, "value", str(ticket.ticket_type)) if ticket.ticket_type else "unknown"
         try:
-            prompt = template.format(
+            prompt = template.format_map(_SafeFormatDict(
                 ticket_id=ticket.ticket_id,
                 title=ticket.title,
+                issue_type=issue_type,
                 severity=ticket.severity.value,
                 source_module=ticket.source_module or "unknown",
+                description=ticket.description or "No description provided.",
                 investigation_report=ticket.investigation_report or "No report provided.",
-            )
+            ))
         except (KeyError, ValueError) as exc:
             logger.warning("Invalid fix.md template: %s", exc)
             return None
@@ -779,6 +1117,24 @@ class DeveloperAgent:
         # Include orchestration plan in fix prompt if available
         if ticket.metadata.get("orchestration_plan"):
             prompt += f"\n\n## Orchestration Plan\n{ticket.metadata['orchestration_plan']}\n"
+
+        handover = ticket.metadata.get("handover_investigate_to_develop")
+        if isinstance(handover, str):
+            try:
+                handover = EngineHandover.from_json(handover).to_dict()
+            except Exception:
+                handover = None
+        if isinstance(handover, dict):
+            prompt += "\n\n## Investigation Handover Context (Structured)\n"
+            prompt += f"{handover}\n"
+
+        # Inject PR review feedback so the developer addresses reviewer comments.
+        review_feedback = ticket.metadata.get("review_feedback", "")
+        if review_feedback:
+            prompt += (
+                f"\n\n## Review Feedback (MUST ADDRESS)\n"
+                f"{review_feedback}\n"
+            )
 
         # Ralph Wiggum loop: feed previous failure into the next attempt
         if last_error and attempt > 1:
@@ -995,34 +1351,6 @@ class DeveloperAgent:
         if test_dir.is_dir():
             return [python, "-m", "pytest", "tests/unit/", "-x", "-q"]
         return [python, "-m", "pytest", "-x", "-q"]
-
-    def _targeted_test_command(self, source_module: Optional[str] = None) -> List[str]:
-        """Build a test command scoped to the ticket's source module when possible.
-
-        If *source_module* is set and a matching test file exists
-        (``tests/unit/test_{module}.py``), run only that file instead of the
-        full suite.  This cuts test time from 60-120s to < 10s (issue #294).
-        Falls back to the full ``self._test_command`` when no match is found.
-        """
-        if not source_module:
-            return self._test_command
-
-        # Normalise: strip .py suffix, then extract last dotted component
-        module_name = source_module.replace("/", ".").replace("\\", ".")
-        if module_name.endswith(".py"):
-            module_name = module_name[:-3]
-        module_name = module_name.rsplit(".", 1)[-1]  # e.g. "swe_team.developer" → "developer"
-
-        targeted_path = self._repo_root / "tests" / "unit" / f"test_{module_name}.py"
-        if targeted_path.is_file():
-            # Replace test path in command while preserving the python/pytest prefix and flags
-            base = self._test_command[:3]  # e.g. [python, -m, pytest]
-            return base + [str(targeted_path), "-x", "-q", "--tb=short", "--timeout=30"]
-
-        logger.debug(
-            "No targeted test file %s — falling back to full suite", targeted_path,
-        )
-        return self._test_command
 
     def _targeted_test_command(self, source_module: Optional[str] = None) -> List[str]:
         """Build a test command scoped to the ticket's source module when possible.

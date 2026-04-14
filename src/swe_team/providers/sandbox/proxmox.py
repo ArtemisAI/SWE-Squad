@@ -31,7 +31,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional
 
-from .base import SandboxInfo, SandboxSpec
+from .base import InstanceCreationMethod, SandboxInfo, SandboxSpec
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,13 @@ class ProxmoxSandbox:
     """
 
     name = "proxmox"
+
+    def get_instance_creation_method(self) -> InstanceCreationMethod:
+        return InstanceCreationMethod(
+            instance_type="proxmox_vm",
+            provisioning_flow="proxmox_api",
+            connection_method="ssh",
+        )
 
     def __init__(
         self,
@@ -92,6 +99,7 @@ class ProxmoxSandbox:
             ip=data.get("ip"),
             status=data.get("status", "starting"),
             provider=self.name,
+            creation_method=self.get_instance_creation_method(),
             metadata={"node": self._node, "raw": data},
         )
 
@@ -104,6 +112,7 @@ class ProxmoxSandbox:
             ip=data.get("ip"),
             status=data.get("status", "unknown"),
             provider=self.name,
+            creation_method=self.get_instance_creation_method(),
             metadata=data,
         )
 

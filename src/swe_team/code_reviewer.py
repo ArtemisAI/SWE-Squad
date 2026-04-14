@@ -7,7 +7,7 @@ For each IN_REVIEW ticket:
 4. Get diff: git diff main..{branch} (capped to diff_char_limit chars)
 5. Call claude --model sonnet --print with a review prompt
 6. Parse APPROVE / REQUEST_CHANGES from first line of response
-7a. APPROVE: merge PR, close GH issue, transition ticket to RESOLVED
+7a. APPROVE: merge PR, close GH issue, transition ticket to VERIFYING
 7b. REQUEST_CHANGES: bounce back to IN_DEVELOPMENT (or HITL after max_rejections)
 """
 
@@ -17,8 +17,10 @@ import json
 import logging
 import os
 import subprocess
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
+from src.swe_team.fix_verifier import FixVerifier
 from src.swe_team.models import SWETicket, TicketStatus
 from src.swe_team.providers.coding_engine.base import CodingEngine, EngineResult
 from src.swe_team.providers.issue_tracker.base import IssueTracker
@@ -26,8 +28,17 @@ from src.swe_team.rbac_middleware import require_permission
 
 # Model tier defaults — read from env. Never hardcode model names in agent files.
 _MODEL_T2 = os.environ.get("SWE_MODEL_T2", "sonnet")
+_DEFAULT_VERIFICATION_WINDOW_MINUTES = 30
 
 logger = logging.getLogger("swe_team.code_reviewer")
+
+
+def _get_pr_lifecycle(ticket: SWETicket) -> dict:
+    lifecycle = ticket.metadata.get("pr_lifecycle")
+    if not isinstance(lifecycle, dict):
+        lifecycle = {}
+        ticket.metadata["pr_lifecycle"] = lifecycle
+    return lifecycle
 
 
 class CodeReviewerAgent:
@@ -106,6 +117,11 @@ class CodeReviewerAgent:
 
         # ── Step 6: Parse response ───────────────────────────────────
         approved, reasoning = self._parse_response(response)
+        lifecycle = _get_pr_lifecycle(ticket)
+        if "first_review_at" not in lifecycle:
+            lifecycle["first_review_at"] = datetime.now(timezone.utc).isoformat()
+        lifecycle["review_decision"] = "approved" if approved else "changes_requested"
+        lifecycle["review_cycles"] = int(lifecycle.get("review_cycles", 0)) + 1
 
         # ── Step 7: Act on decision ──────────────────────────────────
         if approved:
@@ -144,11 +160,20 @@ class CodeReviewerAgent:
             return False
 
     def _ensure_pr(self, branch: str, repo: str, ticket: SWETicket) -> int | None:
-        """Return existing PR number or create a new PR. Returns None on failure."""
+        """Return existing PR number or create a new PR. Returns None on failure.
+
+        Always populates ``ticket.metadata["pr_number"]`` (and ``pr_url`` when
+        available) so that the PR-verification gate in ``_handle_approve`` can
+        confirm a real PR exists before resolving the ticket.
+        """
         # Check for existing PR
         existing = self._find_existing_pr(branch, repo)
         if existing is not None:
             logger.info("CodeReviewer: reusing existing PR #%d for branch %s", existing, branch)
+            # Persist so the verification gate sees it even on a reused PR
+            ticket.metadata["pr_number"] = existing
+            if not ticket.metadata.get("pr_url"):
+                ticket.metadata["pr_url"] = f"https://github.com/{repo}/pull/{existing}"
             return existing
 
         # Create new PR
@@ -186,7 +211,11 @@ class CodeReviewerAgent:
         return None
 
     def _create_pr(self, branch: str, repo: str, ticket: SWETicket) -> int | None:
-        """Create a PR for the branch. Returns PR number or None on failure."""
+        """Create a PR for the branch. Returns PR number or None on failure.
+
+        On success, stores ``pr_url`` and ``pr_number`` in ``ticket.metadata``
+        so that downstream gates can verify a PR exists before resolving.
+        """
         title = f"[SWE-AUTO] {ticket.title}"
         body = (
             f"## Automated Fix\n\n"
@@ -204,8 +233,13 @@ class CodeReviewerAgent:
                     if parts and parts[-1].isdigit():
                         pr_num = int(parts[-1])
                         logger.info("CodeReviewer: created PR #%d for branch %s", pr_num, branch)
+                        ticket.metadata["pr_url"] = url
+                        ticket.metadata["pr_number"] = pr_num
+                        _get_pr_lifecycle(ticket)["pr_created_at"] = datetime.now(timezone.utc).isoformat()
                         return pr_num
                     logger.warning("CodeReviewer: could not parse PR number from: %s", url)
+                    # Still store the URL even if number cannot be parsed
+                    ticket.metadata["pr_url"] = url
                 return None
             except Exception:
                 logger.warning(
@@ -233,8 +267,13 @@ class CodeReviewerAgent:
                 if parts and parts[-1].isdigit():
                     pr_num = int(parts[-1])
                     logger.info("CodeReviewer: created PR #%d for branch %s", pr_num, branch)
+                    ticket.metadata["pr_url"] = url
+                    ticket.metadata["pr_number"] = pr_num
+                    _get_pr_lifecycle(ticket)["pr_created_at"] = datetime.now(timezone.utc).isoformat()
                     return pr_num
                 logger.warning("CodeReviewer: could not parse PR number from: %s", url)
+                # Still store the URL even if number cannot be parsed
+                ticket.metadata["pr_url"] = url
             else:
                 logger.warning(
                     "CodeReviewer: gh pr create failed (rc=%d): %s",
@@ -292,18 +331,28 @@ class CodeReviewerAgent:
 
         Uses the CodingEngine interface instead of direct subprocess calls
         (architecture rule: all Claude CLI calls go through CodingEngine).
+
+        When raise_on_timeout=False, the ClaudeCodeEngine returns EngineResult
+        with metadata={"error_type": "timeout"} on timeout.
         """
         try:
             result: EngineResult = self._engine.run(
-                prompt, model=self.model, timeout=120,
+                prompt, model=self.model, timeout=300, raise_on_timeout=False,
             )
             if result.success:
                 return result.stdout.strip()
-            logger.warning(
-                "CodeReviewer: engine returned rc=%d: %s",
-                result.returncode,
-                result.stderr[:200],
-            )
+            # Check for timeout error (non-exception path when raise_on_timeout=False)
+            error_type = result.metadata.get("error_type")
+            if error_type == "timeout":
+                logger.warning(
+                    "CodeReviewer: review timed out after 300s (ticket will default to REJECT)"
+                )
+            else:
+                logger.warning(
+                    "CodeReviewer: engine returned rc=%d: %s",
+                    result.returncode,
+                    result.stderr[:200],
+                )
             return None
         except Exception:
             logger.exception("CodeReviewer: unexpected error calling coding engine")
@@ -313,14 +362,14 @@ class CodeReviewerAgent:
     def _parse_response(response: str | None) -> Tuple[bool, str]:
         """Parse claude response. Returns (approved, reasoning).
 
-        On timeout/parse error → default REJECT (fail-secure, SEC-68).
+        On timeout/parse error → default REJECT (fail-secure).
         """
         if response is None:
-            return False, "SEC-68: timeout/unavailable — defaulting to REJECT (fail-secure)"
+            return False, "timeout/unavailable — defaulting to REJECT (fail-secure)"
 
         lines = response.strip().splitlines()
         if not lines:
-            return False, "SEC-68: empty response — defaulting to REJECT (fail-secure)"
+            return False, "empty response — defaulting to REJECT (fail-secure)"
 
         first_line = lines[0].strip().upper()
         reasoning = " ".join(lines[1:]).strip() if len(lines) > 1 else ""
@@ -330,12 +379,12 @@ class CodeReviewerAgent:
         if "APPROVE" in first_line:
             return True, reasoning
 
-        # Could not parse decision — default REJECT (fail-secure, SEC-68)
+        # Could not parse decision — default REJECT (fail-secure)
         logger.warning(
             "CodeReviewer: could not parse decision from first line %r — defaulting to REJECT (fail-secure)",
             lines[0],
         )
-        return False, f"SEC-68: unparseable response — defaulting to REJECT (fail-secure)"
+        return False, "unparseable response — defaulting to REJECT (fail-secure)"
 
     def _handle_approve(
         self,
@@ -346,7 +395,13 @@ class CodeReviewerAgent:
         reasoning: str,
         dry_run: bool,
     ) -> Tuple[bool, str]:
-        """Merge PR, close GH issue, transition ticket to RESOLVED."""
+        """Merge PR, close GH issue, transition ticket to VERIFYING.
+
+        PR-verification gate (issue #367): resolution is BLOCKED if no PR
+        exists.  A missing PR means the branch was never pushed to GitHub and
+        merging / closing the issue would be a no-op that silently marks the
+        ticket resolved without any visible artefact.
+        """
         logger.info(
             "CodeReviewer: APPROVED ticket %s — reasoning: %s",
             ticket.ticket_id,
@@ -354,32 +409,61 @@ class CodeReviewerAgent:
         )
 
         if not dry_run:
-            # Merge PR
-            if pr_number is not None and repo:
-                self._merge_pr(pr_number, repo)
-
-            # Close GH issue
-            issue_num = ticket.metadata.get("github_issue")
-            if issue_num and repo:
-                self._close_github_issue(issue_num, pr_number, repo)
-
-            # Transition ticket
-            try:
-                ticket.transition(TicketStatus.RESOLVED)
-                _store_save(store, ticket)
-            except ValueError as exc:
+            # ── PR-verification gate ──────────────────────────────────
+            # Block resolution if no PR URL/number is present in metadata.
+            # This covers both the case where push failed and the case where
+            # _ensure_pr was skipped because repo was empty.
+            pr_url_meta = ticket.metadata.get("pr_url")
+            pr_num_meta = ticket.metadata.get("pr_number")
+            has_pr = (pr_number is not None) or bool(pr_url_meta) or (pr_num_meta is not None)
+            if not has_pr:
                 logger.warning(
-                    "CodeReviewer: resolution_audit blocked RESOLVED for %s (%s) — "
-                    "overriding with fix_succeeded bypass to prevent re-fix loop",
+                    "CodeReviewer: PR-GATE BLOCKED resolution of ticket %s — "
+                    "no PR found (pr_number=%s pr_url=%s). "
+                    "Sending back to IN_DEVELOPMENT with needs_pr=True.",
                     ticket.ticket_id,
-                    exc,
+                    pr_number,
+                    pr_url_meta,
                 )
-                # Set bypass note so transition() allows RESOLVED despite audit gate.
-                # This prevents tickets that were genuinely fixed from looping back to
-                # IN_DEVELOPMENT and being re-fixed repeatedly (tickets 27b34ec39b49, 4dd7ee63568d).
-                ticket.metadata["resolution_note"] = "fix_succeeded"
-                ticket.transition(TicketStatus.RESOLVED)
+                ticket.metadata["needs_pr"] = True
+                ticket.metadata["review_feedback"] = (
+                    "PR-verification gate: development succeeded but no PR was created. "
+                    "Ticket held in development until a PR is present."
+                )
+                ticket.transition(TicketStatus.IN_DEVELOPMENT)
                 _store_save(store, ticket)
+                return False, "pr_gate: no PR found — ticket returned to IN_DEVELOPMENT"
+            # RBAC: Developer/reviewer agents MUST NOT self-merge.
+            # Only the SWE-Manager (orchestrator) or a human with merge authority
+            # may merge PRs to main. The reviewer marks the ticket as approved
+            # and transitions to IN_REVIEW — merge is a separate privileged action.
+            #
+            # See issue #591: 20+ unauthorized self-merges caused regressions.
+            pr_to_merge = pr_number
+            if pr_to_merge is None:
+                meta_pr_num = ticket.metadata.get("pr_number")
+                if isinstance(meta_pr_num, int):
+                    pr_to_merge = meta_pr_num
+                elif isinstance(meta_pr_num, str) and meta_pr_num.isdigit():
+                    pr_to_merge = int(meta_pr_num)
+            # Record approval but DO NOT merge — leave for SWE-Manager
+            merged_ok = False
+            if pr_to_merge is not None:
+                logger.info(
+                    "CodeReviewer: APPROVED PR #%d for ticket %s — "
+                    "awaiting SWE-Manager or human merge (RBAC enforced)",
+                    pr_to_merge, ticket.ticket_id,
+                )
+                ticket.metadata["pr_approved"] = True
+                ticket.metadata["pr_approved_at"] = datetime.now(timezone.utc).isoformat()
+                ticket.metadata["awaiting_merge"] = True
+                _get_pr_lifecycle(ticket)["approved_at"] = datetime.now(timezone.utc).isoformat()
+
+            # RBAC: Do NOT close GH issue or transition to VERIFYING.
+            # The ticket stays in IN_REVIEW with pr_approved=True until
+            # the SWE-Manager or human merges the PR and advances the state.
+            _store_save(store, ticket)
+            return True, f"approved: PR #{pr_to_merge} approved — awaiting authorized merge"
 
         return True, f"approved: {reasoning[:100]}"
 
@@ -423,10 +507,6 @@ class CodeReviewerAgent:
             ticket.transition(TicketStatus.IN_DEVELOPMENT)
             _store_save(store, ticket)
 
-            # Close PR so developer can create a fresh one
-            if pr_number is not None and repo:
-                self._close_pr(pr_number, repo)
-
         return False, f"rejected: {reasoning[:100]}"
 
     @require_permission("pr_merge")
@@ -446,19 +526,19 @@ class CodeReviewerAgent:
             a ``human-reviewed`` label.  Set to False only in tests or
             explicitly opted-out contexts.
         """
-        # SEC-68: Block self-merge without human review
+        # Block self-merge without human review
         if require_human_review:
             has_human_review = self._check_human_reviewed_label(pr_number, repo)
             if not has_human_review:
                 logger.error(
-                    "SEC-68 BLOCKED: Auto-merge of PR #%s in %s is not permitted — "
+                    "BLOCKED: Auto-merge of PR #%s in %s is not permitted — "
                     "no 'human-reviewed' label found. A human must approve before merge.",
                     pr_number,
                     repo,
                 )
                 return False
             logger.info(
-                "SEC-68: PR #%s in %s has 'human-reviewed' label — proceeding with merge",
+                "PR #%s in %s has 'human-reviewed' label — proceeding with merge",
                 pr_number,
                 repo,
             )

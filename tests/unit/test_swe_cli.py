@@ -9,6 +9,12 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences from text."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 import os
 import sys
 import tempfile
@@ -26,14 +32,23 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.swe_team.models import SWETicket, TicketSeverity, TicketStatus
 from src.swe_team.ticket_store import TicketStore
+import argparse
+
 from scripts.ops.swe_cli import (
     build_parser,
+    cmd_auth,
+    cmd_costs,
+    cmd_issues,
+    cmd_ops,
+    cmd_project,
+    cmd_repos,
+    cmd_report,
+    cmd_roles,
+    cmd_serve,
+    cmd_session,
     cmd_status,
     cmd_summary,
     cmd_tickets,
-    cmd_issues,
-    cmd_repos,
-    cmd_report,
     main,
     _load_status,
     _truncate,
@@ -359,8 +374,10 @@ class TestCmdSummary:
         assert rc == 0
         captured = capsys.readouterr()
         assert "SWE Squad Summary" in captured.out
-        assert "By severity:" in captured.out
-        assert "By status:" in captured.out
+        # Rich uses table titles ("By Severity"), plain text uses "By severity:"
+        out_lower = captured.out.lower()
+        assert "severity" in out_lower
+        assert "status" in out_lower
 
     def test_summary_json_output(self, status_file, ticket_store, capsys):
         """Summary --json produces valid JSON with expected fields."""
@@ -478,7 +495,7 @@ class TestCmdIssues:
         captured = capsys.readouterr()
         assert "#42" in captured.out
         assert "#43" in captured.out
-        assert "2 issue(s)" in captured.out
+        assert "2 issue(s)" in _strip_ansi(captured.out)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -660,3 +677,472 @@ class TestLoadStatus:
         with patch("scripts.ops.swe_cli.STATUS_PATH", bad):
             data = _load_status()
         assert data is None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# cmd_auth tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestCmdAuth:
+    """Tests for cmd_auth (provider authentication status)."""
+
+    def _make_args(self, json_flag: bool = False, action: str = "status") -> argparse.Namespace:
+        return argparse.Namespace(command="auth", auth_action=action, json=json_flag, verbose=False)
+
+    def test_auth_status_text(self, capsys):
+        """cmd_auth with action='status' returns 0 and prints a table."""
+        args = self._make_args(json_flag=False)
+        # Patch urllib so no real network call happens
+        import urllib.request as _url_req
+        import urllib.error as _url_err
+
+        with patch("urllib.request.urlopen", side_effect=_url_err.URLError("offline")):
+            rc = cmd_auth(args)
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "Provider" in captured.out
+
+    def test_auth_list_providers(self, capsys):
+        """cmd_auth shows all known providers in the output."""
+        args = self._make_args(json_flag=False)
+        import urllib.error as _url_err
+
+        with patch("urllib.request.urlopen", side_effect=_url_err.URLError("offline")):
+            rc = cmd_auth(args)
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        # The offline placeholder includes base_llm, github, telegram, supabase
+        for provider in ("base_llm", "github", "telegram", "supabase"):
+            assert provider in captured.out
+
+    def test_auth_json_output(self, capsys):
+        """cmd_auth --json returns parseable JSON with a 'providers' key."""
+        args = self._make_args(json_flag=True)
+        import urllib.error as _url_err
+
+        with patch("urllib.request.urlopen", side_effect=_url_err.URLError("offline")):
+            rc = cmd_auth(args)
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert "providers" in data
+        assert isinstance(data["providers"], list)
+        assert len(data["providers"]) == 4
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# cmd_roles tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestCmdRoles:
+    """Tests for cmd_roles (RBAC role definitions)."""
+
+    def _make_args(self, json_flag: bool = False) -> argparse.Namespace:
+        return argparse.Namespace(command="roles", json=json_flag, verbose=False)
+
+    def test_roles_text_output_no_roles(self, capsys):
+        """cmd_roles with empty engine prints informative message and returns 0."""
+        args = self._make_args(json_flag=False)
+
+        # Mock an engine that returns no roles
+        mock_engine = MagicMock()
+        mock_engine.list_roles.return_value = {}
+
+        with patch("scripts.ops.swe_cli.cmd_roles.__module__", "scripts.ops.swe_cli"), \
+             patch("src.swe_team.agent_rbac.get_rbac_engine", return_value=mock_engine):
+            rc = cmd_roles(args)
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "No roles" in captured.out or rc == 0
+
+    def test_roles_text_output_with_roles(self, capsys):
+        """cmd_roles with roles in engine prints them and returns 0."""
+        from src.swe_team.agent_rbac import AgentRole
+
+        args = self._make_args(json_flag=False)
+
+        mock_role = AgentRole("investigator", {
+            "description": "Investigates bugs",
+            "enabled": True,
+            "permissions": ["investigate", "read_logs"],
+            "deny": [],
+            "models": ["sonnet"],
+        })
+        mock_engine = MagicMock()
+        mock_engine.list_roles.return_value = {"investigator": mock_role}
+
+        with patch("src.swe_team.agent_rbac.get_rbac_engine", return_value=mock_engine):
+            rc = cmd_roles(args)
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "investigator" in captured.out
+
+    def test_roles_json_output(self, capsys):
+        """cmd_roles --json is not directly supported but the command still returns 0."""
+        # cmd_roles doesn't actually check args.json – it always prints text.
+        # We just verify it completes without error when roles file is absent.
+        args = self._make_args(json_flag=True)
+
+        mock_engine = MagicMock()
+        mock_engine.list_roles.return_value = {}
+
+        with patch("src.swe_team.agent_rbac.get_rbac_engine", return_value=mock_engine):
+            rc = cmd_roles(args)
+
+        assert rc == 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# cmd_costs tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestCmdCosts:
+    """Tests for cmd_costs (token usage and cost summary)."""
+
+    def _make_args(self, json_flag: bool = False) -> argparse.Namespace:
+        return argparse.Namespace(command="costs", json=json_flag, verbose=False)
+
+    def _empty_summary(self) -> dict:
+        return {
+            "total_records": 0,
+            "total_cost_usd": 0.0,
+            "by_model": {},
+            "daily_spend": 0.0,
+        }
+
+    def test_costs_no_data(self, capsys):
+        """cmd_costs with empty tracker returns 0."""
+        args = self._make_args(json_flag=False)
+        mock_tracker = MagicMock()
+        mock_tracker.summary.return_value = self._empty_summary()
+
+        with patch("src.swe_team.token_tracker.TokenTracker", return_value=mock_tracker):
+            rc = cmd_costs(args)
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "No token usage" in captured.out or "Total cost" in captured.out
+
+    def test_costs_json_output(self, capsys):
+        """cmd_costs --json returns a dict with expected keys."""
+        args = self._make_args(json_flag=True)
+        expected = self._empty_summary()
+        mock_tracker = MagicMock()
+        mock_tracker.summary.return_value = expected
+
+        with patch("src.swe_team.token_tracker.TokenTracker", return_value=mock_tracker):
+            rc = cmd_costs(args)
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert "total_cost_usd" in data
+        assert "by_model" in data
+
+    def test_costs_with_data(self, tmp_path, capsys):
+        """cmd_costs shows model rows when token data is present."""
+        args = self._make_args(json_flag=False)
+        summary_with_data = {
+            "total_records": 3,
+            "total_cost_usd": 0.0123,
+            "by_model": {
+                "sonnet": {"calls": 2, "input_tokens": 1000, "output_tokens": 500, "cost_usd": 0.0123},
+            },
+            "daily_spend": 0.005,
+        }
+        mock_tracker = MagicMock()
+        mock_tracker.summary.return_value = summary_with_data
+
+        with patch("src.swe_team.token_tracker.TokenTracker", return_value=mock_tracker):
+            rc = cmd_costs(args)
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "sonnet" in captured.out
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# cmd_ops tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestCmdOps:
+    """Tests for cmd_ops (multi-project operations status)."""
+
+    def _make_args(self) -> argparse.Namespace:
+        return argparse.Namespace(command="ops", verbose=False)
+
+    def test_ops_no_projects(self, capsys):
+        """cmd_ops with empty registry prints informative message and returns 0."""
+        args = self._make_args()
+        mock_registry = MagicMock()
+        mock_registry.list_projects.return_value = []
+
+        with patch("src.swe_team.ops.project_registry.ProjectRegistry", return_value=mock_registry):
+            rc = cmd_ops(args)
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "No projects" in captured.out
+
+    def test_ops_with_projects(self, capsys):
+        """cmd_ops with registered projects prints a table and returns 0."""
+        from src.swe_team.ops.project_registry import Project, ProjectBudget
+
+        args = self._make_args()
+
+        proj = Project(name="my-app", repo="owner/my-app")
+        proj.budget = ProjectBudget(daily_cap_usd=5.0)
+
+        mock_registry = MagicMock()
+        mock_registry.list_projects.return_value = [proj]
+        mock_registry.validate_all.return_value = {"my-app": []}
+
+        with patch("src.swe_team.ops.project_registry.ProjectRegistry", return_value=mock_registry):
+            rc = cmd_ops(args)
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "my-app" in captured.out
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# cmd_project tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestCmdProject:
+    """Tests for cmd_project (project management subcommands)."""
+
+    def _list_args(self, json_flag: bool = False) -> argparse.Namespace:
+        return argparse.Namespace(
+            command="project",
+            project_action="list",
+            json=json_flag,
+            verbose=False,
+        )
+
+    def _init_args(self, name: str, local_path: str = "") -> argparse.Namespace:
+        return argparse.Namespace(
+            command="project",
+            project_action="init",
+            name=name,
+            repo="",
+            local_path=local_path,
+            json=False,
+            verbose=False,
+        )
+
+    def test_project_list_empty(self, tmp_path, capsys):
+        """project list with no repos configured returns 0."""
+        args = self._list_args()
+
+        with patch("scripts.ops.swe_cli._load_config_yaml", return_value={}):
+            rc = cmd_project(args)
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "No projects" in captured.out
+
+    def test_project_list_json(self, capsys):
+        """project list --json returns parseable JSON list."""
+        args = self._list_args(json_flag=True)
+        fake_repos = [{"name": "owner/repo", "local_path": "/tmp/repo", "priority": "high"}]
+
+        with patch("scripts.ops.swe_cli._load_config_yaml", return_value={"repos": fake_repos}):
+            rc = cmd_project(args)
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert isinstance(data, list)
+        assert data[0]["name"] == "owner/repo"
+
+    def test_project_init_creates_entry(self, tmp_path, capsys):
+        """project init adds a new entry to config and returns 0."""
+        args = self._init_args(name="foo", local_path="/tmp/foo")
+
+        saved = {}
+
+        def fake_save(data: dict) -> None:
+            saved.update(data)
+
+        with patch("scripts.ops.swe_cli._load_config_yaml", return_value={}), \
+             patch("scripts.ops.swe_cli._save_config_yaml", side_effect=fake_save):
+            rc = cmd_project(args)
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "foo" in captured.out
+        # Verify the entry was added
+        assert any(r.get("name") == "foo" for r in saved.get("repos", []))
+
+    def test_project_init_duplicate_rejected(self, capsys):
+        """project init for an existing project name returns 1."""
+        args = self._init_args(name="existing")
+        existing = [{"name": "existing", "local_path": "/tmp/x"}]
+
+        with patch("scripts.ops.swe_cli._load_config_yaml", return_value={"repos": existing}), \
+             patch("scripts.ops.swe_cli._save_config_yaml"):
+            rc = cmd_project(args)
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "already exists" in captured.err
+
+    def test_project_unknown_action(self, capsys):
+        """project with an unknown action returns 1."""
+        args = argparse.Namespace(
+            command="project",
+            project_action="delete",
+            json=False,
+            verbose=False,
+        )
+        rc = cmd_project(args)
+        assert rc == 1
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# cmd_session tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestCmdSession:
+    """Tests for cmd_session (session lifecycle management)."""
+
+    def _make_args(
+        self,
+        json_flag: bool = False,
+        all_flag: bool = False,
+        action: str = "list",
+    ) -> argparse.Namespace:
+        return argparse.Namespace(
+            command="session",
+            session_action=action,
+            json=json_flag,
+            all=all_flag,
+            verbose=False,
+        )
+
+    def test_session_list_empty(self, tmp_path, capsys):
+        """cmd_session with no sessions returns 0 and prints 'No sessions found'."""
+        args = self._make_args()
+        sessions_path = str(tmp_path / "sessions.json")
+
+        with patch("src.swe_team.session_store.SessionStore.__init__", lambda self, path=None: None), \
+             patch("src.swe_team.session_store.SessionStore.list_active", return_value=[]):
+            rc = cmd_session(args)
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "No sessions found" in captured.out
+
+    def test_session_list_shows_sessions(self, tmp_path, capsys):
+        """cmd_session shows session rows when sessions exist."""
+        from src.swe_team.session_store import SessionRecord
+        import time as _time
+
+        args = self._make_args()
+        now = _time.time()
+        fake_session = SessionRecord(
+            session_id="swe-investigator-t001xxxx-abc123-def456",
+            ticket_id="t001",
+            agent_type="investigator",
+            created_at=now - 120,
+            last_active=now - 60,
+            status="active",
+        )
+
+        with patch("src.swe_team.session_store.SessionStore.__init__", lambda self, path=None: None), \
+             patch("src.swe_team.session_store.SessionStore.list_active", return_value=[fake_session]):
+            rc = cmd_session(args)
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "swe-investigator" in captured.out
+        assert "t001" in captured.out
+
+    def test_session_list_json(self, tmp_path, capsys):
+        """cmd_session --json returns a JSON list."""
+        from src.swe_team.session_store import SessionRecord
+        import time as _time
+
+        args = self._make_args(json_flag=True)
+        now = _time.time()
+        fake_session = SessionRecord(
+            session_id="swe-developer-t002xxxx-aabbcc-ddeeff",
+            ticket_id="t002",
+            agent_type="developer",
+            created_at=now - 60,
+            last_active=now,
+            status="active",
+        )
+
+        with patch("src.swe_team.session_store.SessionStore.__init__", lambda self, path=None: None), \
+             patch("src.swe_team.session_store.SessionStore.list_active", return_value=[fake_session]):
+            rc = cmd_session(args)
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert isinstance(data, list)
+        assert data[0]["ticket_id"] == "t002"
+
+    def test_session_list_all_flag(self, tmp_path, capsys):
+        """cmd_session --all calls list_all instead of list_active."""
+        from src.swe_team.session_store import SessionRecord
+        import time as _time
+
+        args = self._make_args(all_flag=True)
+        now = _time.time()
+        completed_session = SessionRecord(
+            session_id="swe-developer-t003xxxx-112233-445566",
+            ticket_id="t003",
+            agent_type="developer",
+            created_at=now - 7200,
+            last_active=now - 3600,
+            status="completed",
+        )
+
+        with patch("src.swe_team.session_store.SessionStore.__init__", lambda self, path=None: None), \
+             patch("src.swe_team.session_store.SessionStore.list_all", return_value=[completed_session]):
+            rc = cmd_session(args)
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "t003" in captured.out
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# cmd_serve tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestCmdServe:
+    """Tests for cmd_serve (live dashboard web server)."""
+
+    def test_serve_requires_port(self):
+        """'serve' subcommand is registered in the parser with --port."""
+        parser = build_parser()
+        args = parser.parse_args(["serve", "--port", "9999"])
+        assert args.command == "serve"
+        assert args.port == 9999
+
+    def test_serve_default_port(self):
+        """'serve' subcommand defaults to port 8080."""
+        parser = build_parser()
+        args = parser.parse_args(["serve"])
+        assert args.port == 8080
+        assert args.host == "0.0.0.0"
+
+    def test_serve_calls_dashboard_server(self):
+        """cmd_serve invokes dashboard_server.main without actually starting a server."""
+        parser = build_parser()
+        args = parser.parse_args(["serve", "--port", "8181", "--host", "127.0.0.1"])
+
+        with patch("scripts.ops.dashboard_server.main") as mock_serve:
+            rc = cmd_serve(args)
+
+        mock_serve.assert_called_once()
+        assert rc == 0

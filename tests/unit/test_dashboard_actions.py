@@ -94,11 +94,15 @@ def _make_handler(store):
     handler._handle_ticket_status = DashboardHandler._handle_ticket_status.__get__(handler)
     handler._handle_ticket_severity = DashboardHandler._handle_ticket_severity.__get__(handler)
     handler._handle_ticket_comment = DashboardHandler._handle_ticket_comment.__get__(handler)
+    handler._handle_delete_ticket_comment = DashboardHandler._handle_delete_ticket_comment.__get__(handler)
     handler._handle_ticket_label = DashboardHandler._handle_ticket_label.__get__(handler)
     handler._handle_ticket_investigate = DashboardHandler._handle_ticket_investigate.__get__(handler)
     handler._handle_ticket_develop = DashboardHandler._handle_ticket_develop.__get__(handler)
     handler._handle_pipeline_trigger = DashboardHandler._handle_pipeline_trigger.__get__(handler)
     handler._handle_tickets_export = DashboardHandler._handle_tickets_export.__get__(handler)
+    handler._handle_ticket_title = DashboardHandler._handle_ticket_title.__get__(handler)
+    handler._handle_ticket_description = DashboardHandler._handle_ticket_description.__get__(handler)
+    handler._handle_ticket_activity = DashboardHandler._handle_ticket_activity.__get__(handler)
     handler._gh_comment_async = DashboardHandler._gh_comment_async.__get__(handler)
 
     return handler
@@ -378,6 +382,85 @@ class TestTicketComment:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Tests: DELETE /api/tickets/<id>/comment/<index>
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestDeleteTicketComment:
+    @patch("scripts.ops.dashboard_server._broadcast_sse_event")
+    def test_delete_comment_by_index(self, mock_sse, store_with_ticket):
+        # First add two comments
+        handler = _make_handler(store_with_ticket)
+        _set_body(handler, {"comment": "First comment"})
+        response_data: list = []
+        def capture(data, status=200):
+            response_data.append((data, status))
+        handler._json_response = capture
+        handler._handle_ticket_comment("test-abc123")
+        response_data.clear()
+
+        _set_body(handler, {"comment": "Second comment"})
+        handler._handle_ticket_comment("test-abc123")
+        response_data.clear()
+
+        # Now delete the first comment (index 0)
+        handler._handle_delete_ticket_comment("test-abc123", 0)
+        data, status = response_data[0]
+        assert status == 200
+        assert data["ticket_id"] == "test-abc123"
+        assert data["deleted_comment"]["text"] == "First comment"
+
+        # Verify only one comment remains
+        ticket = store_with_ticket.get("test-abc123")
+        assert len(ticket.metadata["comments"]) == 1
+        assert ticket.metadata["comments"][0]["text"] == "Second comment"
+
+    @patch("scripts.ops.dashboard_server._broadcast_sse_event")
+    def test_delete_comment_invalid_index(self, mock_sse, store_with_ticket):
+        handler = _make_handler(store_with_ticket)
+
+        response_data: list = []
+        def capture(data, status=200):
+            response_data.append((data, status))
+        handler._json_response = capture
+
+        # Try to delete comment at index that doesn't exist
+        handler._handle_delete_ticket_comment("test-abc123", 999)
+        data, status = response_data[0]
+        assert status == 400
+        assert "out of range" in data["error"]
+
+    @patch("scripts.ops.dashboard_server._broadcast_sse_event")
+    def test_delete_comment_invalid_ticket(self, mock_sse, store_with_ticket):
+        handler = _make_handler(store_with_ticket)
+
+        response_data: list = []
+        def capture(data, status=200):
+            response_data.append((data, status))
+        handler._json_response = capture
+
+        # Try to delete comment from non-existent ticket
+        handler._handle_delete_ticket_comment("non-existent-ticket", 0)
+        data, status = response_data[0]
+        assert status == 404
+        assert "not found" in data["error"]
+
+    @patch("scripts.ops.dashboard_server._broadcast_sse_event")
+    def test_delete_comment_negative_index(self, mock_sse, store_with_ticket):
+        handler = _make_handler(store_with_ticket)
+
+        response_data: list = []
+        def capture(data, status=200):
+            response_data.append((data, status))
+        handler._json_response = capture
+
+        # Try to delete comment with negative index
+        handler._handle_delete_ticket_comment("test-abc123", -1)
+        data, status = response_data[0]
+        assert status == 400
+        assert "out of range" in data["error"]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Tests: POST /api/tickets/<id>/label
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -568,3 +651,276 @@ class TestSSEBroadcast:
 
         with _sse_lock:
             assert dead not in _sse_clients
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Tests: "/" route — React SPA vs legacy dashboard fallback
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+    def test_falls_back_to_legacy_when_not_built(self, tmp_store, tmp_path):
+        """When ui/dist/index.html is absent, the root route calls _serve_dashboard."""
+        fake_dist = tmp_path / "dist_missing"
+        # Do NOT create any files in fake_dist
+
+        handler = MagicMock()
+        handler._serve_react_spa = MagicMock()
+        handler._serve_dashboard = MagicMock()
+
+        if (fake_dist / "index.html").exists():
+            handler._serve_react_spa()
+        else:
+            handler._serve_dashboard()
+
+        handler._serve_dashboard.assert_called_once()
+        handler._serve_react_spa.assert_not_called()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Tests: cooldown clamp — remaining_cd ≥ 0
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestCooldownClamp:
+    """Verify that an already-expired cooldown_until doesn't write a lockfile."""
+
+    def test_expired_cooldown_skips_lockfile(self, tmp_path):
+        """When cooldown_until is in the past, write_cooldown_lockfile is not called."""
+        import time
+        import scripts.ops.swe_team_runner as runner
+        from src.swe_team.rate_limiter import RateLimitCooldown
+
+        # Create exception with a tiny cooldown then backdate cooldown_until
+        exc = RateLimitCooldown(cooldown_seconds=1)
+        exc.cooldown_until = time.time() - 10  # already expired
+
+        with patch.object(runner, "write_cooldown_lockfile") as mock_write:
+            remaining_cd = max(0.0, exc.cooldown_until - time.time())
+            if remaining_cd > 0:
+                runner.write_cooldown_lockfile(remaining_cd)
+
+        mock_write.assert_not_called()
+
+    def test_future_cooldown_writes_lockfile(self, tmp_path):
+        """When cooldown_until is in the future, write_cooldown_lockfile is called."""
+        import time
+        import scripts.ops.swe_team_runner as runner
+        from src.swe_team.rate_limiter import RateLimitCooldown
+
+        exc = RateLimitCooldown(cooldown_seconds=300)  # 5 minutes
+
+        with patch.object(runner, "write_cooldown_lockfile") as mock_write:
+            remaining_cd = max(0.0, exc.cooldown_until - time.time())
+            if remaining_cd > 0:
+                runner.write_cooldown_lockfile(remaining_cd)
+
+        mock_write.assert_called_once()
+        written_duration = mock_write.call_args[0][0]
+        assert written_duration > 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Tests: PATCH /api/tickets/<id>/title — Update ticket title
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestTicketTitle:
+    @patch("scripts.ops.dashboard_server._broadcast_sse_event")
+    @patch("scripts.ops.dashboard_server.os.environ", {"SWE_GITHUB_REPO": ""})
+    def test_update_title(self, mock_sse, store_with_ticket):
+        handler = _make_handler(store_with_ticket)
+        _set_body(handler, {"title": "Updated test ticket title"})
+
+        response_data: list = []
+        def capture(data, status=200):
+            response_data.append((data, status))
+        handler._json_response = capture
+
+        handler._handle_ticket_title("test-abc123")
+        assert len(response_data) == 1
+        data, status = response_data[0]
+        assert status == 200
+        assert data["status"] == "ok"
+        assert "ticket" in data
+        assert data["ticket"]["title"] == "Updated test ticket title"
+
+        ticket = store_with_ticket.get("test-abc123")
+        assert ticket.title == "Updated test ticket title"
+
+        mock_sse.assert_called_once()
+        sse_payload = mock_sse.call_args[0][1]
+        assert sse_payload["event"] == "title_changed"
+
+    @patch("scripts.ops.dashboard_server._broadcast_sse_event")
+    def test_empty_title_rejected(self, mock_sse, store_with_ticket):
+        handler = _make_handler(store_with_ticket)
+        _set_body(handler, {"title": ""})
+
+        response_data: list = []
+        def capture(data, status=200):
+            response_data.append((data, status))
+        handler._json_response = capture
+
+        handler._handle_ticket_title("test-abc123")
+        data, status = response_data[0]
+        assert status == 400
+        assert "error" in data
+
+    @patch("scripts.ops.dashboard_server._broadcast_sse_event")
+    def test_missing_title_field(self, mock_sse, store_with_ticket):
+        handler = _make_handler(store_with_ticket)
+        _set_body(handler, {})
+
+        response_data: list = []
+        def capture(data, status=200):
+            response_data.append((data, status))
+        handler._json_response = capture
+
+        handler._handle_ticket_title("test-abc123")
+        data, status = response_data[0]
+        assert status == 400
+        assert "error" in data
+
+    @patch("scripts.ops.dashboard_server._broadcast_sse_event")
+    def test_update_title_nonexistent_ticket(self, mock_sse, store_with_ticket):
+        handler = _make_handler(store_with_ticket)
+        _set_body(handler, {"title": "New title"})
+
+        response_data: list = []
+        def capture(data, status=200):
+            response_data.append((data, status))
+        handler._json_response = capture
+
+        handler._handle_ticket_title("nonexistent")
+        data, status = response_data[0]
+        assert status == 404
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Tests: PATCH /api/tickets/<id>/description — Update ticket description
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestTicketDescription:
+    @patch("scripts.ops.dashboard_server._broadcast_sse_event")
+    @patch("scripts.ops.dashboard_server.os.environ", {"SWE_GITHUB_REPO": ""})
+    def test_update_description(self, mock_sse, store_with_ticket):
+        handler = _make_handler(store_with_ticket)
+        _set_body(handler, {"description": "Updated test ticket description with more details"})
+
+        response_data: list = []
+        def capture(data, status=200):
+            response_data.append((data, status))
+        handler._json_response = capture
+
+        handler._handle_ticket_description("test-abc123")
+        assert len(response_data) == 1
+        data, status = response_data[0]
+        assert status == 200
+        assert data["status"] == "ok"
+        assert "ticket" in data
+        assert data["ticket"]["description"] == "Updated test ticket description with more details"
+
+        ticket = store_with_ticket.get("test-abc123")
+        assert ticket.description == "Updated test ticket description with more details"
+
+        mock_sse.assert_called_once()
+        sse_payload = mock_sse.call_args[0][1]
+        assert sse_payload["event"] == "description_changed"
+
+    @patch("scripts.ops.dashboard_server._broadcast_sse_event")
+    def test_empty_description_rejected(self, mock_sse, store_with_ticket):
+        handler = _make_handler(store_with_ticket)
+        _set_body(handler, {"description": ""})
+
+        response_data: list = []
+        def capture(data, status=200):
+            response_data.append((data, status))
+        handler._json_response = capture
+
+        handler._handle_ticket_description("test-abc123")
+        data, status = response_data[0]
+        assert status == 400
+        assert "error" in data
+
+    @patch("scripts.ops.dashboard_server._broadcast_sse_event")
+    def test_missing_description_field(self, mock_sse, store_with_ticket):
+        handler = _make_handler(store_with_ticket)
+        _set_body(handler, {})
+
+        response_data: list = []
+        def capture(data, status=200):
+            response_data.append((data, status))
+        handler._json_response = capture
+
+        handler._handle_ticket_description("test-abc123")
+        data, status = response_data[0]
+        assert status == 400
+        assert "error" in data
+
+    @patch("scripts.ops.dashboard_server._broadcast_sse_event")
+    def test_update_description_nonexistent_ticket(self, mock_sse, store_with_ticket):
+        handler = _make_handler(store_with_ticket)
+        _set_body(handler, {"description": "New description"})
+
+        response_data: list = []
+        def capture(data, status=200):
+            response_data.append((data, status))
+        handler._json_response = capture
+
+        handler._handle_ticket_description("nonexistent")
+        data, status = response_data[0]
+        assert status == 404
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Tests: GET /api/tickets/<id>/activity — Get activity timeline
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestTicketActivity:
+    def test_get_activity_existing_ticket(self, store_with_ticket):
+        handler = _make_handler(store_with_ticket)
+
+        response_data: list = []
+        def capture(data, status=200):
+            response_data.append((data, status))
+        handler._json_response = capture
+
+        handler._handle_ticket_activity("test-abc123")
+        assert len(response_data) == 1
+        data, status = response_data[0]
+        assert status == 200
+        assert data["ticket_id"] == "test-abc123"
+        assert "activity" in data
+        assert isinstance(data["activity"], list)
+
+    def test_get_activity_nonexistent_ticket(self, store_with_ticket):
+        handler = _make_handler(store_with_ticket)
+
+        response_data: list = []
+        def capture(data, status=200):
+            response_data.append((data, status))
+        handler._json_response = capture
+
+        handler._handle_ticket_activity("nonexistent")
+        assert len(response_data) == 1
+        data, status = response_data[0]
+        assert status == 404
+        assert "error" in data
+
+    @patch.dict(os.environ, {"SUPABASE_CONNECTION_STRING": "postgresql://test:test@localhost/test"})
+    def test_get_activity_with_supabase_error(self, store_with_ticket):
+        """Test that activity endpoint handles Supabase connection errors gracefully."""
+        handler = _make_handler(store_with_ticket)
+
+        response_data: list = []
+        def capture(data, status=200):
+            response_data.append((data, status))
+        handler._json_response = capture
+
+        # This should not raise an error, just return empty activity list
+        handler._handle_ticket_activity("test-abc123")
+        assert len(response_data) == 1
+        data, status = response_data[0]
+        assert status == 200
+        assert data["ticket_id"] == "test-abc123"
+        assert "activity" in data
+        # Should return empty list on error, not fail the request
+        assert isinstance(data["activity"], list)

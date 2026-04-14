@@ -1,0 +1,36 @@
+{
+  "name": "@swe-squad/control-plane",
+  "version": "0.1.0",
+  "description": "SWE-Squad TypeScript control plane built on pi-mono",
+  "type": "module",
+  "main": "dist/cli.js",
+  "bin": {
+    "swe-manager": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/cli.ts",
+    "start": "tsx src/cli.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mariozechner/pi-agent-core": "^0.66.1",
+    "@mariozechner/pi-ai": "^0.66.1",
+    "@mariozechner/pi-coding-agent": "^0.66.1",
+    "@sinclair/typebox": "^0.34.49",
+    "yaml": "^2.7.1",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.50",
+    "tsx": "^4.19.4",
+    "typescript": "^5.7.3",
+    "vitest": "^3.2.1"
+  },
+  "engines": {
+    "node": ">=20.6.0"
+  }
+}

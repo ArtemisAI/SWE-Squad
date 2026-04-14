@@ -1,0 +1,13 @@
+# SWE-Squad logrotate configuration
+# Install: sudo cp config/logrotate-swe-squad /etc/logrotate.d/swe-squad
+# Or add to user crontab: 0 0 * * * /usr/sbin/logrotate config/logrotate-swe-squad
+
+/home/agent/Projects/SWE-Squad-DEV/logs/stream_output.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

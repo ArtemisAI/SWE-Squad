@@ -1,0 +1,103 @@
+services:
+
+  claude-proxy:
+    image: ghcr.io/1rgs/claude-code-proxy:main
+    container_name: claude-proxy
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    environment:
+      - OPENAI_API_KEY=${CLAUDE_PROXY_OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${CLAUDE_PROXY_OPENAI_BASE_URL:-https://your-proxy.example.com/v1}
+      - PREFERRED_PROVIDER=${CLAUDE_PROXY_PREFERRED_PROVIDER:-openai}
+      - BIG_MODEL=${CLAUDE_PROXY_BIG_MODEL:-gpt-4.1}
+      - SMALL_MODEL=${CLAUDE_PROXY_SMALL_MODEL:-gpt-4.1-mini}
+    ports:
+      - "8082:8082"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8082/docs"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  swe-runner:
+    build:
+      context: ../..
+      dockerfile: docker/swe-squad/Dockerfile
+    image: swe-squad:latest
+    container_name: swe-runner
+    command: python3 scripts/ops/swe_team_runner.py --daemon
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    environment:
+      - SWE_TEAM_ENABLED=true
+      - SWE_TEAM_CONFIG=/app/config/swe_team.yaml
+    volumes:
+      - ../../src:/app/src:ro
+      - ../../scripts:/app/scripts:ro
+      - ../../config:/app/config:ro
+      - ../../data:/app/data
+      - ../../logs:/app/logs
+    healthcheck:
+      test:
+        - "CMD"
+        - "python3"
+        - "-c"
+        - |
+          import os, time, sys
+          f = '/app/data/swe_team/status.json'
+          if not os.path.exists(f):
+              sys.exit(1)
+          age = time.time() - os.path.getmtime(f)
+          sys.exit(0 if age < 3600 else 1)
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  swe-dashboard:
+    image: swe-squad:latest
+    container_name: swe-dashboard
+    command: python3 scripts/ops/dashboard_server.py --port 8888
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    environment:
+      - SWE_TEAM_CONFIG=/app/config/swe_team.yaml
+    ports:
+      - "8888:8888"
+    volumes:
+      - ../../src:/app/src:ro
+      - ../../scripts:/app/scripts:ro
+      - ../../config:/app/config:ro
+      - ../../data:/app/data:ro
+      - ../../logs:/app/logs:ro
+      - ../../templates:/app/templates:ro
+    depends_on:
+      swe-runner:
+        condition: service_started
+
+  swe-a2a-hub:
+    image: swe-squad:latest
+    container_name: swe-a2a-hub
+    command: python3 scripts/ops/a2a_hub.py
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    environment:
+      - SWE_TEAM_CONFIG=/app/config/swe_team.yaml
+    ports:
+      - "18791:18791"
+    volumes:
+      - ../../src:/app/src:ro
+      - ../../scripts:/app/scripts:ro
+      - ../../config:/app/config:ro
+      - ../../logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:18791/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

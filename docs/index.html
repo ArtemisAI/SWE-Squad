@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SWE-Squad — Autonomous AI Engineering Team</title>
+<style>
+  :root {
+    --navy: #0f1729;
+    --navy-light: #1a2744;
+    --navy-mid: #243354;
+    --coral: #ff6b6b;
+    --coral-light: #ff8e8e;
+    --teal: #4ecdc4;
+    --gold: #ffd93d;
+    --text: #e8edf5;
+    --text-muted: #8892a4;
+    --card-bg: #1a2744;
+    --border: #2a3a5c;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--navy);
+    color: var(--text);
+    line-height: 1.6;
+    overflow-x: hidden;
+  }
+  a { color: var(--coral); text-decoration: none; }
+  a:hover { color: var(--coral-light); }
+
+  /* Nav */
+  nav {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+    background: rgba(15, 23, 41, 0.95);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+    padding: 1rem 2rem;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  nav .logo { font-weight: 700; font-size: 1.2rem; color: var(--coral); }
+  nav .links a { margin-left: 1.5rem; color: var(--text-muted); font-size: 0.9rem; }
+  nav .links a:hover { color: var(--text); }
+
+  /* Hero */
+  .hero {
+    min-height: 100vh;
+    display: flex; flex-direction: column; justify-content: center; align-items: center;
+    text-align: center;
+    padding: 6rem 2rem 4rem;
+    background: linear-gradient(135deg, var(--navy) 0%, var(--navy-light) 50%, var(--navy) 100%);
+    position: relative;
+  }
+  .hero::before {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    background: radial-gradient(circle at 30% 50%, rgba(255,107,107,0.08) 0%, transparent 50%),
+                radial-gradient(circle at 70% 50%, rgba(78,205,196,0.06) 0%, transparent 50%);
+  }
+  .hero > * { position: relative; z-index: 1; }
+  .hero h1 {
+    font-size: clamp(2.5rem, 6vw, 4.5rem);
+    font-weight: 800;
+    margin-bottom: 1rem;
+    background: linear-gradient(135deg, var(--text) 0%, var(--coral) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .hero .tagline {
+    font-size: clamp(1.1rem, 2.5vw, 1.5rem);
+    color: var(--text-muted);
+    height: 2rem;
+    margin-bottom: 2rem;
+  }
+  .hero .tagline .cursor {
+    display: inline-block;
+    width: 2px;
+    height: 1.2em;
+    background: var(--coral);
+    vertical-align: text-bottom;
+    animation: blink 1s step-end infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  .cta {
+    display: inline-block;
+    padding: 0.9rem 2.5rem;
+    background: var(--coral);
+    color: var(--navy);
+    border-radius: 8px;
+    font-weight: 700;
+    font-size: 1.05rem;
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+  .cta:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(255,107,107,0.3);
+    color: var(--navy);
+  }
+
+  /* Section base */
+  section { padding: 5rem 2rem; max-width: 1200px; margin: 0 auto; }
+  section h2 {
+    font-size: 2rem; font-weight: 700; margin-bottom: 1rem; text-align: center;
+  }
+  section .subtitle {
+    text-align: center; color: var(--text-muted); margin-bottom: 3rem; max-width: 600px; margin-left: auto; margin-right: auto;
+  }
+
+  /* Features */
+  .features-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 1.5rem;
+  }
+  .feature-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 2rem;
+    transition: transform 0.2s, border-color 0.2s;
+  }
+  .feature-card:hover {
+    transform: translateY(-4px);
+    border-color: var(--coral);
+  }
+  .feature-card .icon { font-size: 2rem; margin-bottom: 0.75rem; }
+  .feature-card h3 { font-size: 1.15rem; margin-bottom: 0.5rem; }
+  .feature-card p { color: var(--text-muted); font-size: 0.95rem; }
+
+  /* Architecture */
+  .arch-container {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 2rem;
+    overflow-x: auto;
+  }
+  .arch-diagram {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: clamp(0.65rem, 1.2vw, 0.9rem);
+    line-height: 1.5;
+    white-space: pre;
+    color: var(--text-muted);
+    text-align: center;
+  }
+  .arch-diagram .hl { color: var(--coral); font-weight: 700; }
+  .arch-diagram .tl { color: var(--teal); }
+  .arch-diagram .gd { color: var(--gold); }
+
+  /* Stats */
+  .stats-row {
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 2rem;
+    margin: 3rem 0;
+  }
+  .stat {
+    text-align: center; min-width: 180px;
+  }
+  .stat .number {
+    font-size: 2.5rem; font-weight: 800; color: var(--coral);
+  }
+  .stat .label { color: var(--text-muted); font-size: 0.95rem; }
+
+  /* Getting Started */
+  .steps {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1.5rem;
+  }
+  .step {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem;
+  }
+  .step .step-num {
+    display: inline-block;
+    width: 2rem; height: 2rem; line-height: 2rem; text-align: center;
+    background: var(--coral);
+    color: var(--navy);
+    border-radius: 50%;
+    font-weight: 700;
+    margin-bottom: 0.75rem;
+  }
+  .step h3 { margin-bottom: 0.5rem; }
+  .step code {
+    display: block;
+    background: var(--navy);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-top: 0.75rem;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.85rem;
+    color: var(--teal);
+    overflow-x: auto;
+    white-space: pre;
+  }
+
+  /* Footer */
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 2rem;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+  }
+  footer a { color: var(--coral); }
+
+  /* Mobile */
+  @media (max-width: 768px) {
+    nav { padding: 0.75rem 1rem; }
+    nav .links a { margin-left: 1rem; font-size: 0.8rem; }
+    section { padding: 3rem 1rem; }
+    .features-grid { grid-template-columns: 1fr; }
+    .steps { grid-template-columns: 1fr; }
+    .stats-row { gap: 1rem; }
+    .stat .number { font-size: 2rem; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="logo">SWE-Squad</div>
+  <div class="links">
+    <a href="#features">Features</a>
+    <a href="#architecture">Architecture</a>
+    <a href="#stats">Stats</a>
+    <a href="#start">Get Started</a>
+    <a href="https://github.com/ArtemisAI/SWE-Squad" target="_blank">GitHub</a>
+  </div>
+</nav>
+
+<!-- Hero -->
+<div class="hero">
+  <h1>SWE-Squad</h1>
+  <p class="tagline" id="tagline"><span class="cursor"></span></p>
+  <p style="color: var(--text-muted); margin-bottom: 2rem; max-width: 600px;">
+    An autonomous AI engineering team that monitors your systems, triages issues,
+    investigates root causes, writes fixes, and opens PRs &mdash; all while you sleep.
+  </p>
+  <a href="#start" class="cta">Get Started</a>
+</div>
+
+<!-- Features -->
+<section id="features">
+  <h2>Features</h2>
+  <p class="subtitle">Everything you need for autonomous software maintenance, from detection to deployment.</p>
+  <div class="features-grid">
+    <div class="feature-card">
+      <div class="icon">&#x1F50D;</div>
+      <h3>Multi-Agent Triage</h3>
+      <p>Monitor agent scans logs across local and remote nodes, deduplicates errors by fingerprint, and classifies severity automatically.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">&#x1F9E0;</div>
+      <h3>Semantic Memory</h3>
+      <p>pgvector-backed memory pipeline with bge-m3 embeddings. Past investigations are recalled and injected into new ones, improving over time.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">&#x1F527;</div>
+      <h3>Auto-Fix PRs</h3>
+      <p>Developer agent writes fixes in isolated worktrees, runs tests, checks complexity gates, and opens pull requests &mdash; zero human intervention.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">&#x1F310;</div>
+      <h3>Cross-Repo Support</h3>
+      <p>Monitor multiple repositories from a single instance. Tickets are scoped per-repo with automatic SSH-based log collection from remote workers.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">&#x1F4CA;</div>
+      <h3>Real-Time Dashboard</h3>
+      <p>Built-in HTTP dashboard with live ticket counts, gate verdicts, cycle history, and cost tracking. Also available as Telegram alerts.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">&#x1F9E9;</div>
+      <h3>Plugin Architecture</h3>
+      <p>12 provider interfaces: swap coding engines, notification channels, issue trackers, vector stores, and more without changing core code.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Architecture -->
+<section id="architecture">
+  <h2>Architecture</h2>
+  <p class="subtitle">A multi-agent pipeline from log monitoring to merged pull request.</p>
+  <div class="arch-container">
+    <div class="arch-diagram"><span class="hl">Logs</span>  ──>  <span class="tl">Monitor</span>  ──>  <span class="tl">Triage</span>  ──>  <span class="tl">Investigator</span>  ──>  <span class="tl">Developer</span>  ──>  <span class="gd">PR</span>
+  │              │              │                │                │
+  │         scan dirs      classify         Claude CLI       keep/discard
+  │         dedup FP       severity        root-cause         test gate
+  │                        assign          memory inject     complexity
+  │                                                            gate
+  ▼                                                             │
+<span class="hl">Remote</span>                    <span class="gd">Stability Gate</span>  <──────────────────────┘
+<span class="hl">Workers</span>                   (Ralph Wiggum)
+  │                        PASS / WARN / BLOCK
+  │                              │
+  └── SSH log fetch              ▼
+      propagate.sh          <span class="gd">Deploy + Monitor</span></div>
+  </div>
+</section>
+
+<!-- Stats -->
+<section id="stats">
+  <h2>By the Numbers</h2>
+  <div class="stats-row">
+    <div class="stat">
+      <div class="number">1887+</div>
+      <div class="label">Unit Tests</div>
+    </div>
+    <div class="stat">
+      <div class="number">12</div>
+      <div class="label">Provider Interfaces</div>
+    </div>
+    <div class="stat">
+      <div class="number">0</div>
+      <div class="label">Hardcoded Dependencies</div>
+    </div>
+    <div class="stat">
+      <div class="number">3</div>
+      <div class="label">Model Tiers</div>
+    </div>
+  </div>
+  <p style="text-align:center; color: var(--text-muted); font-size: 0.9rem;">
+    From 827 tests at launch to 1887+ today. Every provider is swappable. Every secret is in .env.
+  </p>
+</section>
+
+<!-- Getting Started -->
+<section id="start">
+  <h2>Getting Started</h2>
+  <p class="subtitle">Three steps from zero to autonomous engineering.</p>
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">1</div>
+      <h3>Install</h3>
+      <code>git clone https://github.com/ArtemisAI/SWE-Squad.git
+cd SWE-Squad
+pip install -e ".[embeddings]"</code>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <h3>Configure</h3>
+      <code>cp .env.example .env
+# Set your tokens:
+#   GH_TOKEN, TELEGRAM_BOT_TOKEN,
+#   SUPABASE_URL, SUPABASE_ANON_KEY
+vi config/swe_team.yaml</code>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <h3>Run</h3>
+      <code># Single cycle
+python scripts/ops/swe_team_runner.py
+
+# Daemon mode (recommended)
+python scripts/ops/swe_team_runner.py --daemon
+
+# Check status
+python scripts/ops/swe_cli.py status</code>
+    </div>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <p>
+    <a href="https://github.com/ArtemisAI/SWE-Squad" target="_blank">GitHub</a>
+    &nbsp;&middot;&nbsp;
+    MIT License
+    &nbsp;&middot;&nbsp;
+    Built by <a href="https://github.com/ArtemisAI" target="_blank">ArtemisAI</a>
+  </p>
+</footer>
+
+<script>
+(function() {
+  const lines = [
+    "Monitors your logs",
+    "Triages issues automatically",
+    "Writes fixes while you sleep",
+    "Opens PRs with zero intervention",
+    "Learns from past investigations"
+  ];
+  const el = document.getElementById("tagline");
+  let lineIdx = 0, charIdx = 0, deleting = false;
+  const TYPING_SPEED = 60, DELETE_SPEED = 30, PAUSE = 2000;
+
+  function tick() {
+    const line = lines[lineIdx];
+    if (!deleting) {
+      charIdx++;
+      el.innerHTML = line.slice(0, charIdx) + '<span class="cursor"></span>';
+      if (charIdx === line.length) {
+        setTimeout(function() { deleting = true; tick(); }, PAUSE);
+        return;
+      }
+      setTimeout(tick, TYPING_SPEED);
+    } else {
+      charIdx--;
+      el.innerHTML = line.slice(0, charIdx) + '<span class="cursor"></span>';
+      if (charIdx === 0) {
+        deleting = false;
+        lineIdx = (lineIdx + 1) % lines.length;
+        setTimeout(tick, 300);
+        return;
+      }
+      setTimeout(tick, DELETE_SPEED);
+    }
+  }
+  tick();
+})();
+</script>
+</body>
+</html>

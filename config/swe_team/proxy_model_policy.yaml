@@ -1,0 +1,135 @@
+version: 1
+updated_at: 2026-03-24
+endpoint: https://your-llm-proxy.example.com/v1
+notes:
+  - Use short names for UI/CLI cleanliness; route to full model IDs at runtime.
+  - Catalog aligned to live NewAPI /models on 2026-03-24.
+  - Legacy model IDs may fail with model_price_error and are intentionally removed from defaults.
+
+defaults:
+  claudep_default_model: qwen3
+  kimi_min_safe_max_tokens: 128
+  model_provider: openai
+
+models:
+  - short_name: qwen3
+    model_id: qwen3-coder-next:cloud
+    provider: openai
+    status: healthy
+    capabilities:
+      chat: true
+      streaming: true
+      tool_calling: true
+      multimodal_input: true
+      reasoning_visible: true
+    role_hint: primary coder
+
+  - short_name: deepseek-v3.2
+    model_id: deepseek-v3.2:cloud
+    provider: openai
+    status: healthy
+    capabilities:
+      chat: true
+      streaming: true
+      tool_calling: false
+      multimodal_input: true
+      reasoning_visible: false
+    role_hint: reasoning and fallback
+
+  - short_name: kimi-k2-1t
+    model_id: kimi-k2:1t-cloud
+    provider: openai
+    status: healthy
+    caveats:
+      - use max_tokens >= 128 for reliable visible output
+    capabilities:
+      chat: true
+      streaming: true
+      tool_calling: true
+      multimodal_input: false
+      reasoning_visible: true
+    role_hint: long-context and reasoning
+
+  - short_name: kimi-k2-thinking
+    model_id: kimi-k2-thinking:cloud
+    provider: openai
+    status: healthy
+    capabilities:
+      chat: true
+      streaming: true
+      tool_calling: true
+      multimodal_input: false
+      reasoning_visible: true
+    role_hint: reasoning-focused alternate
+
+  - short_name: glm-5
+    model_id: glm-5:cloud
+    provider: openai
+    status: healthy
+    capabilities:
+      chat: true
+      streaming: true
+      tool_calling: true
+      multimodal_input: false
+      reasoning_visible: true
+    role_hint: high-capacity alternate
+
+  - short_name: glm-4.7
+    model_id: glm-4.7:cloud
+    provider: openai
+    status: healthy
+    capabilities:
+      chat: true
+      streaming: true
+      tool_calling: true
+      multimodal_input: false
+      reasoning_visible: true
+    role_hint: stable alternate
+
+  - short_name: minimax-m2.7
+    model_id: minimax-m2.7:cloud
+    provider: openai
+    status: healthy
+    capabilities:
+      chat: true
+      streaming: true
+      tool_calling: true
+      multimodal_input: false
+      reasoning_visible: true
+    role_hint: agentic alternate
+
+  - short_name: minimax-m2.5
+    model_id: minimax-m2.5:cloud
+    provider: openai
+    status: healthy
+    capabilities:
+      chat: true
+      streaming: true
+      tool_calling: true
+      multimodal_input: false
+      reasoning_visible: false
+    role_hint: coding alternate
+
+  - short_name: minimax-m2.1
+    model_id: minimax-m2.1:cloud
+    provider: openai
+    status: healthy
+    capabilities:
+      chat: true
+      streaming: true
+      tool_calling: true
+      multimodal_input: false
+      reasoning_visible: false
+    role_hint: multilingual alternate
+
+  - short_name: qwen3.5
+    model_id: qwen3.5:397b-cloud
+    provider: openai
+    status: healthy
+    capabilities:
+      chat: true
+      streaming: true
+      tool_calling: true
+      multimodal_input: true
+      reasoning_visible: true
+    role_hint: multimodal alternate

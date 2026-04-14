@@ -21,8 +21,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from src.swe_team.models import SWETicket, TicketStatus
+from src.swe_team.models import EngineHandover, SWETicket, TicketStatus
 from src.swe_team.providers.notification.base import NotificationProvider
+from src.swe_team.workflow.models import WorkflowDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,40 @@ class SupabaseTicketStore:
             return self._row_to_ticket(rows[0])
         return None
 
+    def get_workflow_definition(self, team_id: Optional[str] = None) -> Optional[WorkflowDefinition]:
+        """Return the active workflow definition for a team, if configured."""
+        scoped_team = team_id or self._team_id
+        params = {
+            "team_id": f"eq.{scoped_team}",
+            "is_active": "eq.true",
+            "order": "updated_at.desc",
+            "limit": "1",
+        }
+        try:
+            rows = self._request("GET", "/swe_workflows", params=params)
+        except Exception:
+            return None
+        if not rows:
+            return None
+        row = rows[0]
+        payload: Dict[str, Any]
+        definition = row.get("definition")
+        if isinstance(definition, dict):
+            payload = dict(definition)
+        else:
+            payload = {
+                "id": row.get("id"),
+                "name": row.get("name", "Workflow"),
+                "team_id": row.get("team_id", scoped_team),
+                "nodes": row.get("nodes", []),
+                "connections": row.get("connections", []),
+                "settings": row.get("settings", {}),
+                "is_active": row.get("is_active", True),
+            }
+        if not payload.get("team_id"):
+            payload["team_id"] = scoped_team
+        return WorkflowDefinition.from_dict(payload)
+
     def list_all(self, limit: int = 500) -> List[SWETicket]:
         """Return all tickets for this team, newest first.
 
@@ -180,6 +215,25 @@ class SupabaseTicketStore:
         rows = self._request("GET", "/swe_tickets", params=params)
         return [self._row_to_ticket(r) for r in (rows or [])]
 
+    def list_all_teams(self, limit: int = 500) -> List[SWETicket]:
+        """Return tickets across ALL teams (for dashboard aggregation)."""
+        params = {
+            "order": "created_at.desc",
+            "limit": str(limit),
+        }
+        rows = self._request("GET", "/swe_tickets", params=params)
+        return [self._row_to_ticket(r) for r in (rows or [])]
+
+    def list_open_all_teams(self, limit: int = 500) -> List[SWETicket]:
+        """Return open tickets across ALL teams."""
+        params = {
+            "status": "not.in.(resolved,closed,acknowledged,failed,blocked)",
+            "order": "created_at.desc",
+            "limit": str(limit),
+        }
+        rows = self._request("GET", "/swe_tickets", params=params)
+        return [self._row_to_ticket(r) for r in (rows or [])]
+
     def list_recently_resolved(self, hours: int = 24, limit: int = 500) -> List[SWETicket]:
         """Return tickets resolved within the last *hours* hours."""
         cutoff = (
@@ -194,6 +248,91 @@ class SupabaseTicketStore:
         }
         rows = self._request("GET", "/swe_tickets", params=params)
         return [self._row_to_ticket(r) for r in (rows or [])]
+
+    def list_by_project_id(self, project_id: str, limit: int = 500) -> List[SWETicket]:
+        """Return all tickets belonging to a project (goal hierarchy)."""
+        params = {
+            "team_id": f"eq.{self._team_id}",
+            "project_id": f"eq.{project_id}",
+            "order": "created_at.desc",
+            "limit": str(limit),
+        }
+        rows = self._request("GET", "/swe_tickets", params=params)
+        return [self._row_to_ticket(r) for r in (rows or [])]
+
+    def list_by_parent_ticket_id(self, parent_ticket_id: str, limit: int = 500) -> List[SWETicket]:
+        """Return all sub-tasks (tickets with the given parent_ticket_id)."""
+        params = {
+            "team_id": f"eq.{self._team_id}",
+            "parent_ticket_id": f"eq.{parent_ticket_id}",
+            "order": "created_at.desc",
+            "limit": str(limit),
+        }
+        rows = self._request("GET", "/swe_tickets", params=params)
+        return [self._row_to_ticket(r) for r in (rows or [])]
+
+    def get_project_root_tickets(self, project_id: str, limit: int = 500) -> List[SWETicket]:
+        """Return all root-level (no parent) tickets in a project."""
+        params = {
+            "team_id": f"eq.{self._team_id}",
+            "project_id": f"eq.{project_id}",
+            "parent_ticket_id": "is.null",
+            "order": "created_at.desc",
+            "limit": str(limit),
+        }
+        rows = self._request("GET", "/swe_tickets", params=params)
+        return [self._row_to_ticket(r) for r in (rows or [])]
+
+    def get_engine_cooldown(self, engine_name: str) -> Optional[Dict[str, Any]]:
+        """Return cooldown row for a specific engine in this team."""
+        params = {
+            "team_id": f"eq.{self._team_id}",
+            "engine_name": f"eq.{engine_name}",
+            "limit": "1",
+        }
+        rows = self._request("GET", "/engine_cooldowns", params=params)
+        if rows:
+            return rows[0]
+        return None
+
+    def list_engine_cooldowns(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """Return cooldown rows for all engines in this team."""
+        params = {
+            "team_id": f"eq.{self._team_id}",
+            "order": "updated_at.desc",
+            "limit": str(limit),
+        }
+        rows = self._request("GET", "/engine_cooldowns", params=params)
+        return [r for r in (rows or []) if isinstance(r, dict)]
+
+    def upsert_engine_cooldown(
+        self,
+        *,
+        team_id: str,
+        engine_name: str,
+        status: str,
+        cooldown_until: Optional[str] = None,
+        reset_at: Optional[str] = None,
+        next_probe_at: Optional[str] = None,
+        last_error: str = "",
+        fallback_engine: str = "",
+        updated_at: Optional[str] = None,
+    ) -> None:
+        """Upsert per-engine cooldown state for cross-VM coordination."""
+        body = {
+            "team_id": team_id,
+            "engine_name": engine_name,
+            "status": status,
+            "cooldown_until": cooldown_until,
+            "reset_at": reset_at,
+            "next_probe_at": next_probe_at,
+            "last_error": last_error,
+            "fallback_engine": fallback_engine,
+            "updated_at": updated_at,
+        }
+        headers = dict(self._headers)
+        headers["Prefer"] = "resolution=merge-duplicates,return=representation"
+        self._request("POST", "/engine_cooldowns", body=body, extra_headers=headers)
 
     def store_embedding(self, ticket_id: str, embedding: List[float]) -> None:
         """Persist an embedding vector for an existing ticket."""
@@ -430,6 +569,17 @@ class SupabaseTicketStore:
                 ticket_id, from_status, to_status,
                 exc_info=True,
             )
+
+    def log_handover(self, handover: EngineHandover) -> None:
+        """Write an engine-handover envelope to the audit trail."""
+        note = f"engine_handover:{handover.to_json()}"
+        self._log_event(
+            ticket_id=handover.task_id,
+            from_status=f"phase:{handover.phase}",
+            to_status=f"handover:{handover.phase}",
+            agent=handover.source_engine,
+            note=note,
+        )
 
     # ------------------------------------------------------------------
     # Internal alerting helpers

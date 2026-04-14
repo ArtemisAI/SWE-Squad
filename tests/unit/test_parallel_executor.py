@@ -441,3 +441,70 @@ class TestTaskResult:
         )
         assert r.success is False
         assert r.error == "timeout"
+
+
+# ---------------------------------------------------------------------------
+# RateLimitCooldown propagation through parallel executor
+# ---------------------------------------------------------------------------
+
+class TestRateLimitCooldownPropagation:
+    """Verify RateLimitCooldown escapes the thread pool instead of being swallowed."""
+
+    def test_investigation_propagates_cooldown(self):
+        from src.swe_team.rate_limiter import RateLimitCooldown
+
+        executor = _make_executor()
+        ticket = MagicMock(ticket_id="rl-inv-1")
+        investigator = MagicMock()
+        investigator.investigate.side_effect = RateLimitCooldown(
+            "rate limited", cooldown_seconds=600
+        )
+
+        future = executor.submit_investigation(ticket, investigator)
+        with pytest.raises(RateLimitCooldown):
+            future.result(timeout=5)
+        executor.shutdown(wait=True)
+
+    def test_development_propagates_cooldown(self):
+        from src.swe_team.rate_limiter import RateLimitCooldown
+
+        executor = _make_executor()
+        ticket = MagicMock(ticket_id="rl-worker-1")
+        developer = MagicMock()
+        developer.attempt_fix.side_effect = RateLimitCooldown(
+            "rate limited", cooldown_seconds=600
+        )
+
+        future = executor.submit_development(ticket, developer)
+        with pytest.raises(RateLimitCooldown):
+            future.result(timeout=5)
+        executor.shutdown(wait=True)
+
+    def test_collect_results_propagates_cooldown(self):
+        from src.swe_team.rate_limiter import RateLimitCooldown
+
+        executor = _make_executor()
+        ticket = MagicMock(ticket_id="rl-collect-1")
+        investigator = MagicMock()
+        investigator.investigate.side_effect = RateLimitCooldown(
+            "rate limited", cooldown_seconds=600
+        )
+
+        futures = [executor.submit_investigation(ticket, investigator)]
+        with pytest.raises(RateLimitCooldown):
+            executor.collect_results(futures, timeout=5)
+        executor.shutdown(wait=True)
+
+    def test_non_cooldown_exceptions_still_caught(self):
+        """Regular exceptions should still be caught and turned into TaskResult."""
+        executor = _make_executor()
+        ticket = MagicMock(ticket_id="rl-other-1")
+        investigator = MagicMock()
+        investigator.investigate.side_effect = RuntimeError("some other error")
+
+        future = executor.submit_investigation(ticket, investigator)
+        result = future.result(timeout=5)
+
+        assert result.success is False
+        assert "some other error" in result.error
+        executor.shutdown(wait=True)

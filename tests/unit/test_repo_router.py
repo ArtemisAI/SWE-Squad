@@ -14,9 +14,9 @@ from src.swe_team.preflight import PreflightCheck
 # ---------------------------------------------------------------------------
 
 SAMPLE_REPOS = [
-    {"name": "test-org/SWE-Sandbox", "local_path": "/home/agent/Projects/SWE-Sandbox", "priority": "medium"},
-    {"name": "test-org/SWE-Sandbox-HealthTrack", "local_path": "/home/agent/Projects/SWE-Sandbox-HealthTrack", "priority": "medium"},
-    {"name": "test-org/SWE-Sandbox-ShopStream", "local_path": "/home/agent/Projects/SWE-Sandbox-ShopStream", "priority": "medium"},
+    {"name": "your-org/SWE-Sandbox", "local_path": "/home/agent/Projects/SWE-Sandbox", "priority": "medium"},
+    {"name": "your-org/SWE-Sandbox-HealthTrack", "local_path": "/home/agent/Projects/SWE-Sandbox-HealthTrack", "priority": "medium"},
+    {"name": "your-org/SWE-Sandbox-ShopStream", "local_path": "/home/agent/Projects/SWE-Sandbox-ShopStream", "priority": "medium"},
 ]
 
 
@@ -36,14 +36,14 @@ def _make_ticket(repo: str = "") -> object:
 class TestRepoRouterResolve:
     def test_resolve_known_repo(self):
         router = RepoRouter(SAMPLE_REPOS)
-        ticket = _make_ticket("test-org/SWE-Sandbox-HealthTrack")
+        ticket = _make_ticket("your-org/SWE-Sandbox-HealthTrack")
         result = router.resolve(ticket)
-        assert result.repo_name == "test-org/SWE-Sandbox-HealthTrack"
+        assert result.repo_name == "your-org/SWE-Sandbox-HealthTrack"
         assert result.local_path == Path("/home/agent/Projects/SWE-Sandbox-HealthTrack")
 
     def test_resolve_unknown_repo_raises(self):
         router = RepoRouter(SAMPLE_REPOS)
-        ticket = _make_ticket("test-org/my-app")
+        ticket = _make_ticket("your-org/example-app")
         with pytest.raises(ValueError, match="not in the configured sandbox list"):
             router.resolve(ticket)
 
@@ -51,7 +51,7 @@ class TestRepoRouterResolve:
         router = RepoRouter(SAMPLE_REPOS)
         ticket = _make_ticket("")
         result = router.resolve(ticket)
-        assert result.repo_name == "test-org/SWE-Sandbox"
+        assert result.repo_name == "your-org/SWE-Sandbox"
 
     def test_resolve_empty_config_raises(self):
         router = RepoRouter([])
@@ -61,7 +61,7 @@ class TestRepoRouterResolve:
 
     def test_resolve_returns_resolved_repo_dataclass(self):
         router = RepoRouter(SAMPLE_REPOS)
-        ticket = _make_ticket("test-org/SWE-Sandbox")
+        ticket = _make_ticket("your-org/SWE-Sandbox")
         result = router.resolve(ticket)
         assert isinstance(result, ResolvedRepo)
 
@@ -76,8 +76,8 @@ class TestBuildReposMap:
         router = RepoRouter(SAMPLE_REPOS)
         repos_map = router.build_repos_map()
         assert len(repos_map) == 3
-        assert "test-org/SWE-Sandbox" in repos_map
-        assert "test-org/SWE-Sandbox-HealthTrack" in repos_map
+        assert "your-org/SWE-Sandbox" in repos_map
+        assert "your-org/SWE-Sandbox-HealthTrack" in repos_map
 
     def test_build_repos_map_values_are_paths(self):
         router = RepoRouter(SAMPLE_REPOS)
@@ -106,11 +106,11 @@ class TestIsSandboxPath:
 
     def test_path_outside_sandbox(self):
         router = RepoRouter(SAMPLE_REPOS)
-        assert router.is_sandbox_path(Path("/home/agent/Projects/my-app")) is False
+        assert router.is_sandbox_path(Path("/home/agent/Projects/example-app")) is False
 
     def test_production_repo_rejected(self):
         router = RepoRouter(SAMPLE_REPOS)
-        assert router.is_sandbox_path(Path("/home/agent/Projects/example-dir")) is False
+        assert router.is_sandbox_path(Path("/home/agent/Projects/artemis-ai-ca")) is False
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +123,7 @@ class TestRepoNames:
         router = RepoRouter(SAMPLE_REPOS)
         names = router.repo_names
         assert len(names) == 3
-        assert "test-org/SWE-Sandbox" in names
+        assert "your-org/SWE-Sandbox" in names
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +142,7 @@ class TestSandboxBoundaryPreflight:
 
     def test_sandbox_check_fails_when_outside(self):
         check = PreflightCheck(
-            expected_repo_root=Path("/home/agent/Projects/my-app"),
+            expected_repo_root=Path("/home/agent/Projects/example-app"),
             sandbox_paths=[Path("/home/agent/Projects/SWE-Sandbox")],
         )
         failures = check.check_sandbox_boundary()
@@ -151,7 +151,7 @@ class TestSandboxBoundaryPreflight:
 
     def test_sandbox_check_skipped_when_no_paths(self):
         check = PreflightCheck(
-            expected_repo_root=Path("/home/agent/Projects/my-app"),
+            expected_repo_root=Path("/home/agent/Projects/example-app"),
         )
         failures = check.check_sandbox_boundary()
         assert failures == []
@@ -176,7 +176,7 @@ class TestSandboxBoundaryPreflight:
 
     def test_sandbox_rejects_production_path(self):
         check = PreflightCheck(
-            expected_repo_root=Path("/home/agent/Projects/SWE-Squad-DEV"),
+            expected_repo_root=Path("/home/agent/Projects/SWE-Squad"),
             sandbox_paths=[
                 Path("/home/agent/Projects/SWE-Sandbox"),
                 Path("/home/agent/Projects/SWE-Sandbox-HealthTrack"),

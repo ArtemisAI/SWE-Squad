@@ -80,7 +80,7 @@ class CircuitBreaker:
         self._results.append(success)
         if len(self._results) > self._window_size:
             self._results.pop(0)
-        
+
         # Check if threshold reached
         if len(self._results) >= 5 and self.failure_rate >= self._threshold:
             from datetime import timedelta
@@ -90,8 +90,21 @@ class CircuitBreaker:
                 "Circuit breaker tripped: failure rate %.1f%% (threshold %.1f%%). Pausing for %d min.",
                 self.failure_rate * 100, self._threshold * 100, self._pause_duration
             )
-        
+
         self._save()
+
+    def record_skip(self) -> None:
+        """Record a skip — a ticket that was bypassed without a genuine attempt.
+
+        Skips do NOT affect the failure rate. They cover two scenarios:
+        1. A ticket whose dev/investigation attempts are already exhausted (3/3 cap).
+        2. A rate-limit pause where no attempt was made at all.
+
+        Recording these as failures would inflate the failure rate, causing the
+        circuit breaker to trip and creating a death spiral.
+        """
+        logger.debug("Circuit breaker: skip recorded (not counted toward failure rate).")
+        # No change to _results — just log, no save needed unless we want a skip counter.
 
     def clear_pause(self) -> None:
         """Manually clear the pause state."""

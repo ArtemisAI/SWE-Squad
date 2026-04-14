@@ -20,24 +20,27 @@ CREATE TABLE IF NOT EXISTS swe_tickets (
                             'open','triaged','acknowledged','investigating',
                             'investigation_complete','in_development','in_review',
                             'testing','deploying','monitoring','resolved',
-                            'rolled_back','closed'
+                            'rolled_back','closed','failed','verifying'
                         )),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     assigned_to     TEXT,
     labels          JSONB NOT NULL DEFAULT '[]',
+    ticket_type     TEXT NOT NULL DEFAULT 'unknown',
     source_module   TEXT,
     error_log       TEXT,
     related_tickets JSONB NOT NULL DEFAULT '[]',
     metadata        JSONB NOT NULL DEFAULT '{}',
 
     -- Lifecycle fields
-    investigation_report TEXT,
-    proposed_fix         TEXT,
-    test_results         JSONB,
-    deployment_id        TEXT,
-    rollback_reason      TEXT,
-    embedding            vector(1024)
+    investigation_report     TEXT,
+    proposed_fix             TEXT,
+    test_results             JSONB,
+    deployment_id            TEXT,
+    rollback_reason          TEXT,
+    investigation_session_id TEXT,
+    development_session_id   TEXT,
+    embedding                vector(1024)
 );
 
 ALTER TABLE swe_tickets
@@ -45,8 +48,17 @@ ALTER TABLE swe_tickets
     ADD COLUMN IF NOT EXISTS embedding vector(1024);
 
 ALTER TABLE swe_tickets
+    -- Keep this for existing deployments where table predates ticket_type.
+    ADD COLUMN IF NOT EXISTS ticket_type TEXT NOT NULL DEFAULT 'unknown';
+
+ALTER TABLE swe_tickets
     ADD COLUMN IF NOT EXISTS memory_confidence FLOAT DEFAULT 1.0,
     ADD COLUMN IF NOT EXISTS memory_accessed_at TIMESTAMPTZ;
+
+ALTER TABLE swe_tickets
+    ADD COLUMN IF NOT EXISTS project_id TEXT,
+    ADD COLUMN IF NOT EXISTS parent_ticket_id TEXT,
+    ADD COLUMN IF NOT EXISTS goal TEXT;
 
 -- Indexes for common query patterns
 CREATE INDEX IF NOT EXISTS idx_tickets_team_status
@@ -64,6 +76,14 @@ CREATE INDEX IF NOT EXISTS idx_tickets_embedding
     USING ivfflat (embedding vector_cosine_ops)
     -- Lists tuned for moderate ticket volume; increase with table growth.
     WITH (lists = 100);
+
+-- Indexes for goal hierarchy queries
+CREATE INDEX IF NOT EXISTS idx_tickets_project_id
+    ON swe_tickets (team_id, project_id)
+    WHERE project_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tickets_parent_ticket_id
+    ON swe_tickets (team_id, parent_ticket_id)
+    WHERE parent_ticket_id IS NOT NULL;
 
 -- Auto-update updated_at on row changes
 CREATE OR REPLACE FUNCTION update_updated_at()
@@ -99,7 +119,29 @@ CREATE INDEX IF NOT EXISTS idx_events_team
     ON swe_ticket_events (team_id, occurred_at);
 
 -- ---------------------------------------------------------------------------
--- 3. Views — work queues
+-- 3. swe_workflows — workflow definitions as data
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS swe_workflows (
+    id          TEXT PRIMARY KEY,
+    team_id     TEXT NOT NULL DEFAULT 'default',
+    name        TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    definition  JSONB NOT NULL DEFAULT '{}',
+    is_active   BOOLEAN NOT NULL DEFAULT true,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_swe_workflows_team_active
+    ON swe_workflows (team_id, is_active, updated_at DESC);
+
+DROP TRIGGER IF EXISTS trg_workflows_updated_at ON swe_workflows;
+CREATE TRIGGER trg_workflows_updated_at
+    BEFORE UPDATE ON swe_workflows
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+-- ---------------------------------------------------------------------------
+-- 4. Views — work queues
 -- ---------------------------------------------------------------------------
 
 -- All open tickets ranked by severity then age
@@ -142,10 +184,11 @@ FROM swe_tickets
 GROUP BY team_id;
 
 -- ---------------------------------------------------------------------------
--- 4. Row-Level Security — scope by team_id
+-- 5. Row-Level Security — scope by team_id
 -- ---------------------------------------------------------------------------
 ALTER TABLE swe_tickets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE swe_ticket_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE swe_workflows ENABLE ROW LEVEL SECURITY;
 
 -- Allow full access via service role / anon key (RLS policy is permissive
 -- for now; tighten per-team once JWT claims carry team_id).
@@ -158,8 +201,12 @@ CREATE POLICY events_all_access ON swe_ticket_events
     FOR ALL USING (true) WITH CHECK (true);
 
 -- ---------------------------------------------------------------------------
--- 5. Semantic memory retrieval (pgvector similarity)
+-- 6. Workflow policy and semantic memory retrieval (pgvector similarity)
 -- ---------------------------------------------------------------------------
+DROP POLICY IF EXISTS workflows_all_access ON swe_workflows;
+CREATE POLICY workflows_all_access ON swe_workflows
+    FOR ALL USING (true) WITH CHECK (true);
+
 CREATE OR REPLACE FUNCTION match_similar_tickets(
     query_embedding  vector(1024),
     team             TEXT,
@@ -209,3 +256,282 @@ RETURNS void LANGUAGE sql AS $$
         memory_accessed_at = now()
     WHERE ticket_id = p_ticket_id AND team_id = p_team;
 $$;
+
+-- ---------------------------------------------------------------------------
+-- 6. code_modules — Module registry for knowledge graph
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS code_modules (
+    module_id   TEXT PRIMARY KEY,                    -- e.g. "security.py", "job_scraper.py"
+    team_id     TEXT NOT NULL DEFAULT 'default',
+    repo        TEXT NOT NULL DEFAULT '',             -- "owner/repo-name"
+    file_path   TEXT DEFAULT '',                      -- full path
+    embedding   vector(1024),
+    last_seen   TIMESTAMPTZ DEFAULT now(),
+    metadata    JSONB NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_modules_team ON code_modules(team_id);
+CREATE INDEX IF NOT EXISTS idx_modules_repo ON code_modules(repo);
+
+-- ---------------------------------------------------------------------------
+-- 7. knowledge_edges — Auto-discovered relationships between nodes
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS knowledge_edges (
+    source_id       TEXT NOT NULL,                   -- ticket_id, module_id, pr_id, or gh_issue_id
+    target_id       TEXT NOT NULL,
+    edge_type       TEXT NOT NULL                    -- 'similar', 'touches_module', 'blocks',
+                        CHECK (edge_type IN (        -- 'resolves', 'conflicts_with', 'caused_regression'
+                            'similar', 'touches_module', 'blocks',
+                            'resolves', 'conflicts_with', 'caused_regression'
+                        )),
+    team_id         TEXT NOT NULL DEFAULT 'default',
+    confidence      FLOAT NOT NULL DEFAULT 0.0,      -- cosine similarity or LLM confidence
+    discovered_at   TIMESTAMPTZ DEFAULT now(),
+    discovered_by   TEXT DEFAULT '',                  -- 'embedding', 'fact_extraction', 'pr_sync', 'investigator'
+    metadata        JSONB NOT NULL DEFAULT '{}',
+    PRIMARY KEY (source_id, target_id, edge_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_edges_source ON knowledge_edges(source_id);
+CREATE INDEX IF NOT EXISTS idx_edges_target ON knowledge_edges(target_id);
+CREATE INDEX IF NOT EXISTS idx_edges_type ON knowledge_edges(edge_type);
+CREATE INDEX IF NOT EXISTS idx_edges_team ON knowledge_edges(team_id);
+
+-- ---------------------------------------------------------------------------
+-- 8. resolution_clusters — Tickets sharing a root cause
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS resolution_clusters (
+    cluster_id      TEXT PRIMARY KEY,
+    team_id         TEXT NOT NULL DEFAULT 'default',
+    root_cause      TEXT DEFAULT '',                  -- LLM-extracted shared root cause
+    primary_module  TEXT DEFAULT '',                  -- module most referenced
+    ticket_ids      JSONB NOT NULL DEFAULT '[]',     -- all tickets in this cluster
+    status          TEXT NOT NULL DEFAULT 'open'
+                        CHECK (status IN ('open', 'investigating', 'resolved')),
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    updated_at      TIMESTAMPTZ DEFAULT now(),
+    metadata        JSONB NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_clusters_team ON resolution_clusters(team_id);
+CREATE INDEX IF NOT EXISTS idx_clusters_status ON resolution_clusters(status);
+
+-- ---------------------------------------------------------------------------
+-- 9. pr_nodes — PR tracking synced from GitHub
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pr_nodes (
+    pr_id           TEXT PRIMARY KEY,                -- "owner/repo-name#142"
+    team_id         TEXT NOT NULL DEFAULT 'default',
+    repo            TEXT NOT NULL DEFAULT '',
+    number          INTEGER NOT NULL DEFAULT 0,
+    branch          TEXT DEFAULT '',
+    title           TEXT DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'open'
+                        CHECK (status IN ('open', 'merged', 'closed')),
+    author          TEXT DEFAULT '',
+    files_changed   JSONB NOT NULL DEFAULT '[]',     -- ['src/application/security.py']
+    ticket_ids      JSONB NOT NULL DEFAULT '[]',     -- tickets this PR claims to fix
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    merged_at       TIMESTAMPTZ,
+    review_status   TEXT DEFAULT 'pending'
+                        CHECK (review_status IN ('pending', 'approved', 'changes_requested')),
+    last_checked    TIMESTAMPTZ DEFAULT now(),
+    metadata        JSONB NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_pr_status ON pr_nodes(status);
+CREATE INDEX IF NOT EXISTS idx_pr_repo ON pr_nodes(repo);
+CREATE INDEX IF NOT EXISTS idx_pr_team ON pr_nodes(team_id);
+
+-- ---------------------------------------------------------------------------
+-- 10. Row-Level Security — knowledge graph tables
+-- ---------------------------------------------------------------------------
+ALTER TABLE code_modules ENABLE ROW LEVEL SECURITY;
+ALTER TABLE knowledge_edges ENABLE ROW LEVEL SECURITY;
+ALTER TABLE resolution_clusters ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pr_nodes ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS modules_all_access ON code_modules;
+CREATE POLICY modules_all_access ON code_modules
+    FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS edges_all_access ON knowledge_edges;
+CREATE POLICY edges_all_access ON knowledge_edges
+    FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS clusters_all_access ON resolution_clusters;
+CREATE POLICY clusters_all_access ON resolution_clusters
+    FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS pr_nodes_all_access ON pr_nodes;
+CREATE POLICY pr_nodes_all_access ON pr_nodes
+    FOR ALL USING (true) WITH CHECK (true);
+
+-- ---------------------------------------------------------------------------
+-- 11. Knowledge graph RPC functions
+-- ---------------------------------------------------------------------------
+
+-- Count edges of a given type for a node
+CREATE OR REPLACE FUNCTION count_edges(
+    p_node_id   TEXT,
+    p_edge_type TEXT DEFAULT NULL,
+    p_team      TEXT DEFAULT 'default'
+)
+RETURNS INTEGER
+LANGUAGE sql STABLE AS $$
+    SELECT count(*)::INTEGER
+    FROM knowledge_edges
+    WHERE team_id = p_team
+      AND (source_id = p_node_id OR target_id = p_node_id)
+      AND (p_edge_type IS NULL OR edge_type = p_edge_type);
+$$;
+
+-- Get edges for a node (outgoing + incoming)
+CREATE OR REPLACE FUNCTION get_node_edges(
+    p_node_id   TEXT,
+    p_team      TEXT DEFAULT 'default',
+    p_edge_type TEXT DEFAULT NULL,
+    p_limit     INT DEFAULT 50
+)
+RETURNS TABLE (
+    source_id       TEXT,
+    target_id       TEXT,
+    edge_type       TEXT,
+    confidence      FLOAT,
+    discovered_at   TIMESTAMPTZ,
+    discovered_by   TEXT
+)
+LANGUAGE sql STABLE AS $$
+    SELECT e.source_id, e.target_id, e.edge_type, e.confidence, e.discovered_at, e.discovered_by
+    FROM knowledge_edges e
+    WHERE e.team_id = p_team
+      AND (e.source_id = p_node_id OR e.target_id = p_node_id)
+      AND (p_edge_type IS NULL OR e.edge_type = p_edge_type)
+    ORDER BY e.confidence DESC
+    LIMIT p_limit;
+$$;
+
+-- Find cluster containing a ticket
+CREATE OR REPLACE FUNCTION find_ticket_cluster(
+    p_ticket_id TEXT,
+    p_team      TEXT DEFAULT 'default'
+)
+RETURNS TABLE (
+    cluster_id      TEXT,
+    root_cause      TEXT,
+    primary_module  TEXT,
+    ticket_ids      JSONB,
+    status          TEXT
+)
+LANGUAGE sql STABLE AS $$
+    SELECT c.cluster_id, c.root_cause, c.primary_module, c.ticket_ids, c.status
+    FROM resolution_clusters c
+    WHERE c.team_id = p_team
+      AND c.ticket_ids @> to_jsonb(p_ticket_id);
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 12. v_backlog_graph — Backlog view with knowledge graph edge counts
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_backlog_graph AS
+SELECT t.*,
+    CASE t.severity
+        WHEN 'critical' THEN 1
+        WHEN 'high'     THEN 2
+        WHEN 'medium'   THEN 3
+        WHEN 'low'      THEN 4
+    END AS severity_rank,
+    COALESCE(ec.edge_count, 0) AS edge_count
+FROM swe_tickets t
+LEFT JOIN (
+    SELECT source_id AS node_id, count(*) AS edge_count FROM knowledge_edges GROUP BY source_id
+    UNION ALL
+    SELECT target_id AS node_id, count(*) AS edge_count FROM knowledge_edges GROUP BY target_id
+) ec ON ec.node_id = t.ticket_id
+WHERE t.status NOT IN ('resolved','closed','acknowledged')
+ORDER BY severity_rank, edge_count DESC, t.created_at;
+
+-- ---------------------------------------------------------------------------
+-- 13. Row-level locking for atomic ticket claiming
+-- ---------------------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION claim_ticket(p_ticket_id TEXT, p_agent_id TEXT)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_current    RECORD;
+BEGIN
+  -- Acquire a row-level lock (SELECT ... FOR UPDATE) to prevent race conditions.
+  -- NOWAIT returns immediately if another transaction holds the lock.
+  BEGIN
+    SELECT assigned_to, status
+      INTO v_current
+      FROM swe_tickets
+     WHERE ticket_id = p_ticket_id
+       FOR UPDATE NOWAIT;
+  EXCEPTION
+    WHEN lock_not_available THEN
+      RETURN FALSE;  -- another transaction is already claiming this ticket
+  END;
+
+  -- Ticket does not exist.
+  IF NOT FOUND THEN
+    RETURN FALSE;
+  END IF;
+
+  -- Idempotent: if the same agent already holds it, return success.
+  IF v_current.assigned_to = p_agent_id THEN
+    RETURN TRUE;
+  END IF;
+
+  -- Only claim if ticket is in a work-ready state.
+  IF v_current.status NOT IN ('open', 'triaged', 'investigation_complete', 'in_review', 'rework_requested', 'in_development') THEN
+    RETURN FALSE;
+  END IF;
+
+  -- If already assigned to someone else, reject.
+  IF v_current.assigned_to IS NOT NULL AND v_current.assigned_to != '' AND v_current.assigned_to != p_agent_id THEN
+    RETURN FALSE;
+  END IF;
+
+  -- Claim: assign to the agent atomically under the row lock.
+  UPDATE swe_tickets
+     SET assigned_to = p_agent_id,
+         updated_at  = now()
+   WHERE ticket_id = p_ticket_id;
+
+  RETURN FOUND;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION release_ticket(p_ticket_id TEXT, p_reset_status TEXT DEFAULT 'open')
+RETURNS VOID
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  UPDATE swe_tickets
+  SET status = p_reset_status,
+      assigned_to = NULL,
+      updated_at = NOW()
+  WHERE ticket_id = p_ticket_id;
+END;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 14. Indexes for session ID lookups
+-- ---------------------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_swe_tickets_investigation_session
+    ON swe_tickets (investigation_session_id)
+    WHERE investigation_session_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_swe_tickets_development_session
+    ON swe_tickets (development_session_id)
+    WHERE development_session_id IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- Migration: add session ID columns (2026-03-28)
+-- Safe to run against existing deployments — no-ops if columns already exist.
+-- ---------------------------------------------------------------------------
+ALTER TABLE swe_tickets ADD COLUMN IF NOT EXISTS investigation_session_id TEXT;
+ALTER TABLE swe_tickets ADD COLUMN IF NOT EXISTS development_session_id TEXT;

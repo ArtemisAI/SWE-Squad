@@ -76,10 +76,10 @@ def require_permission(task: str, *, fail_action: str = "raise"):
                         agent_name, task, reason,
                     )
             else:
-                # No RBAC engine/agent_name present — skip check (backward compat)
+                # No RBAC engine/agent_name present — skip check but warn
                 if rbac_engine is None or agent_name is None:
-                    logger.debug(
-                        "RBAC skip (no engine/agent_name on %s.%s) — backward compat",
+                    logger.warning(
+                        "RBAC skip (no engine on %s.%s) — running unprotected",
                         type(self).__name__, method.__name__,
                     )
 

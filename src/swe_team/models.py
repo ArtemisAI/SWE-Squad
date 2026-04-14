@@ -9,6 +9,7 @@ used to coordinate the autonomous development lifecycle:
 from __future__ import annotations
 
 import enum
+import json
 import os
 import uuid
 from dataclasses import dataclass, field
@@ -41,12 +42,14 @@ class TicketStatus(enum.Enum):
     INVESTIGATION_COMPLETE = "investigation_complete"
     IN_DEVELOPMENT = "in_development"
     IN_REVIEW = "in_review"
+    REWORK_REQUESTED = "rework_requested"
     TESTING = "testing"
     DEPLOYING = "deploying"
     MONITORING = "monitoring"
     RESOLVED = "resolved"
     ROLLED_BACK = "rolled_back"
     CLOSED = "closed"
+    VERIFYING = "verifying"  # Fix merged — monitoring logs before RESOLVED
     FAILED = "failed"  # All dev attempts exhausted — requires human review
 
 
@@ -70,6 +73,7 @@ class AgentRole(enum.Enum):
     INVESTIGATOR = "investigator"   # Diagnoses root cause
     DEVELOPER = "developer"         # Implements fixes / features
     REVIEWER = "reviewer"           # Code review & approval
+    QA = "qa"                       # Post-review QA: build, visual, regression checks
     TESTER = "tester"               # Runs tests in sandboxed env
     DEPLOYER = "deployer"           # Injects fixes, monitors rollback
     DOCUMENTER = "documenter"       # Keeps docs and tracking current
@@ -123,6 +127,11 @@ class SWETicket:
     investigation_session_id: Optional[str] = None
     development_session_id: Optional[str] = None
 
+    # Goal hierarchy — enables project/initiative grouping and sub-task relationships
+    project_id: Optional[str] = None  # Unique project/initiative identifier
+    parent_ticket_id: Optional[str] = None  # Ticket ID of parent issue (for sub-tasks)
+    goal: Optional[str] = None  # Short goal description for the project/hierarchy
+
     def is_blocked(self) -> bool:
         """Return True if this ticket has unresolved blockers."""
         return len(self.blocked_by) > 0
@@ -152,6 +161,9 @@ class SWETicket:
             "rollback_reason": self.rollback_reason,
             "investigation_session_id": self.investigation_session_id,
             "development_session_id": self.development_session_id,
+            "project_id": self.project_id,
+            "parent_ticket_id": self.parent_ticket_id,
+            "goal": self.goal,
         }
 
     @classmethod
@@ -186,6 +198,9 @@ class SWETicket:
             rollback_reason=data.get("rollback_reason"),
             investigation_session_id=data.get("investigation_session_id"),
             development_session_id=data.get("development_session_id"),
+            project_id=data.get("project_id"),
+            parent_ticket_id=data.get("parent_ticket_id"),
+            goal=data.get("goal"),
         )
 
     # Resolution bypass reasons that satisfy the audit gate without a full report.
@@ -237,15 +252,14 @@ class SWETicket:
 
         return True, "audit passed"
 
-    def transition(self, new_status: TicketStatus, *, force: bool = False) -> None:
+    def transition(self, new_status: TicketStatus) -> None:
         """Move the ticket to *new_status* and touch the timestamp.
 
         Raises ``ValueError`` if transitioning to RESOLVED without passing
         the resolution audit.  To force-close, set
-        ``ticket.metadata['resolution_note']`` to a bypass reason first,
-        or pass ``force=True`` to skip the audit (use only in tests).
+        ``ticket.metadata['resolution_note']`` to a bypass reason first.
         """
-        if new_status == TicketStatus.RESOLVED and not force:
+        if new_status == TicketStatus.RESOLVED:
             ok, reason = self.resolution_audit()
             if not ok:
                 raise ValueError(
@@ -254,6 +268,166 @@ class SWETicket:
                 )
         self.status = new_status
         self.updated_at = datetime.now(timezone.utc).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Engine handover models
+# ---------------------------------------------------------------------------
+
+@dataclass
+class HandoverConstraints:
+    """Budget/time/retry constraints passed between engine phases."""
+
+    budget_remaining_usd: float
+    time_limit_seconds: int
+    model_tier: str
+    retry_count: int
+    max_retries: int
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "budget_remaining_usd": float(self.budget_remaining_usd),
+            "time_limit_seconds": int(self.time_limit_seconds),
+            "model_tier": self.model_tier,
+            "retry_count": int(self.retry_count),
+            "max_retries": int(self.max_retries),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "HandoverConstraints":
+        return cls(
+            budget_remaining_usd=float(data.get("budget_remaining_usd", 0.0)),
+            time_limit_seconds=int(data.get("time_limit_seconds", 0)),
+            model_tier=str(data.get("model_tier", "T1")),
+            retry_count=int(data.get("retry_count", 0)),
+            max_retries=int(data.get("max_retries", 0)),
+        )
+
+
+@dataclass
+class InvestigationPhaseOutput:
+    """Structured output from the investigate phase."""
+
+    root_cause: str
+    affected_files: List[str] = field(default_factory=list)
+    suggested_fix: str = ""
+    confidence: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "root_cause": self.root_cause,
+            "affected_files": list(self.affected_files),
+            "suggested_fix": self.suggested_fix,
+            "confidence": float(self.confidence),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "InvestigationPhaseOutput":
+        return cls(
+            root_cause=str(data.get("root_cause", "")),
+            affected_files=list(data.get("affected_files", []) or []),
+            suggested_fix=str(data.get("suggested_fix", "")),
+            confidence=float(data.get("confidence", 0.0)),
+        )
+
+
+@dataclass
+class DevelopmentPhaseOutput:
+    """Structured output from the develop phase."""
+
+    branch: str
+    diff: str = ""
+    test_results: Dict[str, Any] = field(default_factory=dict)
+    commit_message: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "branch": self.branch,
+            "diff": self.diff,
+            "test_results": self.test_results,
+            "commit_message": self.commit_message,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DevelopmentPhaseOutput":
+        return cls(
+            branch=str(data.get("branch", "")),
+            diff=str(data.get("diff", "")),
+            test_results=dict(data.get("test_results", {}) or {}),
+            commit_message=str(data.get("commit_message", "")),
+        )
+
+
+@dataclass
+class VerificationPhaseOutput:
+    """Structured output from the verify phase."""
+
+    verdict: str
+    test_output: str = ""
+    regression_check: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "verdict": self.verdict,
+            "test_output": self.test_output,
+            "regression_check": self.regression_check,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "VerificationPhaseOutput":
+        return cls(
+            verdict=str(data.get("verdict", "")),
+            test_output=str(data.get("test_output", "")),
+            regression_check=dict(data.get("regression_check", {}) or {}),
+        )
+
+
+@dataclass
+class EngineHandover:
+    """Structured context envelope exchanged between engines/phases."""
+
+    task_id: str
+    phase: str
+    source_engine: str
+    target_engine: str
+    timestamp: str
+    context: Dict[str, Any]
+    constraints: HandoverConstraints
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "phase": self.phase,
+            "source_engine": self.source_engine,
+            "target_engine": self.target_engine,
+            "timestamp": self.timestamp,
+            "context": self.context,
+            "constraints": self.constraints.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EngineHandover":
+        constraints_raw = data.get("constraints", {})
+        if isinstance(constraints_raw, str) and constraints_raw:
+            constraints_raw = json.loads(constraints_raw)
+        return cls(
+            task_id=str(data.get("task_id", "")),
+            phase=str(data.get("phase", "")),
+            source_engine=str(data.get("source_engine", "")),
+            target_engine=str(data.get("target_engine", "")),
+            timestamp=str(data.get("timestamp", datetime.now(timezone.utc).isoformat())),
+            context=dict(data.get("context", {}) or {}),
+            constraints=HandoverConstraints.from_dict(
+                constraints_raw if isinstance(constraints_raw, dict) else {}
+            ),
+        )
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), sort_keys=True)
+
+    @classmethod
+    def from_json(cls, payload: str) -> "EngineHandover":
+        return cls.from_dict(json.loads(payload))
 
 
 # ---------------------------------------------------------------------------

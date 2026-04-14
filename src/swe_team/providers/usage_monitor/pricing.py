@@ -19,7 +19,19 @@ DEFAULT_PRICING: dict[str, dict[str, float]] = {
         "cache_write": 18.75,
         "cache_read": 1.50,
     },
+    "claude-opus-4-6": {
+        "input": 15.0,
+        "output": 75.0,
+        "cache_write": 18.75,
+        "cache_read": 1.50,
+    },
     "claude-sonnet-4": {
+        "input": 3.0,
+        "output": 15.0,
+        "cache_write": 3.75,
+        "cache_read": 0.30,
+    },
+    "claude-sonnet-4-6": {
         "input": 3.0,
         "output": 15.0,
         "cache_write": 3.75,
@@ -30,6 +42,24 @@ DEFAULT_PRICING: dict[str, dict[str, float]] = {
         "output": 4.0,
         "cache_write": 1.0,
         "cache_read": 0.08,
+    },
+    "gemini-2.5-pro": {
+        "input": 1.25,
+        "output": 10.0,
+        "cache_write": 0.0,
+        "cache_read": 0.0,
+    },
+    "gemini-2.5-flash": {
+        "input": 0.15,
+        "output": 0.60,
+        "cache_write": 0.0,
+        "cache_read": 0.0,
+    },
+    "gemini-3-flash": {
+        "input": 0.10,
+        "output": 0.40,
+        "cache_write": 0.0,
+        "cache_read": 0.0,
     },
 }
 

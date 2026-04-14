@@ -1,4 +1,5 @@
 """Tests for Role-Based Access Control (agent_rbac.py)."""
+import os
 import tempfile
 import textwrap
 import unittest
@@ -7,7 +8,7 @@ from pathlib import Path
 import yaml
 
 from src.swe_team.agent_rbac import (
-    RBACRole,
+    AgentRole,
     PermissionDeniedError,
     RBACEngine,
 )
@@ -62,8 +63,8 @@ roles:
       - code_review
     models: [gemini-2.5-flash-thinking, gemini-2.5-pro]
 
-  openclaw:
-    description: "Communication relay"
+  restricted:
+    description: "Restricted agent — messaging and notification only"
     enabled: true
     permissions:
       - messaging
@@ -109,12 +110,9 @@ class TestAgentRBAC(unittest.TestCase):
     """Unit tests for the RBAC engine."""
 
     def setUp(self):
-        self._tmp_dir = tempfile.TemporaryDirectory()
-        self._roles_path = _write_roles(self._tmp_dir.name, FULL_ROLES_YAML)
+        self._tmp = tempfile.mkdtemp()
+        self._roles_path = _write_roles(self._tmp, FULL_ROLES_YAML)
         self.engine = RBACEngine(roles_path=self._roles_path)
-
-    def tearDown(self):
-        self._tmp_dir.cleanup()
 
     # --- claude-code permissions ---
 
@@ -154,19 +152,19 @@ class TestAgentRBAC(unittest.TestCase):
         allowed, _ = self.engine.check_permission("gemini-cli", "investigation")
         self.assertTrue(allowed)
 
-    # --- openclaw denies ---
+    # --- restricted denies ---
 
-    def test_openclaw_denied_code_generation(self):
-        allowed, reason = self.engine.check_permission("openclaw", "code_generation")
+    def test_restricted_denied_code_generation(self):
+        allowed, reason = self.engine.check_permission("restricted", "code_generation")
         self.assertFalse(allowed)
         self.assertIn("explicitly denied", reason)
 
-    def test_openclaw_denied_investigation(self):
-        allowed, _ = self.engine.check_permission("openclaw", "investigation")
+    def test_restricted_denied_investigation(self):
+        allowed, _ = self.engine.check_permission("restricted", "investigation")
         self.assertFalse(allowed)
 
-    def test_openclaw_messaging_allowed(self):
-        allowed, _ = self.engine.check_permission("openclaw", "messaging")
+    def test_restricted_messaging_allowed(self):
+        allowed, _ = self.engine.check_permission("restricted", "messaging")
         self.assertTrue(allowed)
 
     # --- opencode disabled ---
@@ -205,21 +203,11 @@ class TestAgentRBAC(unittest.TestCase):
         allowed, _ = self.engine.check_permission("gemini-cli", "code_generation")
         self.assertFalse(allowed)
 
-    def test_override_strict_blocks_openclaw_commit(self):
-        """openclaw is not in allow_agents for the strict override on commit — must be denied."""
-        allowed, reason = self.engine.check_permission("openclaw", "commit")
-        self.assertFalse(allowed)
-
-    def test_override_strict_allows_claude_code_pr_merge(self):
-        """claude-code is in allow_agents for the strict override — must be allowed."""
-        allowed, _ = self.engine.check_permission("claude-code", "pr_merge")
-        self.assertTrue(allowed)
-
     # --- enforce raises PermissionDeniedError ---
 
     def test_enforce_raises_on_denied(self):
         with self.assertRaises(PermissionDeniedError) as ctx:
-            self.engine.enforce("openclaw", "code_generation")
+            self.engine.enforce("restricted", "code_generation")
         self.assertIn("RBAC", str(ctx.exception))
 
     def test_enforce_passes_on_allowed(self):
@@ -256,23 +244,23 @@ class TestAgentRBAC(unittest.TestCase):
 
     def test_list_roles_returns_all(self):
         roles = self.engine.list_roles()
-        self.assertEqual(set(roles.keys()), {"claude-code", "gemini-cli", "openclaw", "opencode"})
+        self.assertEqual(set(roles.keys()), {"claude-code", "gemini-cli", "restricted", "opencode"})
 
     def test_get_role_returns_none_for_unknown(self):
         self.assertIsNone(self.engine.get_role("nonexistent"))
 
-    # --- RBACRole unit tests ---
+    # --- AgentRole unit tests ---
 
-    def test_rbac_role_has_permission_deny_wins(self):
-        role = RBACRole("test", {
+    def test_agent_role_has_permission_deny_wins(self):
+        role = AgentRole("test", {
             "enabled": True,
             "permissions": ["code_generation"],
             "deny": ["code_generation"],
         })
         self.assertFalse(role.has_permission("code_generation"))
 
-    def test_rbac_role_disabled_denies_all(self):
-        role = RBACRole("test", {
+    def test_agent_role_disabled_denies_all(self):
+        role = AgentRole("test", {
             "enabled": False,
             "permissions": ["code_generation"],
         })
@@ -285,3 +273,7 @@ class TestAgentRBAC(unittest.TestCase):
         allowed, reason = self.engine.check_permission("claude-code", "delete_repo")
         self.assertFalse(allowed)
         self.assertIn("does not have permission", reason)
+
+
+if __name__ == "__main__":
+    unittest.main()

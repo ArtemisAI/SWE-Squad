@@ -1,0 +1,19 @@
+[Unit]
+Description=SWE-Squad Manager (TypeScript control plane)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/agent/Projects/SWE-Squad-DEV/control-plane
+EnvironmentFile=/home/agent/Projects/SWE-Squad-DEV/.env
+ExecStart=/usr/bin/npx tsx src/main.ts --daemon --verbose
+Restart=on-failure
+RestartSec=60
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=swe-manager
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=default.target

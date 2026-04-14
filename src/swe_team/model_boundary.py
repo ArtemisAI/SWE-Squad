@@ -1,10 +1,10 @@
 """
 Model boundary enforcement for SWE-Squad code generation.
 
-SEC-68: kimi-k2.5 was used for unauthorized code generation via OpenClaw.
-This module ensures ONLY Claude models are used for code generation tasks.
-Non-Claude models (gemini, kimi, opencode, etc.) are restricted to
-read-only tasks: investigation, review, search, dashboard.
+Enforces model boundary rules to prevent unauthorized model usage.
+Only Claude models are authorized for code generation tasks.
+Non-Claude models (gemini, etc.) are restricted to read-only tasks:
+investigation, review, search, dashboard.
 
 Violation of model boundaries is logged as a CRITICAL security event.
 """
@@ -93,11 +93,11 @@ def validate_model_for_task(model: str, task: str) -> tuple[bool, str]:
     for blocked in BLOCKED_MODELS:
         if blocked in model_lower:
             logger.critical(
-                "SEC-68 BLOCKED MODEL: '%s' attempted for task '%s' — "
-                "this model caused a security incident and is permanently banned",
+                "BLOCKED MODEL: '%s' attempted for task '%s' — "
+                "this model is permanently blocked from all tasks",
                 model, task,
             )
-            return False, f"Model '{model}' is permanently blocked (SEC-68 incident)"
+            return False, f"Model '{model}' is permanently blocked"
 
     # Code generation tasks REQUIRE Claude
     task_lower = task.strip().lower()
@@ -108,7 +108,7 @@ def validate_model_for_task(model: str, task: str) -> tuple[bool, str]:
     if is_code_task:
         if model_lower not in {m.lower() for m in AUTHORIZED_CODE_MODELS}:
             logger.critical(
-                "SEC-68 MODEL BOUNDARY VIOLATION: non-Claude model '%s' "
+                "MODEL BOUNDARY VIOLATION: non-Claude model '%s' "
                 "attempted for code generation task '%s' — DENIED",
                 model, task,
             )
@@ -124,7 +124,7 @@ def validate_model_for_task(model: str, task: str) -> tuple[bool, str]:
     # Unknown task — default to Claude-only (fail-secure)
     if not is_claude_model(model):
         logger.warning(
-            "SEC-68: Unknown task '%s' with non-Claude model '%s' — "
+            "Unknown task '%s' with non-Claude model '%s' — "
             "defaulting to DENY (fail-secure)",
             task, model,
         )

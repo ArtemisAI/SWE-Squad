@@ -16,6 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 embeddings = ["openai"]
 supabase = []  # uses stdlib urllib — no extra deps
+cli = ["rich>=13.0"]
 
 [project.scripts]
 swe-squad = "scripts.ops.swe_team_runner:main"

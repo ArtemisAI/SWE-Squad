@@ -14,6 +14,7 @@ report to the ticket for downstream development automation.
 from __future__ import annotations
 
 import logging
+import json
 import os
 import re
 import subprocess
@@ -28,7 +29,15 @@ from src.swe_team.model_boundary import validate_model_for_task
 from src.swe_team.preflight import PreflightCheck
 from src.swe_team.rbac_middleware import require_permission
 from src.swe_team.remote_logs import fetch_worker_logs
-from src.swe_team.models import SWETicket, TicketSeverity, TicketStatus, TicketType
+from src.swe_team.models import (
+    EngineHandover,
+    HandoverConstraints,
+    InvestigationPhaseOutput,
+    SWETicket,
+    TicketSeverity,
+    TicketStatus,
+    TicketType,
+)
 from src.swe_team.providers.coding_engine.base import CodingEngine
 from src.swe_team.providers.log_query.base import LogEntry, LogQueryProvider
 from src.swe_team.providers.env.base import EnvProvider, EnvSpec
@@ -38,17 +47,23 @@ from src.swe_team.providers.env.dotenv_provider import DotenvEnvProvider
 from src.swe_team.providers.repomap.base import RepoMapProvider
 from src.swe_team.providers.repomap.ctags_provider import CtagsRepoMapProvider
 from src.swe_team.proxy_model_policy import ProxyModelPolicyResolver
-from src.swe_team.rate_limiter import ExponentialBackoff, RateLimitExhausted, RateLimitTracker
+from src.swe_team.rate_limiter import (
+    EngineCooldownManager,
+    ExponentialBackoff,
+    MonthlyLimitExhausted,
+    RateLimitCooldown,
+    RateLimitExhausted,
+    RateLimitTracker,
+)
 from src.swe_team.supabase_store import SupabaseTicketStore
 from src.swe_team.token_tracker import AdaptiveTimeout
-from src.swe_team.notifier import notify_investigation_summary
-from src.swe_team.github_integration import (
-    comment_on_issue,
-    find_comment_by_text,
-    update_github_comment,
-)
 
 logger = logging.getLogger(__name__)
+
+try:
+    from memory.src.client import MemoryClient
+except ImportError:
+    MemoryClient = None  # type: ignore[assignment,misc]
 
 
 def _estimate_tokens(text: str) -> int:
@@ -56,7 +71,7 @@ def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
-# Phrases that indicate a fallback agent (e.g. kimi-k2.5) sent a new-session
+# Phrases that indicate a fallback agent sent a new-session
 # introduction / greeting rather than an investigation report.
 # These must never be forwarded to Telegram or stored as investigation reports.
 _INTRODUCTION_MARKERS = (
@@ -82,8 +97,86 @@ def _is_fallback_introduction(text: str) -> bool:
     return any(marker in lower for marker in _INTRODUCTION_MARKERS)
 
 
+# Regex patterns for Claude CLI tool-call artifacts that may leak into the
+# ``result`` field when the model invokes tools during an investigation.
+# These should never appear in GitHub comments or Telegram alerts.
+
+# Matches a [Tool: <name>] header followed by one or more non-blank lines
+# (e.g. Input/Output/Result fields), stopping at the next blank line.
+# This prevents the regex from consuming the real report text that follows.
+_TOOL_CALL_BLOCK_RE = re.compile(
+    r"\[Tool:\s*[^\]]+\]\s*\n(?:(?!^\s*$)[^\n]+\n)*\n?",
+    re.MULTILINE,
+)
+# Matches any remaining standalone [Tool: ...] header lines
+_TOOL_HEADER_RE = re.compile(r"^\[Tool:\s*[^\]]+\]\s*$", re.MULTILINE)
+# Matches JSON-only lines that are tool-call input artifacts (e.g. {"command": "..."})
+_BARE_JSON_LINE_RE = re.compile(r"^(?:Input|Output|Result):\s*\{.*\}\s*$", re.MULTILINE)
+
+
+def _sanitize_report(text: str) -> str:
+    """Strip Claude CLI tool-call artifacts from investigation report text.
+
+    When Claude uses tools during investigation, the raw ``result`` field from
+    ``--output-format json`` may include interleaved tool-call blocks such as::
+
+        [Tool: Bash]
+        Input: {"command": "git ls-remote ..."}
+
+    These must not appear in GitHub comments or Telegram notifications.
+    """
+    text = _TOOL_CALL_BLOCK_RE.sub("", text)
+    text = _TOOL_HEADER_RE.sub("", text)
+    text = _BARE_JSON_LINE_RE.sub("", text)
+    # Collapse runs of 3+ blank lines down to 2, keeping paragraph separation
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _is_valid_report(text: str) -> bool:
+    """Return True when text appears to be a real investigation report."""
+    sanitized = _sanitize_report(text)
+    if not sanitized:
+        return False
+
+    lowered = sanitized.lower()
+    if '"stop_reason":"error"' in lowered or '"subtype":"error_during_execution"' in lowered:
+        return False
+
+    try:
+        parsed = json.loads(sanitized)
+        if isinstance(parsed, dict) and parsed.get("type") == "result":
+            return False
+    except json.JSONDecodeError:
+        pass
+
+    if len(sanitized) < 200:
+        return False
+
+    required_sections = (
+        # Bug investigation sections
+        "Root Cause", "Affected Files", "Fix Plan",
+        # Feature/enhancement investigation sections
+        "Implementation Plan", "Files to Create", "Files to Modify",
+        "Design", "Phase 1", "Phase 2", "API", "Interface",
+        "What was implemented", "Files Changed",
+    )
+    if not any(section.lower() in lowered for section in required_sections):
+        return False
+
+    return True
+
+
 # Type alias for fallback agent adapters (duck-typed — must have .invoke())
 _FallbackAgent = Any
+
+
+class _SafeFormatDict(dict):
+    """Dict that returns '{key}' for missing keys, preventing KeyError from stray
+    curly braces in user-supplied content (error logs, descriptions, etc.)."""
+
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
 
 _DEFAULT_PROGRAM_PATH = Path("config/swe_team/programs/investigate.md")
 _ORCHESTRATE_PROGRAM_PATH = Path("config/swe_team/programs/orchestrate.md")
@@ -138,6 +231,9 @@ class InvestigatorAgent:
         rbac_engine: Optional[object] = None,
         preflight: Optional[PreflightCheck] = None,
         worker_module_map: Optional[dict] = None,
+        cooldown_manager: Optional[EngineCooldownManager] = None,
+        team_id: str = "",
+        memory_client: Optional[object] = None,
     ) -> None:
         self._program_path = Path(program_path)
         self._timeout = timeout_seconds
@@ -171,14 +267,22 @@ class InvestigatorAgent:
             self._MODULE_WORKER_MAP = dict(worker_module_map)
         else:
             self._MODULE_WORKER_MAP = {}
+        self._team_id = team_id or os.environ.get("SWE_TEAM_ID", "default")
+        self._memory_client = memory_client
+        self._cooldown_manager = cooldown_manager or EngineCooldownManager(
+            store=store,
+            team_id=self._team_id,
+        )
 
         # Rate limit backoff
         rl = rate_limit_config
         self._backoff = ExponentialBackoff(
-            max_retries=getattr(rl, "max_retries_on_429", 3) if rl else 3,
-            initial_delay=getattr(rl, "initial_backoff_seconds", 30) if rl else 30,
-            max_delay=getattr(rl, "max_backoff_seconds", 300) if rl else 300,
+            max_retries=getattr(rl, "max_retries_on_429", 5) if rl else 5,
+            initial_delay=getattr(rl, "initial_backoff_seconds", 60) if rl else 60,
+            max_delay=getattr(rl, "max_backoff_seconds", 900) if rl else 900,
             tracker=rate_limit_tracker,
+            engine_name=getattr(self._engine, "name", "claude"),
+            cooldown_manager=self._cooldown_manager,
         )
 
     def investigate_batch(
@@ -222,9 +326,9 @@ class InvestigatorAgent:
                 result = future.result()
                 if result is not None:
                     updated.append(result)
-                    if self._store is not None and hasattr(self._store, "upsert"):
+                    if self._store is not None:
                         try:
-                            self._store.upsert(result)
+                            self._store.add(result)
                         except Exception:
                             logger.exception("Failed to persist ticket %s", result.ticket_id)
                     if on_complete is not None:
@@ -323,6 +427,42 @@ class InvestigatorAgent:
             "Investigating ticket %s via Claude CLI (model=%s, cwd=%s)",
             ticket.ticket_id, model, cwd or "SWE-Squad",
         )
+        engine_name = getattr(self._engine, "name", "claude")
+        if not self._cooldown_manager.should_use_engine(
+            engine_name,
+            probe_fn=getattr(self._engine, "health_check", None),
+        ):
+            logger.warning(
+                "Primary engine %s is in cooldown for ticket %s — trying fallback chain",
+                engine_name,
+                ticket.ticket_id,
+            )
+            fallback_result = self._try_fallback_agents(prompt, ticket)
+            if fallback_result is not None:
+                stdout, stderr = fallback_result, ""
+                duration_s = 0.0
+                report = _sanitize_report(stdout)
+                if report and not _is_fallback_introduction(report):
+                    ticket.investigation_report = report
+                    ticket.transition(TicketStatus.INVESTIGATION_COMPLETE)
+                    ticket.metadata["investigation"] = {
+                        "started_at": started_at,
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                        "duration_s": round(duration_s, 2),
+                        "cost_usd": None,
+                        "status": "complete",
+                        "fallback_agent": ticket.metadata.get("fallback_agent_used", "unknown"),
+                    }
+                    self._notify_investigation(ticket)
+                    return True
+            cooldown_seconds = max(60.0, self._cooldown_manager.remaining_cooldown_seconds(engine_name))
+            raise RateLimitCooldown(
+                f"Engine {engine_name} in cooldown; fallback unavailable for {ticket.ticket_id}",
+                cooldown_seconds=cooldown_seconds,
+                global_pause=False,
+                engine_name=engine_name,
+                status=str(self._cooldown_manager.get_status(engine_name).get("status", "")),
+            )
         start = time.monotonic()
         try:
             _sid = session_record.session_id if session_record else None
@@ -354,13 +494,18 @@ class InvestigatorAgent:
                     context=model,
                 )
         except RateLimitExhausted as exc:
+            cooldown_row = self._cooldown_manager.mark_failure(
+                engine_name,
+                exc,
+                fallback_engine=str(ticket.metadata.get("fallback_agent_used") or ""),
+            )
             # Try fallback agents before giving up
             fallback_result = self._try_fallback_agents(prompt, ticket)
             if fallback_result is not None:
                 stdout, stderr = fallback_result, ""
                 # Fall through to success handling below
                 duration_s = time.monotonic() - start
-                report = stdout.strip()
+                report = _sanitize_report(stdout)
                 if report and not _is_fallback_introduction(report):
                     ticket.investigation_report = report
                     ticket.transition(TicketStatus.INVESTIGATION_COMPLETE)
@@ -384,8 +529,25 @@ class InvestigatorAgent:
             self._record_failure(ticket, started_at, str(exc))
             ticket.metadata["rate_limited"] = True
             ticket.metadata["rate_limited_at"] = datetime.now(timezone.utc).isoformat()
+            if isinstance(exc, MonthlyLimitExhausted):
+                ticket.metadata["rate_limit_type"] = "monthly_exhausted"
+                if getattr(exc, "reset_at", ""):
+                    ticket.metadata["rate_limit_reset_at"] = exc.reset_at
+            else:
+                ticket.metadata["rate_limit_type"] = "transient"
+            ticket.metadata["engine_cooldown_status"] = cooldown_row.get("status", "rate_limited")
             self._send_rate_limit_alert(ticket, exc)
-            return False
+            cooldown_seconds = max(60.0, self._cooldown_manager.remaining_cooldown_seconds(engine_name))
+            raise RateLimitCooldown(
+                f"Rate limit exhausted during investigation of {ticket.ticket_id}; "
+                f"pausing engine {engine_name} for {cooldown_seconds:.0f}s",
+                cooldown_seconds=cooldown_seconds,
+                global_pause=False,
+                engine_name=engine_name,
+                status=str(cooldown_row.get("status", "rate_limited")),
+                reset_at=str(cooldown_row.get("reset_at", "")),
+                fallback_engine=str(ticket.metadata.get("fallback_agent_used", "")),
+            )
         except subprocess.TimeoutExpired as exc:
             self._record_timeout(ticket, started_at, timeout, model)
             return False
@@ -433,9 +595,12 @@ class InvestigatorAgent:
                 return False
 
         duration_s = time.monotonic() - start
-        report = stdout.strip()
+        report = _sanitize_report(stdout)
         if not report:
             self._record_failure(ticket, started_at, "Empty investigation report")
+            return False
+        if not _is_valid_report(report):
+            self._record_failure(ticket, started_at, "Invalid investigation report")
             return False
 
         cost = _parse_cost(stderr) or _parse_cost(stdout)
@@ -462,7 +627,28 @@ class InvestigatorAgent:
         except Exception:
             pass  # Token tracking is best-effort, never blocks
 
+        # Record dollar-denominated cost (best-effort, never blocks investigation)
+        try:
+            _cost_tracker = getattr(self, "_cost_tracker", None)
+            if _cost_tracker is not None:
+                _team_id = getattr(self, "_team_id", "") or ""
+                _ticket_id = ticket.ticket_id if hasattr(ticket, "ticket_id") else ""
+                er = getattr(self, "_last_engine_result", None)
+                _in = er.input_tokens if (er and er.input_tokens is not None) else _estimate_tokens(prompt)
+                _out = er.output_tokens if (er and er.output_tokens is not None) else _estimate_tokens(stdout)
+                _cost_tracker.record_cost(
+                    team_id=_team_id,
+                    model=model,
+                    input_tokens=_in,
+                    output_tokens=_out,
+                    operation="investigate",
+                    ticket_id=_ticket_id,
+                )
+        except Exception:
+            pass  # Cost tracking is best-effort, never blocks
+
         ticket.investigation_report = report
+        self._cooldown_manager.mark_healthy(engine_name)
         ticket.transition(TicketStatus.INVESTIGATION_COMPLETE)
         ticket.metadata["investigation"] = {
             "started_at": started_at,
@@ -474,6 +660,43 @@ class InvestigatorAgent:
             "report_chars": len(report),
             "status": "complete",
         }
+        affected_files = []
+        try:
+            for line in report.splitlines():
+                line = line.strip()
+                if line.startswith(("/", "./")) and "/" in line:
+                    affected_files.append(line)
+            if not affected_files:
+                affected_files = list(ticket.metadata.get("files_touched", []) or [])
+        except Exception:
+            affected_files = []
+        handover_output = InvestigationPhaseOutput(
+            root_cause=(ticket.description or "").strip() or "Investigation completed",
+            affected_files=affected_files,
+            suggested_fix=(report[:1200]).strip(),
+            confidence=0.9 if report else 0.0,
+        )
+        handover = EngineHandover(
+            task_id=ticket.ticket_id,
+            phase="investigate",
+            source_engine=getattr(self._engine, "name", "unknown"),
+            target_engine=ticket.metadata.get("target_engine_develop", "claude"),
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            context=handover_output.to_dict(),
+            constraints=HandoverConstraints(
+                budget_remaining_usd=float(ticket.metadata.get("budget_remaining_usd", 0.0) or 0.0),
+                time_limit_seconds=int(ticket.metadata.get("handover_time_limit_seconds", self._timeout) or self._timeout),
+                model_tier="T1" if model == self._tier_model("t2_standard") else "T3",
+                retry_count=int(ticket.metadata.get("investigation_attempts", 0) or 0),
+                max_retries=int(ticket.metadata.get("max_investigation_retries", 3) or 3),
+            ),
+        )
+        ticket.metadata["handover_investigate_to_develop"] = handover.to_dict()
+        if isinstance(self._store, SupabaseTicketStore):
+            try:
+                self._store.log_handover(handover)
+            except Exception:
+                logger.warning("Failed to log investigation handover for %s", ticket.ticket_id, exc_info=True)
 
         # Mark session as completed; capture actual Claude session UUID for resume
         if session_record and self._session_store:
@@ -497,6 +720,18 @@ class InvestigatorAgent:
         if issue_number:
             self._comment_on_issue(issue_number, ticket)
 
+        if self._memory_client is not None:
+            try:
+                self._memory_client.record_investigation_result(
+                    session_id=f"inv-{ticket.ticket_id}",
+                    ticket_id=ticket.ticket_id,
+                    report=ticket.investigation_report or "",
+                    project=ticket.metadata.get("repo", "") if ticket.metadata else "",
+                    cwd=str(cwd) if cwd else "",
+                )
+            except Exception:
+                pass
+
         self._notify_investigation(ticket)
         return True
 
@@ -518,12 +753,12 @@ class InvestigatorAgent:
         for agent in self._fallback_agents:
             agent_name = getattr(agent, "_name", getattr(agent, "name", "unknown"))
             try:
-                # SEC-68: Fallback agents (non-Claude) are only allowed for
+                # Fallback agents (non-Claude) are only allowed for
                 # read-only tasks like investigation — never for code generation
                 allowed, reason = validate_model_for_task(agent_name, "investigate")
                 if not allowed:
                     logger.warning(
-                        "SEC-68: Fallback agent %s blocked for investigation: %s",
+                        "Fallback agent %s blocked for investigation: %s",
                         agent_name, reason,
                     )
                     continue
@@ -577,6 +812,34 @@ class InvestigatorAgent:
                 return False
             return True
         if ticket.investigation_report:
+            # If the ticket already has a report but was never transitioned to
+            # INVESTIGATION_COMPLETE (e.g. a crash between report assignment and
+            # status persistence), repair the status in-place so the runner's
+            # developer backlog can pick it up.  Still return False so we don't
+            # re-run the investigation.
+            if ticket.status not in (
+                TicketStatus.INVESTIGATION_COMPLETE,
+                TicketStatus.IN_DEVELOPMENT,
+                TicketStatus.RESOLVED,
+                TicketStatus.FAILED,
+            ):
+                logger.warning(
+                    "Ticket %s has investigation_report but status=%s — "
+                    "auto-transitioning to INVESTIGATION_COMPLETE",
+                    ticket.ticket_id,
+                    ticket.status.value,
+                )
+                ticket.transition(TicketStatus.INVESTIGATION_COMPLETE)
+                # Persist the repair immediately so it's visible to developer backlog
+                if self._store is not None:
+                    try:
+                        self._store.add(ticket)
+                        logger.info(
+                            "Persisted status repair for ticket %s → INVESTIGATION_COMPLETE",
+                            ticket.ticket_id,
+                        )
+                    except Exception:
+                        logger.exception("Failed to persist status repair for %s", ticket.ticket_id)
             return False
         if ticket.status not in (
             TicketStatus.OPEN,
@@ -619,8 +882,22 @@ class InvestigatorAgent:
             regression_ctx = self._build_regression_context(ticket)
             error_log = f"{error_log}\n\n{regression_ctx}"
         module = ticket.source_module or "unknown"
+        issue_type = ticket.ticket_type.value if hasattr(ticket.ticket_type, "value") else str(ticket.ticket_type)
+        severity = ticket.severity.value if hasattr(ticket.severity, "value") else str(ticket.severity)
+        labels = ", ".join(ticket.labels) if ticket.labels else "none"
         try:
-            return template.format(error_log=error_log, source_module=module)
+            replacements = dict(
+                error_log=error_log,
+                source_module=module,
+                issue_type=issue_type,
+                severity=severity,
+                title=ticket.title,
+                description=ticket.description or "No description provided.",
+                labels=labels,
+            )
+            return template.format_map(
+                _SafeFormatDict(replacements)
+            )
         except (KeyError, ValueError) as exc:
             logger.warning("Invalid investigate.md template: %s", exc)
             return None
@@ -756,7 +1033,7 @@ class InvestigatorAgent:
         if similar_context:
             description = f"{description}\n\n{similar_context}"
         try:
-            return template.format(
+            return template.format_map(_SafeFormatDict(
                 title=ticket.title,
                 severity=ticket.severity.value,
                 source_module=ticket.source_module or "unknown",
@@ -764,7 +1041,7 @@ class InvestigatorAgent:
                 investigation_report=ticket.investigation_report or "No prior investigation.",
                 ticket_id=ticket.ticket_id,
                 branch=ticket.metadata.get("branch", ""),
-            )
+            ))
         except (KeyError, ValueError) as exc:
             logger.warning("Invalid orchestrate.md template: %s", exc)
             return self._build_prompt(ticket)
@@ -780,14 +1057,14 @@ class InvestigatorAgent:
         if similar_context:
             description = f"{description}\n\n{similar_context}"
         try:
-            return template.format(
+            return template.format_map(_SafeFormatDict(
                 ticket_id=ticket.ticket_id,
                 title=ticket.title,
                 ticket_type=ticket.ticket_type.value,
                 source_module=ticket.source_module or "unknown",
                 description=description,
                 investigation_report=ticket.investigation_report or "No prior investigation.",
-            )
+            ))
         except (KeyError, ValueError) as exc:
             logger.warning("Invalid feature.md template: %s", exc)
             return self._build_prompt(ticket)
@@ -825,6 +1102,18 @@ class InvestigatorAgent:
                     f"**Investigation**: {(hit.get('investigation_report') or '')[:_SEMANTIC_INVESTIGATION_CHARS]}\n"
                     f"**Fix applied**: {(hit.get('proposed_fix') or 'N/A')[:_SEMANTIC_FIX_CHARS]}\n"
                 )
+            # --- memory service context ---
+            if self._memory_client is not None:
+                try:
+                    repo = ticket.metadata.get("repo", "") if ticket.metadata else ""
+                    mem_ctx = self._memory_client.get_investigation_context(
+                        ticket.title,
+                        project=repo or ticket.source_module or "SWE-Squad",
+                    )
+                    if mem_ctx:
+                        lines.append("\n## Memory Service Context\n" + mem_ctx)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("Memory context injection failed: %s", exc)
             return "\n".join(lines)
         except Exception as exc:
             logger.warning("Semantic memory lookup failed (non-fatal): %s", exc)
@@ -975,7 +1264,7 @@ class InvestigatorAgent:
         return result.stdout, result.stderr
 
     def _comment_on_issue(self, issue_number: int, ticket: SWETicket) -> None:
-        report = ticket.investigation_report or ""
+        report = _sanitize_report(ticket.investigation_report or "")
         body = "\n".join(
             [
                 "## Investigation report",
@@ -991,6 +1280,12 @@ class InvestigatorAgent:
             # but for now we fallback to the default GitHub implementation
             self._issue_tracker.comment(str(issue_number), body)
         else:
+            from src.swe_team.github_integration import (
+                comment_on_issue,
+                find_comment_by_text,
+                update_github_comment,
+            )
+            
             # Search for an existing report for this ticket on this issue
             ticket_repo = ticket.metadata.get("repo", "") if ticket.metadata else ""
             marker = f"**Ticket ID:** `{ticket.ticket_id}`"
@@ -1024,6 +1319,7 @@ class InvestigatorAgent:
             )
             self._notifier.send_alert(message, level="info")
         else:
+            from src.swe_team.notifier import notify_investigation_summary  # noqa: PLC0415
             notify_investigation_summary(ticket)
 
     def _send_rate_limit_alert(self, ticket: SWETicket, exc: Exception) -> None:

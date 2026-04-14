@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import subprocess
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from src.swe_team.models import SWETicket, TicketSeverity
@@ -50,6 +51,139 @@ _TITLE_PREFIX = "[SWE-AUTO]"
 _LABEL_TEAM = os.environ.get("SWE_LABEL_TEAM", "swe-team")
 _LABEL_HITL = os.environ.get("SWE_LABEL_HITL", "needs-human-review")
 _LABEL_AUTO = os.environ.get("SWE_LABEL_AUTO", "auto-detected")
+
+_GITHUB_FAILURE_THRESHOLD = 3
+_GITHUB_RETRY_AFTER = timedelta(minutes=10)
+_GITHUB_HITL_ESCALATION_AFTER = timedelta(minutes=30)
+
+_GH_CONSECUTIVE_FAILURES = 0
+_GH_FIRST_FAILURE_AT: datetime | None = None
+_GH_PAUSED_UNTIL: datetime | None = None
+_GH_UNAVAILABLE_ALERT_SENT = False
+_GH_HITL_ESCALATION_SENT = False
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _send_telegram_alert(message: str) -> None:
+    """Best-effort Telegram alert helper (never raises)."""
+    try:
+        from src.swe_team.notifier import _send
+        _send(message)
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to send GitHub health alert")
+
+
+def _reset_github_circuit_breaker_state() -> None:
+    """Reset GitHub CLI circuit-breaker state."""
+    global _GH_CONSECUTIVE_FAILURES
+    global _GH_FIRST_FAILURE_AT
+    global _GH_PAUSED_UNTIL
+    global _GH_UNAVAILABLE_ALERT_SENT
+    global _GH_HITL_ESCALATION_SENT
+
+    _GH_CONSECUTIVE_FAILURES = 0
+    _GH_FIRST_FAILURE_AT = None
+    _GH_PAUSED_UNTIL = None
+    _GH_UNAVAILABLE_ALERT_SENT = False
+    _GH_HITL_ESCALATION_SENT = False
+
+
+def _maybe_send_hitl_escalation(now: datetime, *, reason: str) -> None:
+    global _GH_HITL_ESCALATION_SENT
+    if _GH_HITL_ESCALATION_SENT or _GH_FIRST_FAILURE_AT is None:
+        return
+    if now - _GH_FIRST_FAILURE_AT < _GITHUB_HITL_ESCALATION_AFTER:
+        return
+    unavailable_for = now - _GH_FIRST_FAILURE_AT
+    mins = int(unavailable_for.total_seconds() // 60)
+    _send_telegram_alert(
+        "<b>🚨 HITL escalation — GitHub CLI unavailable</b>\n"
+        f"Unavailability: {mins} minutes\n"
+        f"Reason: {reason[:300]}\n"
+        "Automation requiring GitHub is blocked and needs manual intervention."
+    )
+    _GH_HITL_ESCALATION_SENT = True
+
+
+def _record_github_cli_failure(reason: str) -> None:
+    global _GH_CONSECUTIVE_FAILURES
+    global _GH_FIRST_FAILURE_AT
+    global _GH_PAUSED_UNTIL
+    global _GH_UNAVAILABLE_ALERT_SENT
+
+    now = _now_utc()
+    if _GH_FIRST_FAILURE_AT is None:
+        _GH_FIRST_FAILURE_AT = now
+    _GH_CONSECUTIVE_FAILURES += 1
+    logger.warning(
+        "GitHub CLI failure #%d: %s",
+        _GH_CONSECUTIVE_FAILURES,
+        reason[:300],
+    )
+
+    if _GH_CONSECUTIVE_FAILURES >= _GITHUB_FAILURE_THRESHOLD:
+        _GH_PAUSED_UNTIL = now + _GITHUB_RETRY_AFTER
+        if not _GH_UNAVAILABLE_ALERT_SENT:
+            _send_telegram_alert(
+                "<b>⚠️ GitHub CLI unavailable</b>\n"
+                f"Consecutive failures: {_GH_CONSECUTIVE_FAILURES}\n"
+                f"Paused until: {_GH_PAUSED_UNTIL.isoformat()}\n"
+                f"Last error: {reason[:300]}"
+            )
+            _GH_UNAVAILABLE_ALERT_SENT = True
+
+    _maybe_send_hitl_escalation(now, reason=reason)
+
+
+def _record_github_cli_success() -> None:
+    if _GH_CONSECUTIVE_FAILURES == 0 and _GH_FIRST_FAILURE_AT is None:
+        return
+    logger.info("GitHub CLI recovered after %d consecutive failure(s)", _GH_CONSECUTIVE_FAILURES)
+    _reset_github_circuit_breaker_state()
+
+
+def _is_github_circuit_open() -> bool:
+    global _GH_PAUSED_UNTIL
+    now = _now_utc()
+    if _GH_PAUSED_UNTIL and now >= _GH_PAUSED_UNTIL:
+        logger.info("GitHub circuit breaker cooldown expired; retrying operations")
+        _GH_PAUSED_UNTIL = None
+        return False
+    if _GH_PAUSED_UNTIL and now < _GH_PAUSED_UNTIL:
+        _maybe_send_hitl_escalation(now, reason="GitHub circuit breaker remains open")
+        return True
+    return False
+
+
+def _run_gh(cmd: List[str], *, timeout: int, op_name: str) -> subprocess.CompletedProcess[str] | None:
+    if _is_github_circuit_open():
+        logger.warning(
+            "Skipping GitHub operation %s while circuit breaker is open until %s",
+            op_name,
+            _GH_PAUSED_UNTIL.isoformat() if _GH_PAUSED_UNTIL else "unknown",
+        )
+        return None
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _record_github_cli_failure(f"{op_name}: {exc}")
+        return None
+
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"rc={result.returncode}"
+        _record_github_cli_failure(f"{op_name}: {detail}")
+    else:
+        _record_github_cli_success()
+    return result
 
 
 def create_github_issue(ticket: SWETicket, *, repo: str = "") -> Optional[int]:
@@ -103,7 +237,7 @@ def create_github_issue(ticket: SWETicket, *, repo: str = "") -> Optional[int]:
     labels = f"{_LABEL_TEAM},{_LABEL_AUTO},{severity_label}"
 
     try:
-        result = subprocess.run(
+        result = _run_gh(
             [
                 "gh", "issue", "create",
                 "--repo", target_repo,
@@ -111,10 +245,11 @@ def create_github_issue(ticket: SWETicket, *, repo: str = "") -> Optional[int]:
                 "--body", body,
                 "--label", labels,
             ],
-            capture_output=True,
-            text=True,
             timeout=30,
+            op_name="gh issue create",
         )
+        if result is None:
+            return None
         if result.returncode != 0:
             logger.warning(
                 "gh issue create failed (rc=%d): %s",
@@ -154,16 +289,17 @@ def comment_on_issue(issue_number: int, comment: str, *, repo: str = "") -> bool
         logger.warning("comment_on_issue: no target repo for issue #%d", issue_number)
         return False
     try:
-        result = subprocess.run(
+        result = _run_gh(
             [
                 "gh", "issue", "comment", str(issue_number),
                 "--repo", target_repo,
                 "--body", comment,
             ],
-            capture_output=True,
-            text=True,
             timeout=15,
+            op_name="gh issue comment",
         )
+        if result is None:
+            return False
         if result.returncode != 0:
             logger.warning(
                 "gh issue comment failed (rc=%d): %s",
@@ -219,11 +355,14 @@ def escalate_to_human(
 
     # 1. Post explanatory comment
     try:
-        r = subprocess.run(
+        r = _run_gh(
             ["gh", "issue", "comment", str(issue_number), "--repo", target_repo, "--body", comment],
-            capture_output=True, text=True, timeout=20,
+            timeout=20,
+            op_name="gh issue comment (escalate)",
         )
-        if r.returncode != 0:
+        if r is None:
+            ok = False
+        elif r.returncode != 0:
             logger.warning("escalate comment failed: %s", r.stderr.strip()[:200])
             ok = False
     except Exception as exc:
@@ -232,20 +371,22 @@ def escalate_to_human(
 
     # 2. Add needs-human-review label
     try:
-        subprocess.run(
+        _run_gh(
             ["gh", "issue", "edit", str(issue_number), "--repo", target_repo,
              "--add-label", _LABEL_HITL],
-            capture_output=True, text=True, timeout=20,
+            timeout=20,
+            op_name="gh issue edit add-label",
         )
     except Exception:
         pass
 
     # 3. Remove swe-team label so the squad stops picking this up
     try:
-        subprocess.run(
+        _run_gh(
             ["gh", "issue", "edit", str(issue_number), "--repo", target_repo,
              "--remove-label", _LABEL_TEAM],
-            capture_output=True, text=True, timeout=20,
+            timeout=20,
+            op_name="gh issue edit remove-label",
         )
     except Exception:
         pass
@@ -253,10 +394,11 @@ def escalate_to_human(
     # 4. Assign to configured escalation user
     if assignee:
         try:
-            subprocess.run(
+            _run_gh(
                 ["gh", "issue", "edit", str(issue_number), "--repo", target_repo,
                  "--add-assignee", assignee],
-                capture_output=True, text=True, timeout=20,
+                timeout=20,
+                op_name="gh issue edit add-assignee",
             )
         except Exception:
             pass
@@ -271,13 +413,16 @@ def find_comment_by_text(issue_number: int, search_text: str, repo: str = "") ->
     if not target_repo:
         return None
     try:
-        result = subprocess.run(
+        result = _run_gh(
             [
                 "gh", "api",
                 f"repos/{target_repo}/issues/{issue_number}/comments",
             ],
-            capture_output=True, text=True, timeout=20,
+            timeout=20,
+            op_name="gh api issue comments list",
         )
+        if result is None:
+            return None
         if result.returncode != 0:
             return None
         
@@ -296,15 +441,18 @@ def update_github_comment(comment_id: int, new_body: str, repo: str = "") -> boo
     if not target_repo or not comment_id:
         return False
     try:
-        result = subprocess.run(
+        result = _run_gh(
             [
                 "gh", "api",
                 f"repos/{target_repo}/issues/comments/{comment_id}",
                 "-X", "PATCH",
                 "-f", f"body={new_body}",
             ],
-            capture_output=True, text=True, timeout=20,
+            timeout=20,
+            op_name="gh api issue comment patch",
         )
+        if result is None:
+            return False
         if result.returncode != 0:
             logger.warning("update_github_comment failed (rc=%d): %s", result.returncode, result.stderr.strip()[:200])
             return False
@@ -321,17 +469,18 @@ def _find_existing_swe_comment(issue_number: int, repo: str) -> Optional[int]:
     configured bot account as the comment author.
     """
     try:
-        result = subprocess.run(
+        result = _run_gh(
             [
                 "gh",
                 "api",
                 f"repos/{repo}/issues/{issue_number}/comments",
                 "--paginate",
             ],
-            capture_output=True,
-            text=True,
+            op_name="gh api issue comments paginate",
             timeout=20,
         )
+        if result is None:
+            return None
         if result.returncode != 0:
             logger.warning(
                 "existing comment lookup failed (rc=%d): %s",
@@ -400,14 +549,17 @@ def claim_issue(
 
     try:
         # Use gh api to create comment and get the comment ID
-        result = subprocess.run(
+        result = _run_gh(
             [
                 "gh", "api",
                 f"repos/{target_repo}/issues/{issue_number}/comments",
                 "-f", f"body={body}",
             ],
-            capture_output=True, text=True, timeout=20,
+            timeout=20,
+            op_name="gh api issue comments create",
         )
+        if result is None:
+            return None
         if result.returncode != 0:
             logger.warning("claim_issue comment failed (rc=%d): %s", result.returncode, result.stderr.strip()[:200])
             return None
@@ -429,6 +581,71 @@ def claim_issue(
         return None
 
 
+def close_github_issue(repo: str, issue_number: int, comment: str = "") -> bool:
+    """Close a GitHub issue, optionally posting a final comment first.
+
+    Uses ``gh issue close`` CLI.  Best-effort: logs a warning on failure but
+    never raises.
+
+    Parameters
+    ----------
+    repo:
+        Target repo in ``owner/repo`` format.
+    issue_number:
+        The GitHub issue number to close.
+    comment:
+        Optional comment body to post before closing (e.g. PR link).
+
+    Returns
+    -------
+    bool
+        True if the issue was closed successfully, False otherwise.
+    """
+    if not repo:
+        logger.warning("close_github_issue: no repo provided for issue #%d", issue_number)
+        return False
+
+    if comment:
+        try:
+            r = _run_gh(
+                ["gh", "issue", "comment", str(issue_number), "--repo", repo, "--body", comment],
+                timeout=15,
+                op_name="gh issue comment (close)",
+            )
+            if r is not None and r.returncode != 0:
+                logger.warning(
+                    "close_github_issue: comment failed (rc=%d): %s",
+                    r.returncode,
+                    r.stderr.strip()[:200],
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("close_github_issue: comment error: %s", exc)
+
+    try:
+        result = _run_gh(
+            ["gh", "issue", "close", str(issue_number), "--repo", repo],
+            timeout=15,
+            op_name="gh issue close",
+        )
+        if result is None:
+            _record_github_auth_result("GitHub circuit breaker open", success=False)
+            return False
+        if result.returncode != 0:
+            logger.warning(
+                "close_github_issue: gh issue close failed (rc=%d): %s",
+                result.returncode,
+                result.stderr.strip()[:200],
+            )
+            _record_github_auth_result(result.stderr, success=False)
+            return False
+        logger.info("Closed GitHub issue #%d in %s", issue_number, repo)
+        _record_github_auth_result("", success=True)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("close_github_issue: failed to close issue #%d: %s", issue_number, exc)
+        return False
+
+
 def find_existing_issue(ticket: SWETicket) -> Optional[int]:
     """Check if a GitHub issue already exists for this ticket.
 
@@ -439,7 +656,7 @@ def find_existing_issue(ticket: SWETicket) -> Optional[int]:
 
     try:
         # Search for issues with our prefix
-        result = subprocess.run(
+        result = _run_gh(
             [
                 "gh", "issue", "list",
                 "--repo", _REPO,
@@ -447,10 +664,11 @@ def find_existing_issue(ticket: SWETicket) -> Optional[int]:
                 "--search", f"{_TITLE_PREFIX} {ticket.title[:40]}",
                 "--json", "number,title,body",
             ],
-            capture_output=True,
-            text=True,
+            op_name="gh issue list",
             timeout=15,
         )
+        if result is None:
+            return None
         if result.returncode != 0:
             logger.warning("gh issue list failed: %s", result.stderr.strip())
             return None

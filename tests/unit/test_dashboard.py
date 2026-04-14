@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import sys
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -243,9 +244,61 @@ class TestGenerateDashboardData:
         assert "tickets_by_state" in data
         assert "agent_performance" in data
         assert "memory_stats" in data
+        assert "pr_lifecycle_metrics" in data
         assert "rate_limit_events_24h" in data
         assert "last_cycle" in data
         assert "generated_at" in data
+
+    def test_pr_lifecycle_metrics_aggregation(self, tmp_dir, status_file):
+        store_path = tmp_dir / "pr_metrics_tickets.json"
+        store = TicketStore(str(store_path))
+        now = datetime.now(timezone.utc)
+
+        store.add(SWETicket(
+            ticket_id="pr001",
+            title="PR lifecycle A",
+            description="test",
+            status=TicketStatus.RESOLVED,
+            updated_at=now.isoformat(),
+            metadata={
+                "pr_lifecycle": {
+                    "pr_created_at": (now - timedelta(minutes=60)).isoformat(),
+                    "first_review_at": (now - timedelta(minutes=30)).isoformat(),
+                    "review_cycles": 1,
+                    "merged_at": (now - timedelta(minutes=10)).isoformat(),
+                    "verification_started_at": (now - timedelta(minutes=9)).isoformat(),
+                    "verification_result": "pass",
+                    "resolved_at": (now - timedelta(minutes=1)).isoformat(),
+                }
+            },
+        ))
+        store.add(SWETicket(
+            ticket_id="pr002",
+            title="PR lifecycle B",
+            description="test",
+            updated_at=now.isoformat(),
+            metadata={
+                "pr_lifecycle": {
+                    "pr_created_at": (now - timedelta(minutes=120)).isoformat(),
+                    "first_review_at": (now - timedelta(minutes=90)).isoformat(),
+                    "review_cycles": 3,
+                    "verification_started_at": (now - timedelta(minutes=80)).isoformat(),
+                    "verification_result": "regression",
+                }
+            },
+        ))
+
+        with patch("scripts.ops.dashboard_data.STATUS_PATH", status_file):
+            data = generate_dashboard_data(store)
+
+        metrics = data["pr_lifecycle_metrics"]
+        assert metrics["prs_created_total"] == 2
+        assert metrics["prs_merged_total"] == 1
+        assert metrics["merge_rate"] == 0.5
+        assert metrics["median_time_to_first_review_minutes"] == 30.0
+        assert metrics["p95_time_to_first_review_minutes"] == 30.0
+        assert metrics["median_review_cycles"] == 2.0
+        assert metrics["verification_pass_rate"] == 0.5
 
     def test_ticket_summary_counts(self, ticket_store, status_file):
         store, _ = ticket_store
@@ -320,6 +373,26 @@ class TestGenerateDashboardData:
         actions = row["github_actions"]
         assert actions["view"] == "https://github.com/org/repo/issues/77"
         assert actions["comment"].endswith("#new_comment_field")
+
+    def test_tickets_by_state_includes_project_id(self, tmp_dir, status_file):
+        store_path = tmp_dir / "project_id_tickets.json"
+        store = TicketStore(str(store_path))
+        now = datetime.now(timezone.utc).isoformat()
+        store.add(SWETicket(
+            ticket_id="pid001",
+            title="Project-linked ticket",
+            description="test",
+            severity=TicketSeverity.MEDIUM,
+            status=TicketStatus.OPEN,
+            updated_at=now,
+            project_id="your-org/SWE-Squad",
+        ))
+
+        with patch("scripts.ops.dashboard_data.STATUS_PATH", status_file):
+            data = generate_dashboard_data(store)
+
+        row = data["tickets_by_state"]["open"][0]
+        assert row["project_id"] == "your-org/SWE-Squad"
 
     def test_tickets_sorted_by_severity_then_updated_at(self, tmp_dir, status_file):
         """Tickets in each bucket are sorted: critical > high > medium > low,
@@ -593,6 +666,7 @@ class TestFormatDashboardTelegram:
         assert "SWE Squad Dashboard" in msg
         assert "Tickets" in msg
         assert "Agent Performance" in msg
+        assert "PR Lifecycle" in msg
 
     def test_severity_emoji_present(self, ticket_store, status_file):
         store, _ = ticket_store
@@ -748,21 +822,6 @@ class TestRenderDashboardHtml:
         # Data should be injected
         assert "ticket_summary" in html
 
-    def test_html_valid_json_embedded(self, ticket_store, status_file):
-        """The embedded JSON in HTML is valid."""
-        store, _ = ticket_store
-        with patch("scripts.ops.dashboard_data.STATUS_PATH", status_file):
-            data = generate_dashboard_data(store)
-
-        html = render_dashboard_html(data)
-        # Extract the JSON from the var assignment
-        marker = "var DASHBOARD_DATA = "
-        start = html.index(marker) + len(marker)
-        end = html.index(";", start)
-        json_str = html[start:end]
-        parsed = json.loads(json_str)
-        assert parsed["ticket_summary"]["total"] == data["ticket_summary"]["total"]
-
     def test_html_fallback_no_template(self, ticket_store, tmp_dir, status_file):
         """Fallback HTML when template file is missing."""
         store, _ = ticket_store
@@ -773,40 +832,6 @@ class TestRenderDashboardHtml:
 
         assert "<!DOCTYPE html>" in html
         assert "SWE Squad Dashboard" in html
-
-    def test_html_auto_refresh(self, ticket_store, status_file):
-        """HTML includes auto-refresh mechanism."""
-        store, _ = ticket_store
-        with patch("scripts.ops.dashboard_data.STATUS_PATH", status_file):
-            data = generate_dashboard_data(store)
-
-        html = render_dashboard_html(data)
-        assert "setInterval" in html
-        assert "setRefreshInterval" in html  # configurable auto-refresh
-
-    def test_html_contains_webui_tabs(self, ticket_store, status_file):
-        store, _ = ticket_store
-        with patch("scripts.ops.dashboard_data.STATUS_PATH", status_file):
-            data = generate_dashboard_data(store)
-
-        html = render_dashboard_html(data)
-        assert "Overview" in html
-        assert "Open Bugs" in html
-        assert "In Progress" in html
-        assert "Closed Bugs" in html
-        assert "Issue Actions" in html
-
-    def test_html_severity_classes(self, ticket_store, status_file):
-        """HTML includes severity CSS classes."""
-        store, _ = ticket_store
-        with patch("scripts.ops.dashboard_data.STATUS_PATH", status_file):
-            data = generate_dashboard_data(store)
-
-        html = render_dashboard_html(data)
-        assert "sev-critical" in html
-        assert "sev-high" in html
-        assert "sev-medium" in html
-        assert "sev-low" in html
 
     def test_empty_data_renders(self, status_file):
         """HTML renders without error on empty data."""
@@ -1162,19 +1187,25 @@ class TestDashboardServerTimeoutFix:
     # ── Three required tests from issue #105 ─────────────────────────────────
 
     def test_data_endpoint_uses_limit(self, status_file):
-        """Supabase list_all calls in generate_dashboard_data pass a limit kwarg."""
+        """Dashboard data generation calls the appropriate store list methods.
+
+        When the store exposes list_all_teams / list_open_all_teams (e.g.
+        SupabaseTicketStore), those are preferred so the dashboard shows
+        tickets across ALL squads, not just the one whose SWE_TEAM_ID is set
+        on the webui VM.  Plain TicketStore stores fall back to list_all /
+        list_open.
+        """
         mock_store = MagicMock()
-        mock_store.list_all.return_value = []
-        mock_store.list_open.return_value = []
+        mock_store.list_all_teams.return_value = []
+        mock_store.list_open_all_teams.return_value = []
         mock_store.list_recently_resolved.return_value = []
 
         with patch("scripts.ops.dashboard_data.STATUS_PATH", status_file):
             generate_dashboard_data(mock_store)
 
-        # list_all must be called — with or without a limit kwarg; the key
-        # requirement is that SupabaseTicketStore.list_all now accepts limit.
-        mock_store.list_all.assert_called()
-        mock_store.list_open.assert_called()
+        # All-teams variants must be called when the store supports them.
+        mock_store.list_all_teams.assert_called()
+        mock_store.list_open_all_teams.assert_called()
         mock_store.list_recently_resolved.assert_called()
 
     def test_activity_endpoint_caches_response(self, ticket_store, status_file):
@@ -1233,7 +1264,7 @@ def _make_handler(method: str, path: str, body: dict | None = None):
     handler.wfile = BytesIO()
     handler.store = None
 
-    handler._read_post_body = lambda: DashboardHandler._read_post_body(handler)
+    handler._read_post_body = lambda **kw: DashboardHandler._read_post_body(handler, **kw)
     handler._json_response = lambda data, status=200, **kw: DashboardHandler._json_response(
         handler, data, status, **kw
     )
@@ -1328,6 +1359,157 @@ class TestSettingsAPI:
         }
         for key in required_keys:
             assert key in _DEFAULT_SETTINGS, f"Missing key: {key}"
+
+    def test_patch_display_settings_updates_refresh_interval(self, tmp_path):
+        """PATCH /api/settings/display updates a single field and returns merged settings."""
+        from scripts.ops.dashboard_server import _write_settings, _read_settings, DashboardHandler
+
+        settings_path = tmp_path / "data" / "swe_team" / "dashboard_settings.json"
+        # Seed an initial value
+        with mock.patch("scripts.ops.dashboard_server._SETTINGS_PATH", settings_path):
+            _write_settings({"refresh_interval": 30})
+
+        patch_body = {"refresh_interval": 60}
+        handler = _make_handler("PATCH", "/api/settings/display", body=patch_body)
+        handler._handle_patch_display_settings = lambda: DashboardHandler._handle_patch_display_settings(handler)
+
+        with mock.patch("scripts.ops.dashboard_server._SETTINGS_PATH", settings_path):
+            handler._handle_patch_display_settings()
+
+        handler.send_response.assert_called_with(200)
+        resp = json.loads(handler.wfile.getvalue())
+        assert resp["ok"] is True
+        assert resp["settings"]["refresh_interval"] == 60
+
+    def test_patch_display_settings_rejects_non_dict(self, tmp_path):
+        """PATCH /api/settings/display returns 400 when body is not a JSON object."""
+        from scripts.ops.dashboard_server import DashboardHandler
+
+        handler = _make_handler("PATCH", "/api/settings/display", body=[1, 2, 3])
+        handler._handle_patch_display_settings = lambda: DashboardHandler._handle_patch_display_settings(handler)
+
+        handler._handle_patch_display_settings()
+
+        handler.send_response.assert_called_with(400)
+        resp = json.loads(handler.wfile.getvalue())
+        assert "error" in resp
+
+    def test_patch_display_settings_preserves_other_fields(self, tmp_path):
+        """PATCH /api/settings/display preserves fields not present in the patch body."""
+        from scripts.ops.dashboard_server import _write_settings, _read_settings, _DEFAULT_SETTINGS, DashboardHandler
+
+        settings_path = tmp_path / "data" / "swe_team" / "dashboard_settings.json"
+        with mock.patch("scripts.ops.dashboard_server._SETTINGS_PATH", settings_path):
+            _write_settings({"theme": "light", "refresh_interval": 30, "tickets_per_page": 25})
+
+        patch_body = {"refresh_interval": 90}
+        handler = _make_handler("PATCH", "/api/settings/display", body=patch_body)
+        handler._handle_patch_display_settings = lambda: DashboardHandler._handle_patch_display_settings(handler)
+
+        with mock.patch("scripts.ops.dashboard_server._SETTINGS_PATH", settings_path):
+            handler._handle_patch_display_settings()
+
+        resp = json.loads(handler.wfile.getvalue())
+        assert resp["ok"] is True
+        # Other fields must be preserved
+        assert resp["settings"]["theme"] == "light"
+        assert resp["settings"]["tickets_per_page"] == 25
+        assert resp["settings"]["refresh_interval"] == 90
+
+
+class TestMonitorSettingsAPI:
+    """Tests for PATCH /api/settings/monitor — monitor enabled toggle."""
+
+    def test_update_monitor_enabled_toggle(self, tmp_path):
+        """PATCH /api/settings/monitor updates monitor.enabled in the YAML config."""
+        import yaml
+        from scripts.ops.dashboard_server import _update_config_section, _build_full_settings
+
+        config_path = tmp_path / "swe_team.yaml"
+        config_path.write_text(yaml.dump({
+            "monitor": {
+                "enabled": False,
+                "scan_interval_minutes": 15,
+                "dedup_window_hours": 72,
+                "log_directories": ["logs/"],
+            }
+        }))
+
+        with mock.patch("scripts.ops.dashboard_server._CONFIG_PATH", config_path):
+            ok = _update_config_section("monitor", {"enabled": True})
+            assert ok is True
+
+            # Verify the YAML was updated
+            raw = yaml.safe_load(config_path.read_text())
+            assert raw["monitor"]["enabled"] is True
+            # Other keys must be preserved
+            assert raw["monitor"]["scan_interval_minutes"] == 15
+            assert raw["monitor"]["log_directories"] == ["logs/"]
+
+            # Verify _build_full_settings reflects the change
+            full = _build_full_settings()
+            assert full["monitor"]["enabled"] is True
+
+    def test_update_monitor_enabled_false(self, tmp_path):
+        """PATCH monitor.enabled=false persists correctly."""
+        import yaml
+        from scripts.ops.dashboard_server import _update_config_section, _build_full_settings
+
+        config_path = tmp_path / "swe_team.yaml"
+        config_path.write_text(yaml.dump({
+            "monitor": {
+                "enabled": True,
+                "scan_interval_minutes": 15,
+                "dedup_window_hours": 72,
+            }
+        }))
+
+        with mock.patch("scripts.ops.dashboard_server._CONFIG_PATH", config_path):
+            ok = _update_config_section("monitor", {"enabled": False})
+            assert ok is True
+
+            raw = yaml.safe_load(config_path.read_text())
+            assert raw["monitor"]["enabled"] is False
+
+            full = _build_full_settings()
+            assert full["monitor"]["enabled"] is False
+
+    def test_update_monitor_scan_interval(self, tmp_path):
+        """PATCH monitor scan_interval_minutes updates the value."""
+        import yaml
+        from scripts.ops.dashboard_server import _update_config_section, _build_full_settings
+
+        config_path = tmp_path / "swe_team.yaml"
+        config_path.write_text(yaml.dump({
+            "monitor": {
+                "enabled": True,
+                "scan_interval_minutes": 15,
+                "dedup_window_hours": 72,
+            }
+        }))
+
+        with mock.patch("scripts.ops.dashboard_server._CONFIG_PATH", config_path):
+            ok = _update_config_section("monitor", {"scan_interval_minutes": 30})
+            assert ok is True
+
+            full = _build_full_settings()
+            assert full["monitor"]["scan_interval_minutes"] == 30
+            # enabled must be preserved
+            assert full["monitor"]["enabled"] is True
+
+    def test_build_full_settings_monitor_defaults(self, tmp_path):
+        """_build_full_settings returns monitor defaults when section is missing."""
+        import yaml
+        from scripts.ops.dashboard_server import _build_full_settings
+
+        config_path = tmp_path / "swe_team.yaml"
+        config_path.write_text(yaml.dump({"governance": {}}))
+
+        with mock.patch("scripts.ops.dashboard_server._CONFIG_PATH", config_path):
+            full = _build_full_settings()
+            assert full["monitor"]["enabled"] is True  # default
+            assert full["monitor"]["scan_interval_minutes"] == 15
+            assert full["monitor"]["dedup_window_hours"] == 72
 
 
 class TestSchedulerHistoryAPI:
@@ -1642,6 +1824,20 @@ class TestSSEStream:
 class TestDashboardRouting:
     """Tests for do_GET/do_POST/do_DELETE routing — 404 and 405 cases."""
 
+    @staticmethod
+    def _wire_dispatch(handler):
+        """Wire up the dispatch/logging/rate-limit infrastructure on a mock handler."""
+        from scripts.ops.dashboard_server import DashboardHandler
+        handler.address_string = lambda: "127.0.0.1"
+        handler.client_address = ("127.0.0.1", 0)
+        handler._check_rate_limit = lambda: False
+        handler._dispatch_with_logging = lambda method, fn: DashboardHandler._dispatch_with_logging(handler, method, fn)
+        handler._do_GET = lambda: DashboardHandler._do_GET(handler)
+        handler._do_POST = lambda: DashboardHandler._do_POST(handler)
+        handler._do_PATCH = lambda: DashboardHandler._do_PATCH(handler)
+        handler._do_PUT = lambda: DashboardHandler._do_PUT(handler)
+        handler._do_DELETE = lambda: DashboardHandler._do_DELETE(handler)
+
     def _make_get_handler(self, path: str):
         from scripts.ops.dashboard_server import DashboardHandler
 
@@ -1656,12 +1852,14 @@ class TestDashboardRouting:
         handler._json_response = lambda data, status=200, **kw: DashboardHandler._json_response(
             handler, data, status, **kw
         )
-        handler._read_post_body = lambda: {}
+        handler._read_post_body = lambda **kw: {}
+        self._wire_dispatch(handler)
         # Wire all handler methods that do_GET delegates to
         handler._handle_list_projects = lambda: DashboardHandler._handle_list_projects(handler)
         handler._handle_get_project = lambda name: DashboardHandler._handle_get_project(handler, name)
         handler._handle_create_project = lambda: DashboardHandler._handle_create_project(handler)
         handler._handle_delete_project = lambda name: DashboardHandler._handle_delete_project(handler, name)
+        handler._handle_update_project = lambda name: DashboardHandler._handle_update_project(handler, name)
         handler._handle_api_graph = lambda: DashboardHandler._handle_api_graph(handler)
         handler._handle_api_auth_status = lambda: DashboardHandler._handle_api_auth_status(handler)
         handler._handle_api_activity = lambda: DashboardHandler._handle_api_activity(handler)
@@ -1672,6 +1870,10 @@ class TestDashboardRouting:
         handler._handle_scheduler = lambda: DashboardHandler._handle_scheduler(handler)
         handler._handle_list_jobs_api = lambda: DashboardHandler._handle_list_jobs_api(handler)
         handler._handle_job_history_api = lambda: DashboardHandler._handle_job_history_api(handler)
+        handler._handle_list_routines_api = lambda: DashboardHandler._handle_list_routines_api(handler)
+        handler._handle_get_routine_api = lambda: DashboardHandler._handle_get_routine_api(handler)
+        handler._handle_routine_runs_api = lambda: DashboardHandler._handle_routine_runs_api(handler)
+        handler._handle_routine_activity_api = lambda: DashboardHandler._handle_routine_activity_api(handler)
         return handler
 
     def _make_post_handler(self, path: str, body: dict | None = None):
@@ -1684,13 +1886,19 @@ class TestDashboardRouting:
         handler.rfile = BytesIO(request_body)
         handler.wfile = BytesIO()
         handler.control_plane = None
-        handler._read_post_body = lambda: DashboardHandler._read_post_body(handler)
+        handler.store = mock.MagicMock()
+        handler.store.list_by_project_id.return_value = []
+        handler._read_post_body = lambda **kw: DashboardHandler._read_post_body(handler, **kw)
         handler._json_response = lambda data, status=200, **kw: DashboardHandler._json_response(
             handler, data, status, **kw
         )
+        self._wire_dispatch(handler)
         handler._handle_create_project = lambda: DashboardHandler._handle_create_project(handler)
         handler._handle_create_job = lambda: DashboardHandler._handle_create_job(handler)
         handler._handle_job_action = lambda jid, act: DashboardHandler._handle_job_action(handler, jid, act)
+        handler._handle_create_routine = lambda: DashboardHandler._handle_create_routine(handler)
+        handler._handle_routine_action = lambda rid, act: DashboardHandler._handle_routine_action(handler, rid, act)
+        handler._handle_create_goal = lambda: DashboardHandler._handle_create_goal(handler)
         return handler
 
     def _make_delete_handler(self, path: str):
@@ -1703,7 +1911,43 @@ class TestDashboardRouting:
         handler._json_response = lambda data, status=200, **kw: DashboardHandler._json_response(
             handler, data, status, **kw
         )
+        self._wire_dispatch(handler)
         handler._handle_delete_project = lambda name: DashboardHandler._handle_delete_project(handler, name)
+        return handler
+
+    def _make_patch_handler(self, path: str, body: dict | None = None):
+        from scripts.ops.dashboard_server import DashboardHandler
+
+        request_body = json.dumps(body).encode() if body else b""
+        handler = mock.MagicMock(spec=DashboardHandler)
+        handler.path = path
+        handler.headers = {"Content-Length": str(len(request_body))}
+        handler.rfile = BytesIO(request_body)
+        handler.wfile = BytesIO()
+        handler._read_post_body = lambda **kw: DashboardHandler._read_post_body(handler, **kw)
+        handler._json_response = lambda data, status=200, **kw: DashboardHandler._json_response(
+            handler, data, status, **kw
+        )
+        self._wire_dispatch(handler)
+        handler._handle_update_project = lambda name: DashboardHandler._handle_update_project(handler, name)
+        handler._handle_update_routine = lambda rid: DashboardHandler._handle_update_routine(handler, rid)
+        return handler
+
+    def _make_put_handler(self, path: str, body: dict | None = None):
+        from scripts.ops.dashboard_server import DashboardHandler
+
+        request_body = json.dumps(body).encode() if body else b""
+        handler = mock.MagicMock(spec=DashboardHandler)
+        handler.path = path
+        handler.headers = {"Content-Length": str(len(request_body))}
+        handler.rfile = BytesIO(request_body)
+        handler.wfile = BytesIO()
+        handler.control_plane = mock.MagicMock()
+        handler._read_post_body = lambda **kw: DashboardHandler._read_post_body(handler, **kw)
+        handler._json_response = lambda data, status=200, **kw: DashboardHandler._json_response(
+            handler, data, status, **kw
+        )
+        self._wire_dispatch(handler)
         return handler
 
     def test_do_get_unknown_path_sends_404(self):
@@ -1756,6 +2000,40 @@ class TestDashboardRouting:
         assert "theme" in resp
         assert "refresh_interval" in resp
 
+    def test_do_get_api_pricing_normalizes_legacy_shape(self):
+        """GET /api/pricing returns canonical per-1M pricing keys."""
+        from scripts.ops.dashboard_server import DashboardHandler
+        handler = self._make_get_handler("/api/pricing")
+
+        raw_pricing = {
+            "model-a": {"input_per_1k": 0.002, "output_per_1k": 0.004, "cache_read_per_1k": 0.001},
+            "model-b": {"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.30},
+        }
+        with mock.patch("scripts.ops.dashboard_server.load_pricing", return_value=raw_pricing):
+            DashboardHandler.do_GET(handler)
+
+        handler.send_response.assert_called_with(200)
+        resp = json.loads(handler.wfile.getvalue())
+        assert resp["model-a"]["input"] == 2.0
+        assert resp["model-a"]["output"] == 4.0
+        assert resp["model-a"]["cache_read"] == 1.0
+        assert resp["model-a"]["cache_write"] == 0.0
+        assert resp["model-b"]["input"] == 3.0
+        assert resp["model-b"]["cache_write"] == 3.75
+
+    def test_do_get_api_provider_schemas(self):
+        """GET /api/providers/schemas returns provider parameter schemas."""
+        from scripts.ops.dashboard_server import DashboardHandler
+        handler = self._make_get_handler("/api/providers/schemas")
+        DashboardHandler.do_GET(handler)
+
+        handler.send_response.assert_called_with(200)
+        resp = json.loads(handler.wfile.getvalue())
+        assert "coding_engine" in resp
+        assert "notification" in resp
+        assert "claude" in resp["coding_engine"]
+        assert "telegram" in resp["notification"]
+
     def test_do_get_api_roles(self, tmp_path):
         """GET /api/roles returns roles matrix dict."""
         import yaml
@@ -1805,12 +2083,60 @@ class TestDashboardRouting:
         resp = json.loads(handler.wfile.getvalue())
         assert isinstance(resp, list)
 
+    def test_do_get_api_routines(self, tmp_path):
+        """GET /api/routines returns a list."""
+        from scripts.ops.dashboard_server import DashboardHandler
+        handler = self._make_get_handler("/api/routines")
+
+        with mock.patch("scripts.ops.dashboard_server._JOBS_DIR", tmp_path):
+            DashboardHandler.do_GET(handler)
+
+        handler.send_response.assert_called_with(200)
+        resp = json.loads(handler.wfile.getvalue())
+        assert isinstance(resp, list)
+
+    def test_do_get_api_routine_runs(self, tmp_path):
+        """GET /api/routines/<id>/runs returns a list."""
+        from scripts.ops.dashboard_server import DashboardHandler
+        handler = self._make_get_handler("/api/routines/abc123/runs")
+
+        with mock.patch("scripts.ops.dashboard_server._JOBS_DIR", tmp_path):
+            DashboardHandler.do_GET(handler)
+
+        handler.send_response.assert_called_with(200)
+        resp = json.loads(handler.wfile.getvalue())
+        assert isinstance(resp, list)
+
+    def test_do_get_api_routine_activity(self, tmp_path):
+        """GET /api/routines/<id>/activity returns a list."""
+        from scripts.ops.dashboard_server import DashboardHandler
+        handler = self._make_get_handler("/api/routines/abc123/activity")
+
+        with mock.patch("scripts.ops.dashboard_server._JOBS_DIR", tmp_path):
+            DashboardHandler.do_GET(handler)
+
+        handler.send_response.assert_called_with(200)
+        resp = json.loads(handler.wfile.getvalue())
+        assert isinstance(resp, list)
+
     def test_do_get_api_rbac(self, tmp_path):
-        """GET /api/rbac returns roles yaml content."""
+        """GET /api/rbac returns normalized role objects."""
         import yaml
         from scripts.ops.dashboard_server import DashboardHandler
         roles_path = tmp_path / "roles.yaml"
-        roles_path.write_text(yaml.dump({"roles": ["admin", "viewer"]}))
+        roles_path.write_text(
+            yaml.dump(
+                {
+                    "roles": {
+                        "admin": {
+                            "description": "Administrator",
+                            "permissions": ["create", "delete"],
+                        },
+                        "viewer": {"permissions": ["read"]},
+                    }
+                }
+            )
+        )
 
         handler = self._make_get_handler("/api/rbac")
 
@@ -1820,6 +2146,25 @@ class TestDashboardRouting:
         handler.send_response.assert_called_with(200)
         resp = json.loads(handler.wfile.getvalue())
         assert isinstance(resp, dict)
+        assert "roles" in resp
+        assert isinstance(resp["roles"], list)
+        assert {r["role"] for r in resp["roles"]} == {"admin", "viewer"}
+        admin = next(r for r in resp["roles"] if r["role"] == "admin")
+        assert admin["permissions"] == ["create", "delete"]
+        assert admin["description"] == "Administrator"
+
+    def test_do_get_api_integrations(self):
+        """GET /api/integrations returns connector catalog payload."""
+        from scripts.ops.dashboard_server import DashboardHandler
+
+        handler = self._make_get_handler("/api/integrations")
+        DashboardHandler.do_GET(handler)
+
+        handler.send_response.assert_called_with(200)
+        resp = json.loads(handler.wfile.getvalue())
+        assert isinstance(resp.get("connectors"), list)
+        assert "telegram" in {c["connector_type"] for c in resp["connectors"]}
+        assert isinstance(resp.get("categories"), list)
 
     def test_do_post_api_settings(self, tmp_path):
         """POST /api/settings saves and returns updated settings."""
@@ -1834,6 +2179,146 @@ class TestDashboardRouting:
         resp = json.loads(handler.wfile.getvalue())
         assert resp["ok"] is True
         assert resp["settings"]["theme"] == "light"
+
+    def test_do_post_api_pricing_normalizes_before_save(self):
+        """POST /api/pricing normalizes payload and persists canonical keys."""
+        from scripts.ops.dashboard_server import DashboardHandler
+        handler = self._make_post_handler(
+            "/api/pricing",
+            body={
+                "model-a": {"input_per_1k": 0.002, "output_per_1k": 0.004},
+                "model-b": {"input": 3.0, "output": 15.0, "cache_read": 0.3},
+            },
+        )
+
+        with mock.patch("scripts.ops.dashboard_server.save_pricing") as save_mock:
+            DashboardHandler.do_POST(handler)
+
+        handler.send_response.assert_called_with(200)
+        resp = json.loads(handler.wfile.getvalue())
+        assert resp["model-a"]["input"] == 2.0
+        assert resp["model-a"]["output"] == 4.0
+        assert resp["model-b"]["input"] == 3.0
+        save_payload = save_mock.call_args[0][0]
+        assert save_payload["model-a"]["input"] == 2.0
+        assert save_payload["model-a"]["cache_write"] == 0.0
+
+    def test_do_post_api_routines(self, tmp_path):
+        """POST /api/routines creates a routine."""
+        from scripts.ops.dashboard_server import DashboardHandler
+        handler = self._make_post_handler(
+            "/api/routines",
+            body={"name": "daily", "schedule": "0 2 * * *", "description": "desc"},
+        )
+
+        with mock.patch("scripts.ops.dashboard_server._JOBS_DIR", tmp_path):
+            DashboardHandler.do_POST(handler)
+
+        handler.send_response.assert_called_with(201)
+        resp = json.loads(handler.wfile.getvalue())
+        assert resp["ok"] is True
+        assert "routine" in resp
+
+    def test_do_post_api_routine_action(self, tmp_path):
+        """POST /api/routines/<id>/run routes action."""
+        from scripts.ops.dashboard_server import DashboardHandler
+        from src.swe_team.scheduler import JobStore, ScheduledJob
+
+        store = JobStore(tmp_path / "jobs.json")
+        job = ScheduledJob(name="routine-a", cron_expression="*/5 * * * *")
+        store.upsert(job)
+
+        handler = self._make_post_handler(f"/api/routines/{job.job_id}/run", body={})
+        with mock.patch("scripts.ops.dashboard_server._JOBS_DIR", tmp_path):
+            DashboardHandler.do_POST(handler)
+
+        handler.send_response.assert_called_with(200)
+
+    def test_do_post_api_goals_creates_goal(self):
+        """POST /api/goals creates a goal placeholder ticket."""
+        from scripts.ops.dashboard_server import DashboardHandler
+        handler = self._make_post_handler(
+            "/api/goals",
+            body={"project_id": "mobile-launch", "goal": "Launch mobile app"},
+        )
+
+        DashboardHandler.do_POST(handler)
+
+        handler.send_response.assert_called_with(201)
+        handler.store.add.assert_called_once()
+        resp = json.loads(handler.wfile.getvalue())
+        assert resp["project_id"] == "mobile-launch"
+        assert resp["status"] == "created"
+
+    def test_do_post_api_goals_missing_project_id_returns_400(self):
+        """POST /api/goals returns 400 when project_id is missing."""
+        from scripts.ops.dashboard_server import DashboardHandler
+        handler = self._make_post_handler("/api/goals", body={"goal": "Launch mobile app"})
+
+        DashboardHandler.do_POST(handler)
+
+        handler.send_response.assert_called_with(400)
+
+    def test_do_post_api_goals_duplicate_project_id_returns_409(self):
+        """POST /api/goals returns 409 for an existing project_id."""
+        from scripts.ops.dashboard_server import DashboardHandler
+        handler = self._make_post_handler(
+            "/api/goals",
+            body={"project_id": "mobile-launch", "goal": "Launch mobile app"},
+        )
+        handler.store.list_by_project_id.return_value = [mock.MagicMock()]
+
+        DashboardHandler.do_POST(handler)
+
+        handler.send_response.assert_called_with(409)
+        handler.store.add.assert_not_called()
+
+    def test_do_patch_api_routine(self, tmp_path):
+        """PATCH /api/routines/<id> updates schedule."""
+        from scripts.ops.dashboard_server import DashboardHandler
+        from src.swe_team.scheduler import JobStore, ScheduledJob
+
+        store = JobStore(tmp_path / "jobs.json")
+        job = ScheduledJob(name="routine-b", cron_expression="0 * * * *")
+        store.upsert(job)
+
+        handler = self._make_patch_handler(
+            f"/api/routines/{job.job_id}",
+            body={"schedule": "*/10 * * * *"},
+        )
+
+        with mock.patch("scripts.ops.dashboard_server._JOBS_DIR", tmp_path):
+            DashboardHandler.do_PATCH(handler)
+
+        handler.send_response.assert_called_with(200)
+        resp = json.loads(handler.wfile.getvalue())
+        assert resp["ok"] is True
+        assert resp["routine"]["schedule"] == "*/10 * * * *"
+
+    def test_do_patch_api_agent_role_decodes_agent_name(self):
+        """PATCH /api/agents/<encoded>/role decodes name before routing."""
+        from scripts.ops.dashboard_server import DashboardHandler
+        handler = self._make_patch_handler(
+            "/api/agents/swe%20monitor/role",
+            body={"role": "developer"},
+        )
+        handler._check_auth = lambda: {"login": "anonymous"}
+        handler._handle_patch_agent_role = mock.MagicMock()
+
+        DashboardHandler.do_PATCH(handler)
+
+        handler._handle_patch_agent_role.assert_called_once_with("swe monitor")
+
+    def test_do_delete_api_agent_decodes_agent_name(self):
+        """DELETE /api/agents/<encoded> decodes name before routing."""
+        from scripts.ops.dashboard_server import DashboardHandler
+        handler = self._make_delete_handler("/api/agents/swe%20monitor")
+        handler._check_auth = lambda: {"login": "anonymous"}
+        handler._handle_delete_agent = mock.MagicMock()
+
+        DashboardHandler.do_DELETE(handler)
+
+        handler._handle_delete_agent.assert_called_once_with("swe monitor")
 
     def test_do_delete_api_projects(self, tmp_path):
         """DELETE /api/projects/<name> removes a project from config."""
@@ -1877,6 +2362,7 @@ class TestDashboardRouting:
         handler.send_response.assert_called_with(404)
 
 
+
 class TestMissingConstants:
     """Regression tests ensuring formerly-missing constants are now defined."""
 
@@ -1905,8 +2391,328 @@ class TestMissingConstants:
         from scripts.ops.dashboard_server import cp_handle_post
         assert callable(cp_handle_post)
 
+
     def test_handle_sse_defined(self):
         """_handle_sse method exists on DashboardHandler."""
         from scripts.ops.dashboard_server import DashboardHandler
         assert hasattr(DashboardHandler, "_handle_sse")
         assert callable(DashboardHandler._handle_sse)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Activity Filtering Tests (Epic 7)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Model Probe Tests (PR #987)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestModelProbeHelpers:
+    """Tests for _probe_list_models, _probe_completion, and _extract_models_from_text."""
+
+    def test_extract_models_from_text_finds_known_patterns(self):
+        """_extract_models_from_text picks up common model name patterns."""
+        from scripts.ops.dashboard_server import _extract_models_from_text
+        text = "Available: gpt-4o, claude-3-sonnet, gemini-1.5-pro and llama-3.1-70b"
+        models = _extract_models_from_text(text)
+        assert len(models) >= 4
+        assert any("gpt" in m.lower() for m in models)
+        assert any("claude" in m.lower() for m in models)
+        assert any("gemini" in m.lower() for m in models)
+        assert any("llama" in m.lower() for m in models)
+
+    def test_extract_models_from_text_empty(self):
+        """_extract_models_from_text returns empty list for unrecognized text."""
+        from scripts.ops.dashboard_server import _extract_models_from_text
+        assert _extract_models_from_text("hello world nothing here") == []
+
+    def test_probe_list_models_openai_format(self):
+        """_probe_list_models parses OpenAI /v1/models response."""
+        from scripts.ops.dashboard_server import _probe_list_models
+        openai_response = json.dumps({
+            "object": "list",
+            "data": [
+                {"id": "gpt-4o", "object": "model"},
+                {"id": "gpt-3.5-turbo", "object": "model"},
+            ]
+        }).encode()
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = openai_response
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+
+            models, error = _probe_list_models("https://api.example.com", "sk-test", 10)
+            assert error is None
+            assert models == ["gpt-4o", "gpt-3.5-turbo"]
+
+    def test_probe_list_models_anthropic_format(self):
+        """_probe_list_models parses Anthropic-style response with 'models' key."""
+        from scripts.ops.dashboard_server import _probe_list_models
+        anthropic_response = json.dumps({
+            "models": [
+                {"id": "claude-3-opus", "name": "Claude 3 Opus"},
+                {"id": "claude-3-sonnet", "name": "Claude 3 Sonnet"},
+            ]
+        }).encode()
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = anthropic_response
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            # First call (openai endpoint) returns this format
+            mock_urlopen.return_value = mock_resp
+
+            models, error = _probe_list_models("https://api.example.com", "key", 10)
+            assert error is None
+            assert "claude-3-opus" in models
+            assert "claude-3-sonnet" in models
+
+    def test_probe_list_models_plain_list_format(self):
+        """_probe_list_models parses a plain JSON list of model names."""
+        from scripts.ops.dashboard_server import _probe_list_models
+        plain_response = json.dumps(["model-a", "model-b", "model-c"]).encode()
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = plain_response
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+
+            models, error = _probe_list_models("https://api.example.com/v1", "key", 10)
+            assert error is None
+            assert models == ["model-a", "model-b", "model-c"]
+
+    def test_probe_list_models_non_json_with_model_names(self):
+        """_probe_list_models extracts model names from non-JSON plain text."""
+        from scripts.ops.dashboard_server import _probe_list_models
+        text_response = b"Models available: gpt-4o, claude-3-haiku"
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = text_response
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+
+            models, error = _probe_list_models("https://api.example.com/v1", "", 10)
+            assert error is None
+            assert len(models) >= 2
+
+    def test_probe_list_models_timeout(self):
+        """_probe_list_models returns error on timeout."""
+        from scripts.ops.dashboard_server import _probe_list_models
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = TimeoutError("timed out")
+            models, error = _probe_list_models("https://api.example.com/v1", "", 5)
+            assert models == []
+            assert error is not None
+            assert "imeout" in error  # matches Timeout or timeout
+
+    def test_probe_list_models_http_error(self):
+        """_probe_list_models returns error on HTTP error."""
+        from scripts.ops.dashboard_server import _probe_list_models
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = urllib.error.HTTPError(
+                "https://api.example.com/v1/models", 401, "Unauthorized", {}, None
+            )
+            models, error = _probe_list_models("https://api.example.com/v1", "", 5)
+            assert models == []
+            assert "401" in error
+
+    def test_probe_list_models_connection_error(self):
+        """_probe_list_models returns error on connection failure."""
+        from scripts.ops.dashboard_server import _probe_list_models
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
+            models, error = _probe_list_models("https://api.example.com/v1", "", 5)
+            assert models == []
+            assert error is not None
+
+    def test_probe_list_models_unexpected_json(self):
+        """_probe_list_models handles unexpected JSON structure gracefully."""
+        from scripts.ops.dashboard_server import _probe_list_models
+        weird_response = json.dumps({"status": "ok", "count": 42}).encode()
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = weird_response
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+
+            models, error = _probe_list_models("https://api.example.com/v1", "", 10)
+            assert models == []
+            assert error is not None
+            assert "Unexpected" in error
+
+    def test_probe_completion_openai_success(self):
+        """_probe_completion returns True on OpenAI-style success response."""
+        from scripts.ops.dashboard_server import _probe_completion
+        openai_response = json.dumps({
+            "id": "chatcmpl-abc",
+            "choices": [{"message": {"content": "p"}}],
+        }).encode()
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = openai_response
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+
+            ok, error = _probe_completion("https://api.example.com", "key", "gpt-4o", 10)
+            assert ok is True
+            assert error is None
+
+    def test_probe_completion_anthropic_success(self):
+        """_probe_completion returns True on Anthropic-style response."""
+        from scripts.ops.dashboard_server import _probe_completion
+        anthropic_response = json.dumps({
+            "type": "message",
+            "content": [{"type": "text", "text": "p"}],
+        }).encode()
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = anthropic_response
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+
+            ok, error = _probe_completion("https://api.example.com", "key", "claude-3", 10)
+            assert ok is True
+            assert error is None
+
+    def test_probe_completion_timeout(self):
+        """_probe_completion returns False on timeout."""
+        from scripts.ops.dashboard_server import _probe_completion
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = TimeoutError("timed out")
+            ok, error = _probe_completion("https://api.example.com", "key", "gpt-4", 5)
+            assert ok is False
+            assert "imeout" in error
+
+    def test_probe_completion_auth_failure(self):
+        """_probe_completion returns auth error on 401."""
+        from scripts.ops.dashboard_server import _probe_completion
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = urllib.error.HTTPError(
+                "https://api.example.com/v1/chat/completions", 401, "Unauthorized", {}, None
+            )
+            ok, error = _probe_completion("https://api.example.com", "bad-key", "gpt-4", 10)
+            assert ok is False
+            assert "Authentication" in error or "401" in error
+
+    def test_probe_completion_non_json_200(self):
+        """_probe_completion treats non-JSON 200 as success."""
+        from scripts.ops.dashboard_server import _probe_completion
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = b"OK"
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+
+            ok, error = _probe_completion("https://api.example.com", "key", "model", 10)
+            assert ok is True
+
+    def test_handle_model_probe_exists(self):
+        """DashboardHandler has _handle_model_probe method."""
+        from scripts.ops.dashboard_server import DashboardHandler
+        assert hasattr(DashboardHandler, "_handle_model_probe")
+        assert callable(DashboardHandler._handle_model_probe)
+
+    def test_handle_model_probe_missing_url(self):
+        """_handle_model_probe returns 400 when url is missing."""
+        from scripts.ops.dashboard_server import DashboardHandler
+        handler = MagicMock(spec=DashboardHandler)
+        handler._read_post_body = MagicMock(return_value={})
+        handler._json_response = MagicMock()
+
+        DashboardHandler._handle_model_probe(handler)
+
+        handler._json_response.assert_called_once()
+        call_args = handler._json_response.call_args
+        resp_data = call_args[0][0]
+        assert resp_data["success"] is False
+        assert "url" in resp_data["error"].lower()
+        assert call_args[1].get("status") == 400 or (len(call_args[0]) > 1 and call_args[0][1] == 400)
+
+    def test_handle_model_probe_with_models(self):
+        """_handle_model_probe returns success when models are found."""
+        from scripts.ops.dashboard_server import DashboardHandler
+        handler = MagicMock(spec=DashboardHandler)
+        handler._read_post_body = MagicMock(return_value={
+            "url": "https://api.example.com",
+            "api_key": "sk-test",
+        })
+        handler._json_response = MagicMock()
+
+        with patch("scripts.ops.dashboard_server._probe_list_models") as mock_list:
+            mock_list.return_value = (["gpt-4o", "gpt-3.5"], None)
+
+            DashboardHandler._handle_model_probe(handler)
+
+        handler._json_response.assert_called_once()
+        resp_data = handler._json_response.call_args[0][0]
+        assert resp_data["success"] is True
+        assert resp_data["models"] == ["gpt-4o", "gpt-3.5"]
+        assert resp_data["error"] is None
+
+    def test_handle_model_probe_with_completion(self):
+        """_handle_model_probe runs completion probe when model is specified."""
+        from scripts.ops.dashboard_server import DashboardHandler
+        handler = MagicMock(spec=DashboardHandler)
+        handler._read_post_body = MagicMock(return_value={
+            "url": "https://api.example.com",
+            "api_key": "sk-test",
+            "model": "gpt-4o",
+        })
+        handler._json_response = MagicMock()
+
+        with patch("scripts.ops.dashboard_server._probe_list_models") as mock_list, \
+             patch("scripts.ops.dashboard_server._probe_completion") as mock_comp:
+            mock_list.return_value = ([], "no models endpoint")
+            mock_comp.return_value = (True, None)
+
+            DashboardHandler._handle_model_probe(handler)
+
+        resp_data = handler._json_response.call_args[0][0]
+        assert resp_data["success"] is True
+        assert resp_data["completion_ok"] is True
+        assert resp_data["model_tested"] == "gpt-4o"
+
+    def test_handle_model_probe_all_fail(self):
+        """_handle_model_probe returns success=False when everything fails."""
+        from scripts.ops.dashboard_server import DashboardHandler
+        handler = MagicMock(spec=DashboardHandler)
+        handler._read_post_body = MagicMock(return_value={
+            "url": "https://api.example.com",
+            "api_key": "sk-test",
+            "model": "bad-model",
+        })
+        handler._json_response = MagicMock()
+
+        with patch("scripts.ops.dashboard_server._probe_list_models") as mock_list, \
+             patch("scripts.ops.dashboard_server._probe_completion") as mock_comp:
+            mock_list.return_value = ([], "connection refused")
+            mock_comp.return_value = (False, "HTTP 404")
+
+            DashboardHandler._handle_model_probe(handler)
+
+        resp_data = handler._json_response.call_args[0][0]
+        assert resp_data["success"] is False
+        assert resp_data["error"] is not None

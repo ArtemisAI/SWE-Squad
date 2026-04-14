@@ -17,7 +17,7 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-_PROJECTS_DIR = Path(os.environ.get("SWE_PROJECTS_DIR", str(Path.cwd() / "config" / "projects")))
+_PROJECTS_DIR = Path(__file__).resolve().parents[3] / "config" / "projects"
 
 
 @dataclass
@@ -89,7 +89,6 @@ class Project:
                 ssh_key=infra.get("ssh_key", ""),
                 workers=infra.get("workers", []),
             ),
-            metadata=data.get("metadata", {}),
         )
 
 
@@ -105,9 +104,6 @@ class ProjectRegistry:
         if not self._dir.exists():
             logger.info("No projects directory at %s — creating", self._dir)
             self._dir.mkdir(parents=True, exist_ok=True)
-            return
-        if not self._dir.is_dir():
-            logger.warning("Projects path %s is not a directory — skipping load", self._dir)
             return
         for f in sorted(self._dir.glob("*.yaml")):
             try:

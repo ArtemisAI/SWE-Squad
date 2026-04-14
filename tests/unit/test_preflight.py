@@ -334,8 +334,17 @@ class TestPreflightGitHubAuth:
 
     def test_skips_when_no_expected_account(self):
         check = PreflightCheck(required_env_vars=[])
-        failures = check.check_github_auth()
+        with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="ok", stderr="")):
+            failures = check.check_github_auth()
         assert failures == []
+
+    def test_gh_auth_fails_without_expected_account(self):
+        """Auth health check still runs even without an expected account."""
+        check = PreflightCheck(required_env_vars=[])
+        with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="", stderr="not logged in")):
+            failures = check.check_github_auth()
+        assert len(failures) == 1
+        assert "gh auth status failed" in failures[0]
 
 
 # ======================================================================
@@ -370,6 +379,23 @@ class TestPreflightFullRun:
 
         assert result.passed is False
         assert len(result.failures) >= 2  # git name + env var
+
+    def test_run_fails_when_gh_auth_fails_without_expected_account(self):
+        check = PreflightCheck(
+            required_env_vars=[],
+        )
+
+        def fake_run(cmd, **kwargs):
+            cmd_str = " ".join(cmd)
+            if "gh auth status" in cmd_str:
+                return MagicMock(returncode=1, stdout="", stderr="not logged in")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = check.run()
+
+        assert result.passed is False
+        assert any("gh auth status failed" in failure for failure in result.failures)
 
 
 # ======================================================================

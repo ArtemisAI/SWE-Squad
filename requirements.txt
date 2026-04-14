@@ -4,3 +4,4 @@ python-dotenv
 
 # Dev / Testing
 pytest
+rich>=13.0

@@ -103,8 +103,13 @@ providers:
   # Coding agent — Claude Code CLI is the primary engine. Never delegate to
   # external models as primary. Others available as rate-limit fallbacks only.
   coding_engine:
-    provider: claude          # claude | gemini | opencode | openai-codex
+    provider: claude          # claude | gemini | opencode | openai-codex | cline
     timeout_seconds: 300
+    # Cline-specific optional config when provider: cline
+    # binary: "cline"
+    # default_model: "claude-sonnet-4.5"
+    # auto_approve: true
+    # no_edit: false
 
   # Dev sandbox — isolated environment for live testing by agents
   sandbox:

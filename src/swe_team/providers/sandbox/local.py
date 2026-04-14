@@ -15,7 +15,7 @@ import logging
 import subprocess
 from typing import Any, Dict, List
 
-from .base import SandboxInfo, SandboxSpec
+from .base import InstanceCreationMethod, SandboxInfo, SandboxSpec
 
 logger = logging.getLogger(__name__)
 
@@ -25,14 +25,23 @@ class LocalSandbox:
 
     name = "local"
 
+    def get_instance_creation_method(self) -> InstanceCreationMethod:
+        return InstanceCreationMethod(
+            instance_type="local_process",
+            provisioning_flow="subprocess",
+            connection_method="local_exec",
+        )
+
     def create(self, spec: SandboxSpec) -> SandboxInfo:
         logger.info("LocalSandbox: no VM provisioned — commands run on host")
         return SandboxInfo(sandbox_id="local", name=spec.name, ip="127.0.0.1",
-                           status="running", provider=self.name)
+                           status="running", provider=self.name,
+                           creation_method=self.get_instance_creation_method())
 
     def status(self, sandbox_id: str) -> SandboxInfo:
         return SandboxInfo(sandbox_id="local", name="local", ip="127.0.0.1",
-                           status="running", provider=self.name)
+                           status="running", provider=self.name,
+                           creation_method=self.get_instance_creation_method())
 
     def run_command(self, sandbox_id: str, command: List[str]) -> tuple[int, str, str]:
         result = subprocess.run(command, capture_output=True, text=True, timeout=300)

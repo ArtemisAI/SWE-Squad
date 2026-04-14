@@ -14,6 +14,11 @@ from typing import Any, Optional
 
 from src.swe_team.models import SWETicket
 
+# Suppress verbose OpenAI client logging
+logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = "bge-m3"
@@ -149,18 +154,18 @@ def embed_ticket(ticket: SWETicket) -> Optional[list[float]]:
 # NOTE on model selection:
 #   BASE_LLM_API_URL  = external OpenAI-compatible proxy (your-llm-proxy.example.com)
 #                       Use this for cheap text extraction calls.
-#                       Available T1 models: gemini-3-flash, qwen3:8b
+#                       Available T1 models: gemini-2.5-flash, gemini-3-flash-preview, deepseek-v3.1:671b-cloud
 #   Claude Code CLI   = used by SWE Squad AGENTS (investigator, developer)
 #                       via subprocess. NOT the same as BASE_LLM.
 #                       Do NOT call claude CLI from within library code.
 
-_DEFAULT_EXTRACTION_MODEL = "gemini-3-flash"
+_DEFAULT_EXTRACTION_MODEL = "gemini-2.5-flash"
 
 
 def extract_memory_facts(ticket: SWETicket) -> str:
     """Distil a resolved ticket into a compact normalised memory fact.
 
-    Uses a cheap T1 model (gemini-3-flash) via the BASE_LLM proxy
+    Uses a cheap T1 model (gemini-2.5-flash) via the BASE_LLM proxy
     to strip noise from raw ticket text before embedding, following the
     mem0 pattern of structured fact extraction.
 
@@ -215,7 +220,9 @@ def extract_memory_facts(ticket: SWETicket) -> str:
     )
 
     try:
-        client = OpenAI(base_url=api_url, api_key=api_key, timeout=15.0, max_retries=1)
+        # Use 30s timeout for large models (deepseek-v3.1:671b-cloud, etc.)
+        # Investigation reports can be >2000 chars; generation needs more time than embeddings.
+        client = OpenAI(base_url=api_url, api_key=api_key, timeout=30.0, max_retries=2)
         resp = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],

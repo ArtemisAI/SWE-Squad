@@ -107,6 +107,7 @@ class TestProtocolCompliance:
             sandbox_id="id", name="n", ip=None, status="running", provider="test"
         )
         assert info.metadata == {}
+        assert info.creation_method is None
 
 
 # ======================================================================
@@ -122,6 +123,8 @@ class TestLocalSandbox:
         assert info.status == "running"
         assert info.ip == "127.0.0.1"
         assert info.provider == "local"
+        assert info.creation_method is not None
+        assert info.creation_method.instance_type == "local_process"
 
     def test_status_always_running(self) -> None:
         sb = LocalSandbox()
@@ -757,6 +760,9 @@ class TestRegistry:
         assert "local" in providers
         assert "docker" in providers
         assert "proxmox" in providers
+        assert "aws" in providers
+        assert "gcp" in providers
+        assert "azure" in providers
 
     def test_create_local_provider(self) -> None:
         from src.swe_team.providers.sandbox import create_sandbox_provider

@@ -170,10 +170,11 @@ class TestSessionStoreUpdateStatus:
         with pytest.raises(ValueError, match="Invalid status"):
             store.update_status(rec.session_id, "bogus")
 
-    def test_update_status_missing_raises(self, tmp_path):
+    def test_update_status_missing_logs_warning(self, tmp_path):
+        """update_status on a missing session logs a warning and returns gracefully."""
         store = SessionStore(path=str(tmp_path / "sessions.json"))
-        with pytest.raises(KeyError):
-            store.update_status("nonexistent", "active")
+        # Should not raise — just log a warning
+        store.update_status("nonexistent", "active")
 
     def test_update_status_updates_last_active(self, tmp_path):
         store = SessionStore(path=str(tmp_path / "sessions.json"))
@@ -436,7 +437,14 @@ class TestInvestigatorSessionWiring:
         from src.swe_team.session_store import SessionStore
 
         mock_build.return_value = "test prompt"
-        mock_run.return_value = ("investigation report", "")
+        mock_run.return_value = (
+            "Root Cause: A retry loop silently swallowed a timeout from the upstream proxy, "
+            "so the worker emitted incomplete diagnostics and the orchestrator persisted an invalid response.\n\n"
+            "Affected Files: src/swe_team/investigator.py, src/swe_team/developer.py, tests/unit/test_investigator.py\n\n"
+            "Fix Plan: Validate report structure before persistence, reject known Claude error envelopes, "
+            "require minimum report length, and keep sectioned investigation output for downstream automation.",
+            "",
+        )
 
         engine = MagicMock()
         engine.name = "claude"
@@ -464,7 +472,14 @@ class TestInvestigatorSessionWiring:
         from src.swe_team.session_store import SessionStore
 
         mock_build.return_value = "test prompt"
-        mock_run.return_value = ("resumed report", "")
+        mock_run.return_value = (
+            "Root Cause: A retry loop silently swallowed a timeout from the upstream proxy, "
+            "so the worker emitted incomplete diagnostics and the orchestrator persisted an invalid response.\n\n"
+            "Affected Files: src/swe_team/investigator.py, src/swe_team/developer.py, tests/unit/test_investigator.py\n\n"
+            "Fix Plan: Validate report structure before persistence, reject known Claude error envelopes, "
+            "require minimum report length, and keep sectioned investigation output for downstream automation.",
+            "",
+        )
 
         engine = MagicMock()
         engine.name = "claude"
@@ -500,7 +515,14 @@ class TestInvestigatorSessionWiring:
 
         real_claude_uuid = str(uuid.uuid4())
         mock_build.return_value = "test prompt"
-        mock_run.return_value = ("investigation report", "")
+        mock_run.return_value = (
+            "Root Cause: A retry loop silently swallowed a timeout from the upstream proxy, "
+            "so the worker emitted incomplete diagnostics and the orchestrator persisted an invalid response.\n\n"
+            "Affected Files: src/swe_team/investigator.py, src/swe_team/developer.py, tests/unit/test_investigator.py\n\n"
+            "Fix Plan: Validate report structure before persistence, reject known Claude error envelopes, "
+            "require minimum report length, and keep sectioned investigation output for downstream automation.",
+            "",
+        )
 
         engine = MagicMock()
         engine.name = "claude"
@@ -510,7 +532,13 @@ class TestInvestigatorSessionWiring:
         agent._session_store = session_store
         # Simulate the engine result having a Claude CLI session UUID
         agent._last_engine_result = EngineResult(
-            stdout="investigation report", stderr="", returncode=0,
+            stdout=(
+                "Root Cause: A retry loop silently swallowed a timeout from the upstream proxy, "
+                "so the worker emitted incomplete diagnostics and the orchestrator persisted an invalid response.\n\n"
+                "Affected Files: src/swe_team/investigator.py, src/swe_team/developer.py, tests/unit/test_investigator.py\n\n"
+                "Fix Plan: Validate report structure before persistence, reject known Claude error envelopes, "
+                "require minimum report length, and keep sectioned investigation output for downstream automation."
+            ), stderr="", returncode=0,
             session_id=real_claude_uuid,
         )
 

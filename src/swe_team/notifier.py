@@ -12,11 +12,47 @@ module are synchronous and safe to call from the CLI runner.
 from __future__ import annotations
 
 import logging
+import time
+import threading
 from typing import List, Optional
 
 from src.swe_team.models import SWETicket, StabilityReport, TicketSeverity
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Global rate limiter — prevents Telegram floods
+# ---------------------------------------------------------------------------
+# Tracks last send time per alert "key" (first 60 chars of message).
+# Same alert type won't fire more than once per _RATE_LIMIT_SECONDS.
+_RATE_LIMIT_SECONDS = 300  # 5 minutes between identical alert types
+_rate_limit_lock = threading.Lock()
+_rate_limit_cache: dict = {}  # key -> last_sent_timestamp
+# Hard cap: no more than this many messages per minute across all types
+_MAX_MESSAGES_PER_MINUTE = 6
+_send_timestamps: list = []  # rolling window of send times
+
+
+def _is_rate_limited(message: str) -> bool:
+    """Return True if this message type was sent too recently or global cap hit."""
+    now = time.monotonic()
+    key = message[:80]  # group by alert type/content prefix
+    with _rate_limit_lock:
+        # Check per-type cooldown
+        last = _rate_limit_cache.get(key, 0)
+        if now - last < _RATE_LIMIT_SECONDS:
+            logger.debug("Telegram rate-limited (cooldown): %s", key[:40])
+            return True
+        # Check global per-minute cap
+        cutoff = now - 60
+        _send_timestamps[:] = [t for t in _send_timestamps if t > cutoff]
+        if len(_send_timestamps) >= _MAX_MESSAGES_PER_MINUTE:
+            logger.warning("Telegram global cap hit (%d/min) — suppressing", _MAX_MESSAGES_PER_MINUTE)
+            return True
+        # Allow send — update tracking
+        _rate_limit_cache[key] = now
+        _send_timestamps.append(now)
+        return False
 
 # Severity emoji mapping
 _SEVERITY_EMOJI = {
@@ -27,8 +63,8 @@ _SEVERITY_EMOJI = {
 }
 
 
-def _send(message: str) -> bool:
-    """Send a Telegram message via the standalone Bot API client.
+def _send_direct(message: str) -> bool:
+    """Send a Telegram message directly via the standalone Bot API client.
 
     Returns True on success, False otherwise.  Never raises.
     """
@@ -41,15 +77,82 @@ def _send(message: str) -> bool:
         return False
 
 
-def notify_new_tickets(tickets: List[SWETicket]) -> None:
-    """Send Telegram alert for new HIGH/CRITICAL tickets.
+def _send_via_openclaw(message: str) -> bool:
+    """Send a message through the OpenClaw A2A gateway to Telegram.
 
-    Only tickets with severity HIGH or CRITICAL are included.
+    Uses the OpenClaw CLI (``docker exec openclaw openclaw message send``)
+    which routes through the already-configured @SWEQuadBOT connection.
+
+    Returns True on success, False if OpenClaw is unavailable or the send
+    fails.  Never raises.
+    """
+    import subprocess
+    from src.swe_team.telegram import _rate_limited as _tg_rate_limited
+
+    # Apply the same process-wide rate limiter used by send_message() so that
+    # OpenClaw sends are counted against the global cap and per-type cooldown.
+    if _tg_rate_limited(message):
+        logger.debug("OpenClaw send suppressed by telegram rate limiter")
+        return False  # Let _send() fall through to _send_direct (also rate-limited there)
+
+    chat_id = "7783327749"
+    try:
+        result = subprocess.run(
+            [
+                "docker", "exec", "openclaw",
+                "openclaw", "message", "send",
+                "--channel", "telegram",
+                "--target", chat_id,
+                "--message", message,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0 and "Sent via Telegram" in result.stdout:
+            logger.debug("OpenClaw gateway delivered message successfully")
+            return True
+        logger.warning(
+            "OpenClaw send failed (rc=%d): %s %s",
+            result.returncode,
+            result.stdout[:200],
+            result.stderr[:200],
+        )
+        return False
+    except FileNotFoundError:
+        logger.warning("docker not found — OpenClaw gateway unavailable")
+        return False
+    except subprocess.TimeoutExpired:
+        logger.warning("OpenClaw send timed out")
+        return False
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("OpenClaw gateway error: %s", exc)
+        return False
+
+
+def _send(message: str) -> bool:
+    """Send via OpenClaw gateway (preferred) or direct Telegram fallback.
+
+    Applies global rate limiting before sending to prevent alert floods.
+    Returns True on success, False otherwise.  Never raises.
+    """
+    if _is_rate_limited(message):
+        return False
+    if _send_via_openclaw(message):
+        return True
+    # Fallback: direct Telegram Bot API
+    return _send_direct(message)
+
+
+def notify_new_tickets(tickets: List[SWETicket]) -> None:
+    """Send Telegram alert for new CRITICAL tickets.
+
+    Only tickets with severity CRITICAL are included.
     Multiple tickets are grouped into a single message.
     """
     important = [
         t for t in tickets
-        if t.severity in (TicketSeverity.CRITICAL, TicketSeverity.HIGH)
+        if t.severity in (TicketSeverity.CRITICAL,)
     ]
     if not important:
         return
@@ -142,6 +245,8 @@ def notify_investigation_summary(ticket: SWETicket) -> None:
     """Send Telegram summary of an investigation report."""
     if not ticket.investigation_report:
         return
+    if ticket.severity.value != "critical":
+        return
 
     module = ticket.source_module or "unknown"
     severity = ticket.severity.value.upper()
@@ -188,6 +293,37 @@ def notify_regression_hitl(ticket: SWETicket) -> None:
     _send(message)
 
 
+def notify_rollback_triggered(
+    *,
+    ticket: SWETicket,
+    regression_ticket: SWETicket,
+    recurrence_count: int,
+    rollback_succeeded: bool,
+    merge_commit: str = "",
+    target_branch: str = "main",
+) -> None:
+    """Send Telegram alert when VERIFYING regression triggers rollback."""
+    fp = ticket.metadata.get("fingerprint", "unknown")
+    module = ticket.source_module or "unknown"
+    rollback_state = "succeeded" if rollback_succeeded else "failed"
+    commit_text = merge_commit or "unknown"
+
+    lines = [
+        "<b>↩️ Post-merge regression detected</b>",
+        "",
+        f"<b>Ticket:</b> <code>{_esc(ticket.ticket_id)}</code>",
+        f"<b>Regression ticket:</b> <code>{_esc(regression_ticket.ticket_id)}</code>",
+        f"<b>Fingerprint:</b> <code>{_esc(fp)}</code>",
+        f"<b>Recurrences:</b> {recurrence_count}",
+        f"<b>Module:</b> {_esc(module)}",
+        f"<b>Merge commit:</b> <code>{_esc(commit_text)}</code>",
+        f"<b>Branch:</b> <code>{_esc(target_branch)}</code>",
+        f"<b>Rollback:</b> {_esc(rollback_state)}",
+    ]
+    message = "\n".join(lines)
+    _send(message)
+
+
 def notify_cycle_summary(
     *,
     new_tickets: int = 0,
@@ -197,11 +333,15 @@ def notify_cycle_summary(
     fixes_succeeded: int = 0,
     gate_verdict: str = "N/A",
     cost_usd: Optional[float] = None,
+    silent: bool = False,
 ) -> None:
     """Send a concise cycle summary to Telegram.
 
     Designed to be called after each run_cycle() completes.
+    Pass silent=True to suppress sending (e.g. for per-cycle calls).
     """
+    if silent:
+        return
     lines = [
         "<b>\U0001f504 SWE Cycle Summary</b>",
         "",

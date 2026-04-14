@@ -6,7 +6,7 @@ creates a structured plan with sub-tasks, then delegates each sub-task
 to the appropriate model tier (Sonnet for implementation, Haiku for
 tests/linting). Progress is tracked via GitHub checklist comments.
 
-SEC-68 compliant: only Claude models for code generation.
+Model boundary enforced: only Claude models for code generation.
 """
 from __future__ import annotations
 
@@ -112,6 +112,9 @@ class OrchestratorAgent:
 
         prompt = self._build_plan_prompt(ticket)
 
+        # Debug logging before CLI call
+        logger.debug("Orchestrator plan CLI call: model=%s, prompt_preview=%s", self._model, prompt[:100])
+
         try:
             result = self._engine.run(
                 prompt,
@@ -120,8 +123,24 @@ class OrchestratorAgent:
                 cwd=str(self._repo_root),
             )
             if not result.success:
-                logger.error("Orchestrator plan CLI failed (exit %d): %s", result.returncode, result.stderr[:500])
-                raise RuntimeError(f"Claude CLI failed (exit {result.returncode}): {result.stderr[:500]}")
+                # Enhanced error logging: capture both stdout and stderr
+                stdout_preview = result.stdout[:200] if result.stdout else "(empty)"
+                stderr_preview = result.stderr[:500] if result.stderr else "(empty)"
+                error_msg = f"Orchestrator plan CLI failed (exit {result.returncode})"
+
+                # Check stdout for API errors when stderr is empty (JSON-mode errors)
+                if not result.stderr:
+                    error_source = stdout_preview if "error" in stdout_preview.lower() else stderr_preview
+                    if "429" in stdout_preview or "rate limit" in stdout_preview.lower():
+                        error_msg += " (rate limit)"
+                    logger.error(
+                        "%s - stdout_preview=%s, stderr_preview=%s",
+                        error_msg, stdout_preview, stderr_preview
+                    )
+                    raise RuntimeError(f"{error_msg}: {error_source}")
+                else:
+                    logger.error("%s: %s (stdout: %s)", error_msg, stderr_preview, stdout_preview)
+                    raise RuntimeError(f"{error_msg}: {stderr_preview}")
             raw = result.stdout.strip()
         except RuntimeError:
             raise
@@ -158,6 +177,12 @@ class OrchestratorAgent:
             f"Complete this sub-task. Be concise and focused."
         )
 
+        # Debug logging before CLI call
+        logger.debug(
+            "Sub-task %s CLI call: model=%s, prompt_preview=%s",
+            task.id, task.model, prompt[:100]
+        )
+
         try:
             result = self._engine.run(
                 prompt,
@@ -166,8 +191,24 @@ class OrchestratorAgent:
                 cwd=str(self._repo_root),
             )
             if not result.success:
-                logger.error("Sub-task %s CLI failed (exit %d): %s", task.id, result.returncode, result.stderr[:500])
-                raise RuntimeError(f"Claude CLI failed (exit {result.returncode}): {result.stderr[:500]}")
+                # Enhanced error logging: capture both stdout and stderr
+                stdout_preview = result.stdout[:200] if result.stdout else "(empty)"
+                stderr_preview = result.stderr[:500] if result.stderr else "(empty)"
+                error_msg = f"Sub-task {task.id} CLI failed (exit {result.returncode})"
+
+                # Check stdout for API errors when stderr is empty (JSON-mode errors)
+                if not result.stderr:
+                    error_source = stdout_preview if "error" in stdout_preview.lower() else stderr_preview
+                    if "429" in stdout_preview or "rate limit" in stdout_preview.lower():
+                        error_msg += " (rate limit)"
+                    logger.error(
+                        "%s - stdout_preview=%s, stderr_preview=%s",
+                        error_msg, stdout_preview, stderr_preview
+                    )
+                    raise RuntimeError(f"{error_msg}: {error_source}")
+                else:
+                    logger.error("%s: %s (stdout: %s)", error_msg, stderr_preview, stdout_preview)
+                    raise RuntimeError(f"{error_msg}: {stderr_preview}")
             return result.stdout.strip()
         except RuntimeError:
             raise

@@ -166,10 +166,7 @@ class PreflightCheck:
         return failures
 
     def check_github_auth(self) -> List[str]:
-        """Verify ``gh auth status`` returns the expected account."""
-        if self._expected_github_account is None:
-            return []
-
+        """Verify ``gh auth status`` is healthy and (optionally) expected account."""
         failures: List[str] = []
         try:
             result = subprocess.run(
@@ -184,7 +181,10 @@ class PreflightCheck:
                     f"gh auth status failed (rc={result.returncode}): "
                     f"{combined.strip()[:200]}"
                 )
-            elif self._expected_github_account not in combined:
+            elif (
+                self._expected_github_account is not None
+                and self._expected_github_account not in combined
+            ):
                 failures.append(
                     f"GitHub account mismatch: expected '{self._expected_github_account}' "
                     f"in gh auth output, but not found"

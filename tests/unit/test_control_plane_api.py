@@ -366,7 +366,7 @@ class TestHandlePut:
         cp = _make_control_plane(tmp_path)
         payload = {"priority_weight": 0.9}
         handler = _make_handler(
-            path="/api/config/projects/example-org/my-app",
+            path="/api/config/projects/your-org/example-app",
             body=_json_body(payload),
         )
         handler.wfile = BytesIO()

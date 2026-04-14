@@ -11,6 +11,15 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 
+@dataclass(frozen=True)
+class InstanceCreationMethod:
+    """Describes how a provider provisions and connects to an instance."""
+
+    instance_type: str
+    provisioning_flow: str
+    connection_method: str
+
+
 @dataclass
 class SandboxSpec:
     """Resource specification for a sandbox VM/container."""
@@ -30,7 +39,8 @@ class SandboxInfo:
     name: str
     ip: Optional[str]
     status: str          # "starting" | "running" | "stopped" | "deleted"
-    provider: str        # e.g. "proxmox", "docker", "local"
+    provider: str        # e.g. "proxmox", "docker", "local", "aws", "gcp", "azure"
+    creation_method: Optional[InstanceCreationMethod] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -46,7 +56,7 @@ class SandboxProvider(Protocol):
 
     @property
     def name(self) -> str:
-        """Provider identifier (e.g. 'proxmox', 'docker', 'local')."""
+        """Provider identifier (e.g. 'proxmox', 'docker', 'local', 'aws')."""
         ...
 
     def create(self, spec: SandboxSpec) -> SandboxInfo:
@@ -75,4 +85,8 @@ class SandboxProvider(Protocol):
 
     def health_check(self) -> bool:
         """Return True if the provider backend is reachable."""
+        ...
+
+    def get_instance_creation_method(self) -> InstanceCreationMethod:
+        """Return instance type + provisioning + connection details."""
         ...

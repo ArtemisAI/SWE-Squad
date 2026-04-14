@@ -1,0 +1,73 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# SSH Config — SWE-Squad Worker Access
+# ═══════════════════════════════════════════════════════════════════════════════
+# Purpose:  Scoped SSH config for SWE-Squad remote log collection and debugging.
+#           ONLY listed worker nodes are reachable through this config.
+#
+# Key:      <YOUR_SSH_KEY_PATH> (ed25519, deployed to workers only)
+# Usage:    ssh -F config/ssh_workers.conf <alias>
+#           rsync -e "ssh -F config/ssh_workers.conf" ...
+#
+# SECURITY: This config is intentionally restrictive. It does NOT include:
+#           - Primary orchestrator — NEVER accessible from SWE-Squad
+#           - Hypervisors — root-level, off-limits
+#           - Non-project VMs — separate project scope
+#
+# To add a new worker: add a Host block below AND deploy the pubkey:
+#   ssh-copy-id -i <YOUR_SSH_KEY_PATH>.pub agent@<new-ip>
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+# ─── GLOBAL DEFAULTS (strict) ────────────────────────────────────────────────
+Host *
+    IdentitiesOnly yes
+    User agent
+    ConnectTimeout 5
+    BatchMode yes
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+    StrictHostKeyChecking accept-new
+
+
+# ─── WORKER NODES ────────────────────────────────────────────────────────────
+
+# worker-1 — Application worker node 1
+Host worker-1
+    HostName <WORKER_1_IP>
+
+# worker-2 — Application worker node 2
+Host worker-2
+    HostName <WORKER_2_IP>
+
+# worker-3 — Application worker node 3
+Host worker-3
+    HostName <WORKER_3_IP>
+
+# worker-4 — Application worker node 4
+Host worker-4
+    HostName <WORKER_4_IP>
+
+# swe-squad-1 — SWE-Squad Alpha team
+Host swe-squad-1
+    HostName <SWE_SQUAD_1_IP>
+    IdentityFile <YOUR_SSH_KEY_PATH>
+
+# swe-squad-2 — SWE-Squad Beta team
+Host swe-squad-2
+    HostName <SWE_SQUAD_2_IP>
+    IdentityFile <YOUR_SSH_KEY_PATH>
+
+# swe-squad-3 — SWE-Squad Gamma team
+Host swe-squad-3
+    HostName <SWE_SQUAD_3_IP>
+    IdentityFile <YOUR_SSH_KEY_PATH>
+
+# supabase — Self-hosted Supabase (PostgreSQL + PostgREST + pgvector)
+Host supabase
+    HostName <SUPABASE_IP>
+    IdentityFile <YOUR_SSH_KEY_PATH>
+
+# swe-webui — SWE-Squad Dashboard
+Host swe-webui
+    HostName <WEBUI_IP>
+    IdentityFile <YOUR_SSH_KEY_PATH>

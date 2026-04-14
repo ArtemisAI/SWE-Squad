@@ -25,7 +25,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from .base import SandboxInfo, SandboxSpec
+from .base import InstanceCreationMethod, SandboxInfo, SandboxSpec
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,13 @@ class DockerSandbox:
     """
 
     name = "docker"
+
+    def get_instance_creation_method(self) -> InstanceCreationMethod:
+        return InstanceCreationMethod(
+            instance_type="docker_container",
+            provisioning_flow="docker_run",
+            connection_method="docker_exec",
+        )
 
     def __init__(
         self,
@@ -149,6 +156,7 @@ class DockerSandbox:
             ip=None,  # containers use docker exec, no IP needed
             status="running",
             provider=self.name,
+            creation_method=self.get_instance_creation_method(),
             metadata={"container_name": container_name, "image": self._image},
         )
 
@@ -166,6 +174,7 @@ class DockerSandbox:
                 ip=None,
                 status="deleted",
                 provider=self.name,
+                creation_method=self.get_instance_creation_method(),
             )
         docker_status = result.stdout.strip()
         # Map Docker status to our status enum
@@ -183,6 +192,7 @@ class DockerSandbox:
             ip=None,
             status=status_map.get(docker_status, "stopped"),
             provider=self.name,
+            creation_method=self.get_instance_creation_method(),
             metadata={"docker_status": docker_status},
         )
 

@@ -391,7 +391,7 @@ class TestDotenvEnvProvider:
         p = DotenvEnvProvider()
         spec = EnvSpec(
             role="investigator",
-            overrides={"ANTHROPIC_API_KEY": "test-secret-key"},
+            overrides={"ANTHROPIC_API_KEY": "sk-secret"},
         )
         env = p.build_env(spec)
         # investigator does NOT allowlist ANTHROPIC_API_KEY
@@ -402,10 +402,10 @@ class TestDotenvEnvProvider:
         p = DotenvEnvProvider()
         spec = EnvSpec(
             role="claude_cli",
-            overrides={"ANTHROPIC_API_KEY": "test-allowed-key"},
+            overrides={"ANTHROPIC_API_KEY": "sk-allowed"},
         )
         env = p.build_env(spec)
-        assert env.get("ANTHROPIC_API_KEY") == "test-allowed-key"
+        assert env.get("ANTHROPIC_API_KEY") == "sk-allowed"
 
     def test_build_env_unknown_role_gets_minimal(self) -> None:
         """Unknown roles get PATH + HOME only."""

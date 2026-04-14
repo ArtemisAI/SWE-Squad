@@ -96,7 +96,7 @@ class TestEnvFileContainsRoleScopedVars:
     """test_env_file_contains_role_scoped_vars: developer gets GH_TOKEN."""
 
     def test_env_file_contains_role_scoped_vars(self, tmp_path: Path) -> None:
-        with patch.dict(os.environ, {"GH_TOKEN": "fake-token-test123", "PATH": "/usr/bin", "HOME": "/tmp"}):
+        with patch.dict(os.environ, {"GH_TOKEN": "ghp_test123", "PATH": "/usr/bin", "HOME": "/tmp"}):
             env_prov = DotenvEnvProvider()
             provider = _make_provider(tmp_path, env_provider=env_prov)
             wt = _stub_acquire(tmp_path, "T-003", "swe-fix/ticket-T-003")
@@ -107,7 +107,7 @@ class TestEnvFileContainsRoleScopedVars:
             info = provider.create(spec)
 
             content = info.env_path.read_text()
-            assert "GH_TOKEN=fake-token-test123" in content
+            assert "GH_TOKEN=ghp_test123" in content
 
 
 class TestBlockedVarsNeverInEnvFile:
@@ -470,7 +470,7 @@ class TestInvestigatorRoleDoesNotGetGhToken:
     """investigator role should NOT receive GH_TOKEN."""
 
     def test_investigator_no_gh_token(self, tmp_path: Path) -> None:
-        with patch.dict(os.environ, {"GH_TOKEN": "fake-token-secret", "PATH": "/usr/bin", "HOME": "/tmp"}):
+        with patch.dict(os.environ, {"GH_TOKEN": "ghp_secret", "PATH": "/usr/bin", "HOME": "/tmp"}):
             env_prov = DotenvEnvProvider()
             provider = _make_provider(tmp_path, env_provider=env_prov)
             wt = _stub_acquire(tmp_path, "T-060", "swe-fix/ticket-T-060")

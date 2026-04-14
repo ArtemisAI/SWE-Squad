@@ -115,18 +115,18 @@ class TestMultiRepoFetch:
         """Set up mock GitHub issue data for all 4 repos."""
         global _MOCK_ISSUES
         _MOCK_ISSUES = {
-            # HealthTrack: 1 issue assigned to test-bot
-            "test-org/SWE-Sandbox-HealthTrack:test-bot": [
+            # HealthTrack: 1 issue assigned to swe-squad-alpha
+            "your-org/SWE-Sandbox-HealthTrack:swe-squad-alpha": [
                 _make_gh_issue(1, "[CRITICAL] Patient data API returns 500", labels=["bug", "critical"]),
             ],
-            # ShopStream: 1 issue assigned to test-bot
-            "test-org/SWE-Sandbox-ShopStream:test-bot": [
+            # ShopStream: 1 issue assigned to swe-squad-alpha
+            "your-org/SWE-Sandbox-ShopStream:swe-squad-alpha": [
                 _make_gh_issue(1, "[HIGH] Cart total calculation wrong", labels=["bug"]),
             ],
             # GreenGrid: 0 assigned issues (4 exist but unassigned)
-            "test-org/SWE-Sandbox-GreenGrid:test-bot": [],
+            "your-org/SWE-Sandbox-GreenGrid:swe-squad-alpha": [],
             # EduPath: 0 assigned issues
-            "test-org/SWE-Sandbox-EduPath:test-bot": [],
+            "your-org/SWE-Sandbox-EduPath:swe-squad-alpha": [],
         }
         yield
         _MOCK_ISSUES = {}
@@ -137,12 +137,12 @@ class TestMultiRepoFetch:
 
         store = FakeStore()
         repos = [
-            "test-org/SWE-Sandbox-HealthTrack",
-            "test-org/SWE-Sandbox-ShopStream",
-            "test-org/SWE-Sandbox-GreenGrid",
-            "test-org/SWE-Sandbox-EduPath",
+            "your-org/SWE-Sandbox-HealthTrack",
+            "your-org/SWE-Sandbox-ShopStream",
+            "your-org/SWE-Sandbox-GreenGrid",
+            "your-org/SWE-Sandbox-EduPath",
         ]
-        tickets = fetch_github_tickets(store, github_account="test-bot", repos=repos)
+        tickets = fetch_github_tickets(store, github_account="swe-squad-alpha", repos=repos)
 
         # Should get exactly 2 tickets (1 from HealthTrack + 1 from ShopStream)
         assert len(tickets) == 2
@@ -153,10 +153,10 @@ class TestMultiRepoFetch:
 
         store = FakeStore()
         repos = [
-            "test-org/SWE-Sandbox-GreenGrid",
-            "test-org/SWE-Sandbox-EduPath",
+            "your-org/SWE-Sandbox-GreenGrid",
+            "your-org/SWE-Sandbox-EduPath",
         ]
-        tickets = fetch_github_tickets(store, github_account="test-bot", repos=repos)
+        tickets = fetch_github_tickets(store, github_account="swe-squad-alpha", repos=repos)
         assert len(tickets) == 0, "Unassigned repos should return 0 tickets"
 
     @patch("scripts.ops.swe_team_runner.subprocess.run", side_effect=_mock_subprocess_run)
@@ -164,27 +164,27 @@ class TestMultiRepoFetch:
         from scripts.ops.swe_team_runner import fetch_github_tickets
 
         store = FakeStore()
-        repos = ["test-org/SWE-Sandbox-HealthTrack"]
-        tickets = fetch_github_tickets(store, github_account="test-bot", repos=repos)
+        repos = ["your-org/SWE-Sandbox-HealthTrack"]
+        tickets = fetch_github_tickets(store, github_account="swe-squad-alpha", repos=repos)
         assert len(tickets) == 1
-        assert tickets[0].metadata["repo"] == "test-org/SWE-Sandbox-HealthTrack"
+        assert tickets[0].metadata["repo"] == "your-org/SWE-Sandbox-HealthTrack"
 
     @patch("scripts.ops.swe_team_runner.subprocess.run", side_effect=_mock_subprocess_run)
     def test_cross_repo_fingerprints_unique(self, mock_run):
         """Same issue number on different repos gets distinct fingerprints."""
         global _MOCK_ISSUES
-        _MOCK_ISSUES["test-org/SWE-Sandbox-HealthTrack:test-bot"] = [
+        _MOCK_ISSUES["your-org/SWE-Sandbox-HealthTrack:swe-squad-alpha"] = [
             _make_gh_issue(1, "Bug A", labels=["bug"]),
         ]
-        _MOCK_ISSUES["test-org/SWE-Sandbox-ShopStream:test-bot"] = [
+        _MOCK_ISSUES["your-org/SWE-Sandbox-ShopStream:swe-squad-alpha"] = [
             _make_gh_issue(1, "Bug B", labels=["bug"]),  # Same issue #1, different repo
         ]
 
         from scripts.ops.swe_team_runner import fetch_github_tickets
 
         store = FakeStore()
-        repos = ["test-org/SWE-Sandbox-HealthTrack", "test-org/SWE-Sandbox-ShopStream"]
-        tickets = fetch_github_tickets(store, github_account="test-bot", repos=repos)
+        repos = ["your-org/SWE-Sandbox-HealthTrack", "your-org/SWE-Sandbox-ShopStream"]
+        tickets = fetch_github_tickets(store, github_account="swe-squad-alpha", repos=repos)
 
         assert len(tickets) == 2, "Same issue# on different repos should produce 2 distinct tickets"
         fps = {t.metadata["fingerprint"] for t in tickets}
@@ -195,9 +195,9 @@ class TestMultiRepoFetch:
         from scripts.ops.swe_team_runner import fetch_github_tickets
 
         # Pre-seed store with HealthTrack issue #1
-        store = FakeStore(existing_fps={"gh-issue-test-org/SWE-Sandbox-HealthTrack-1"})
-        repos = ["test-org/SWE-Sandbox-HealthTrack"]
-        tickets = fetch_github_tickets(store, github_account="test-bot", repos=repos)
+        store = FakeStore(existing_fps={"gh-issue-your-org/SWE-Sandbox-HealthTrack-1"})
+        repos = ["your-org/SWE-Sandbox-HealthTrack"]
+        tickets = fetch_github_tickets(store, github_account="swe-squad-alpha", repos=repos)
         assert len(tickets) == 0, "Already-known issue should be deduped"
 
     @patch("scripts.ops.swe_team_runner.subprocess.run", side_effect=_mock_subprocess_run)
@@ -206,16 +206,16 @@ class TestMultiRepoFetch:
         from scripts.ops.swe_team_runner import fetch_github_tickets
 
         store = FakeStore()
-        repos = ["test-org/SWE-Sandbox-HealthTrack", "test-org/SWE-Sandbox-ShopStream"]
+        repos = ["your-org/SWE-Sandbox-HealthTrack", "your-org/SWE-Sandbox-ShopStream"]
 
-        first = fetch_github_tickets(store, github_account="test-bot", repos=repos)
+        first = fetch_github_tickets(store, github_account="swe-squad-alpha", repos=repos)
         assert len(first) == 2
 
         # Add first batch to store
         for t in first:
             store.add(t)
 
-        second = fetch_github_tickets(store, github_account="test-bot", repos=repos)
+        second = fetch_github_tickets(store, github_account="swe-squad-alpha", repos=repos)
         assert len(second) == 0, "Second fetch should return 0 — all already known"
 
     @patch("scripts.ops.swe_team_runner.subprocess.run", side_effect=_mock_subprocess_run)
@@ -223,8 +223,8 @@ class TestMultiRepoFetch:
         from scripts.ops.swe_team_runner import fetch_github_tickets
 
         store = FakeStore()
-        repos = ["test-org/SWE-Sandbox-HealthTrack"]
-        tickets = fetch_github_tickets(store, github_account="test-bot", repos=repos)
+        repos = ["your-org/SWE-Sandbox-HealthTrack"]
+        tickets = fetch_github_tickets(store, github_account="swe-squad-alpha", repos=repos)
         assert len(tickets) == 1
         assert tickets[0].severity == TicketSeverity.CRITICAL
 
@@ -233,8 +233,8 @@ class TestMultiRepoFetch:
         from scripts.ops.swe_team_runner import fetch_github_tickets
 
         store = FakeStore()
-        repos = ["test-org/SWE-Sandbox-ShopStream"]
-        tickets = fetch_github_tickets(store, github_account="test-bot", repos=repos)
+        repos = ["your-org/SWE-Sandbox-ShopStream"]
+        tickets = fetch_github_tickets(store, github_account="swe-squad-alpha", repos=repos)
         assert len(tickets) == 1
         assert tickets[0].severity == TicketSeverity.HIGH
 
@@ -243,7 +243,7 @@ class TestMultiRepoFetch:
         from scripts.ops.swe_team_runner import fetch_github_tickets
 
         store = FakeStore()
-        tickets = fetch_github_tickets(store, github_account="", repos=["test-org/SWE-Sandbox"])
+        tickets = fetch_github_tickets(store, github_account="", repos=["your-org/SWE-Sandbox"])
         assert tickets == []
 
     @patch("scripts.ops.swe_team_runner.subprocess.run", side_effect=_mock_subprocess_run)
@@ -251,7 +251,7 @@ class TestMultiRepoFetch:
         from scripts.ops.swe_team_runner import fetch_github_tickets
 
         store = FakeStore()
-        tickets = fetch_github_tickets(store, github_account="test-bot", repos=[])
+        tickets = fetch_github_tickets(store, github_account="swe-squad-alpha", repos=[])
         assert tickets == []
 
     @patch("scripts.ops.swe_team_runner.subprocess.run")
@@ -263,8 +263,8 @@ class TestMultiRepoFetch:
 
         store = FakeStore()
         tickets = fetch_github_tickets(
-            store, github_account="test-bot",
-            repos=["test-org/SWE-Sandbox-HealthTrack"],
+            store, github_account="swe-squad-alpha",
+            repos=["your-org/SWE-Sandbox-HealthTrack"],
         )
         assert tickets == []
 
@@ -277,8 +277,8 @@ class TestMultiRepoFetch:
 
         store = FakeStore()
         tickets = fetch_github_tickets(
-            store, github_account="test-bot",
-            repos=["test-org/SWE-Sandbox-HealthTrack"],
+            store, github_account="swe-squad-alpha",
+            repos=["your-org/SWE-Sandbox-HealthTrack"],
         )
         assert tickets == []
 
@@ -373,27 +373,27 @@ class TestPipelineIntegration:
         """Simulate real E2E: 4 repos, issues on all, assigned only on 2."""
         global _MOCK_ISSUES
         _MOCK_ISSUES = {
-            "test-org/SWE-Sandbox-HealthTrack:test-bot": [
+            "your-org/SWE-Sandbox-HealthTrack:swe-squad-alpha": [
                 _make_gh_issue(1, "[CRITICAL] API 500", labels=["bug", "critical"]),
             ],
-            "test-org/SWE-Sandbox-ShopStream:test-bot": [
+            "your-org/SWE-Sandbox-ShopStream:swe-squad-alpha": [
                 _make_gh_issue(1, "[HIGH] Cart calc wrong", labels=["bug"]),
             ],
-            "test-org/SWE-Sandbox-GreenGrid:test-bot": [],
-            "test-org/SWE-Sandbox-EduPath:test-bot": [],
+            "your-org/SWE-Sandbox-GreenGrid:swe-squad-alpha": [],
+            "your-org/SWE-Sandbox-EduPath:swe-squad-alpha": [],
         }
 
         from scripts.ops.swe_team_runner import fetch_github_tickets
 
         store = FakeStore()
         repos = [
-            "test-org/SWE-Sandbox-HealthTrack",
-            "test-org/SWE-Sandbox-ShopStream",
-            "test-org/SWE-Sandbox-GreenGrid",
-            "test-org/SWE-Sandbox-EduPath",
+            "your-org/SWE-Sandbox-HealthTrack",
+            "your-org/SWE-Sandbox-ShopStream",
+            "your-org/SWE-Sandbox-GreenGrid",
+            "your-org/SWE-Sandbox-EduPath",
         ]
 
-        tickets = fetch_github_tickets(store, github_account="test-bot", repos=repos)
+        tickets = fetch_github_tickets(store, github_account="swe-squad-alpha", repos=repos)
 
         # Verify: exactly 2 tickets
         assert len(tickets) == 2
@@ -401,8 +401,8 @@ class TestPipelineIntegration:
         # Verify: correct repos
         repos_seen = {t.metadata["repo"] for t in tickets}
         assert repos_seen == {
-            "test-org/SWE-Sandbox-HealthTrack",
-            "test-org/SWE-Sandbox-ShopStream",
+            "your-org/SWE-Sandbox-HealthTrack",
+            "your-org/SWE-Sandbox-ShopStream",
         }
 
         # Verify: no tickets from GreenGrid or EduPath
@@ -412,15 +412,15 @@ class TestPipelineIntegration:
 
         # Verify: severity correctly detected
         severity_map = {t.metadata["repo"]: t.severity for t in tickets}
-        assert severity_map["test-org/SWE-Sandbox-HealthTrack"] == TicketSeverity.CRITICAL
-        assert severity_map["test-org/SWE-Sandbox-ShopStream"] == TicketSeverity.HIGH
+        assert severity_map["your-org/SWE-Sandbox-HealthTrack"] == TicketSeverity.CRITICAL
+        assert severity_map["your-org/SWE-Sandbox-ShopStream"] == TicketSeverity.HIGH
 
     @patch("scripts.ops.swe_team_runner.subprocess.run", side_effect=_mock_subprocess_run)
     def test_no_duplicates_across_pipeline_runs(self, mock_run):
         """Run pipeline 3 times — only first should produce tickets."""
         global _MOCK_ISSUES
         _MOCK_ISSUES = {
-            "test-org/SWE-Sandbox-HealthTrack:test-bot": [
+            "your-org/SWE-Sandbox-HealthTrack:swe-squad-alpha": [
                 _make_gh_issue(1, "[CRITICAL] API 500", labels=["bug", "critical"]),
             ],
         }
@@ -428,20 +428,20 @@ class TestPipelineIntegration:
         from scripts.ops.swe_team_runner import fetch_github_tickets
 
         store = FakeStore()
-        repos = ["test-org/SWE-Sandbox-HealthTrack"]
+        repos = ["your-org/SWE-Sandbox-HealthTrack"]
 
         # Run 1: should get 1 ticket
-        run1 = fetch_github_tickets(store, github_account="test-bot", repos=repos)
+        run1 = fetch_github_tickets(store, github_account="swe-squad-alpha", repos=repos)
         assert len(run1) == 1
         for t in run1:
             store.add(t)
 
         # Run 2: dedup should prevent duplicates
-        run2 = fetch_github_tickets(store, github_account="test-bot", repos=repos)
+        run2 = fetch_github_tickets(store, github_account="swe-squad-alpha", repos=repos)
         assert len(run2) == 0
 
         # Run 3: still no duplicates
-        run3 = fetch_github_tickets(store, github_account="test-bot", repos=repos)
+        run3 = fetch_github_tickets(store, github_account="swe-squad-alpha", repos=repos)
         assert len(run3) == 0
 
     @patch("scripts.ops.swe_team_runner.subprocess.run", side_effect=_mock_subprocess_run)
@@ -449,7 +449,7 @@ class TestPipelineIntegration:
         """One repo fails, others still work."""
         global _MOCK_ISSUES
         _MOCK_ISSUES = {
-            "test-org/SWE-Sandbox-HealthTrack:test-bot": [
+            "your-org/SWE-Sandbox-HealthTrack:swe-squad-alpha": [
                 _make_gh_issue(1, "Bug", labels=["bug"]),
             ],
             # ShopStream not in mock → will get empty response (not error)
@@ -458,8 +458,8 @@ class TestPipelineIntegration:
         from scripts.ops.swe_team_runner import fetch_github_tickets
 
         store = FakeStore()
-        repos = ["test-org/SWE-Sandbox-HealthTrack", "test-org/SWE-Sandbox-ShopStream"]
-        tickets = fetch_github_tickets(store, github_account="test-bot", repos=repos)
+        repos = ["your-org/SWE-Sandbox-HealthTrack", "your-org/SWE-Sandbox-ShopStream"]
+        tickets = fetch_github_tickets(store, github_account="swe-squad-alpha", repos=repos)
         assert len(tickets) == 1  # HealthTrack works, ShopStream returns empty
 
     @patch("scripts.ops.swe_team_runner.subprocess.run", side_effect=_mock_subprocess_run)
@@ -469,7 +469,7 @@ class TestPipelineIntegration:
 
         global _MOCK_ISSUES
         _MOCK_ISSUES = {
-            "test-org/SWE-Sandbox:test-bot": [
+            "your-org/SWE-Sandbox:swe-squad-alpha": [
                 _make_gh_issue(99, "Fallback issue", labels=["bug"]),
             ],
         }
@@ -477,10 +477,10 @@ class TestPipelineIntegration:
         from scripts.ops.swe_team_runner import fetch_github_tickets
 
         store = FakeStore()
-        with patch.dict(os.environ, {"SWE_GITHUB_REPO": "test-org/SWE-Sandbox"}):
-            tickets = fetch_github_tickets(store, github_account="test-bot")
+        with patch.dict(os.environ, {"SWE_GITHUB_REPO": "your-org/SWE-Sandbox"}):
+            tickets = fetch_github_tickets(store, github_account="swe-squad-alpha")
         assert len(tickets) == 1
-        assert tickets[0].metadata["repo"] == "test-org/SWE-Sandbox"
+        assert tickets[0].metadata["repo"] == "your-org/SWE-Sandbox"
 
 
 # ── Test: Scanner Multi-Repo ─────────────────────────────────────────────────
@@ -496,14 +496,14 @@ class TestScannerMultiRepo:
 
         from src.swe_team.github_scanner import GitHubIssueScanner, GitHubScannerConfig
 
-        config = GitHubScannerConfig(repo="test-org/SWE-Sandbox-HealthTrack")
+        config = GitHubScannerConfig(repo="your-org/SWE-Sandbox-HealthTrack")
         scanner = GitHubIssueScanner(config)
         scanner.scan()
 
         # Verify --repo was passed
         call_args = mock_run.call_args[0][0]
         assert "--repo" in call_args
-        assert "test-org/SWE-Sandbox-HealthTrack" in call_args
+        assert "your-org/SWE-Sandbox-HealthTrack" in call_args
 
     @patch("src.swe_team.github_scanner.subprocess.run")
     def test_scanner_picks_up_bug_label(self, mock_run):
@@ -517,17 +517,20 @@ class TestScannerMultiRepo:
         for i in issues:
             i["createdAt"] = "2026-03-27T00:00:00Z"
             i["assignees"] = []
-        issues[0]["assignees"] = [{"login": "test-bot"}]
+        issues[0]["assignees"] = [{"login": "swe-squad-alpha"}]
 
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout=json.dumps(issues), stderr=""
-        )
+        # First call: fetch open issues. Subsequent calls: merged PR check → no PRs
+        _no_prs = MagicMock(returncode=0, stdout="[]", stderr="")
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps(issues), stderr=""),
+            _no_prs,  # PR check for issue #1 (assigned → eligible)
+        ]
 
         from src.swe_team.github_scanner import GitHubIssueScanner, GitHubScannerConfig
 
         config = GitHubScannerConfig(
-            repo="test-org/SWE-Sandbox-HealthTrack",
-            github_account="test-bot",
+            repo="your-org/SWE-Sandbox-HealthTrack",
+            github_account="swe-squad-alpha",
         )
         # Provide empty known sets to avoid disk-persisted dedup state
         scanner = GitHubIssueScanner(config, known_fingerprints=set(), known_issue_numbers=set())
@@ -550,7 +553,7 @@ class TestScannerMultiRepo:
 
         from src.swe_team.github_scanner import GitHubIssueScanner, GitHubScannerConfig
 
-        config = GitHubScannerConfig(repo="test-org/SWE-Sandbox-HealthTrack")
+        config = GitHubScannerConfig(repo="your-org/SWE-Sandbox-HealthTrack")
         scanner = GitHubIssueScanner(config, known_issue_numbers={5})
         tickets = scanner.scan()
         assert len(tickets) == 0

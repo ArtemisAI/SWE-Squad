@@ -44,8 +44,8 @@ roles:
       - code_review
     models: [gemini-2.5-flash-thinking, gemini-2.5-pro]
 
-  openclaw:
-    description: "Communication relay — messaging only"
+  restricted:
+    description: "Restricted agent — messaging and notification only (no code generation)"
     enabled: true
     permissions:
       - messaging

@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from src.swe_team.rate_limiter import RateLimitCooldown
+
 logger = logging.getLogger(__name__)
 
 
@@ -418,12 +420,16 @@ class ParallelExecutor:
                     duration_s=round(duration, 2),
                     ticket=ticket,
                 )
+            except RateLimitCooldown:
+                raise  # Must propagate to daemon loop for global cooldown
             except Exception as exc:
                 duration = time.monotonic() - start
                 self._metrics.record_investigation(duration, False)
+                error_msg = str(exc) if str(exc) else f"{type(exc).__name__} (no message)"
                 logger.exception(
-                    "Parallel investigation failed for %s",
+                    "Parallel investigation failed for %s: %s",
                     getattr(ticket, "ticket_id", "unknown"),
+                    error_msg,
                 )
                 if self._on_ticket_complete:
                     try:
@@ -435,7 +441,7 @@ class ParallelExecutor:
                     task_type="investigation",
                     success=False,
                     duration_s=round(duration, 2),
-                    error=str(exc),
+                    error=error_msg,
                     ticket=ticket,
                 )
             finally:
@@ -495,12 +501,16 @@ class ParallelExecutor:
                     duration_s=round(duration, 2),
                     ticket=ticket,
                 )
+            except RateLimitCooldown:
+                raise  # Must propagate to daemon loop for global cooldown
             except Exception as exc:
                 duration = time.monotonic() - start
                 self._metrics.record_development(duration, False)
+                error_msg = str(exc) if str(exc) else f"{type(exc).__name__} (no message)"
                 logger.exception(
-                    "Parallel development failed for %s",
+                    "Parallel development failed for %s: %s",
                     getattr(ticket, "ticket_id", "unknown"),
+                    error_msg,
                 )
                 if self._on_ticket_complete:
                     try:
@@ -512,7 +522,7 @@ class ParallelExecutor:
                     task_type="development",
                     success=False,
                     duration_s=round(duration, 2),
-                    error=str(exc),
+                    error=error_msg,
                     ticket=ticket,
                 )
             finally:
@@ -546,14 +556,17 @@ class ParallelExecutor:
                 try:
                     result = future.result()
                     results.append(result)
+                except RateLimitCooldown:
+                    raise  # Must propagate to daemon loop for global cooldown
                 except Exception as exc:
-                    logger.exception("Future raised unexpected exception")
+                    error_msg = str(exc) if str(exc) else f"{type(exc).__name__} (no message)"
+                    logger.exception("Future raised unexpected exception: %s", error_msg)
                     results.append(TaskResult(
                         ticket_id="unknown",
                         task_type="unknown",
                         success=False,
                         duration_s=0.0,
-                        error=str(exc),
+                        error=error_msg,
                     ))
         except TimeoutError:
             # Collect partial results — don't discard completed work

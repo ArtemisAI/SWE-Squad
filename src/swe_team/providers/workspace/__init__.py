@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
+from src.swe_team.providers.schema import ProviderParameter
 from src.swe_team.providers.workspace.base import WorkspaceProvider
 from src.swe_team.providers.workspace.git_worktree import GitWorktreeProvider
 
@@ -20,11 +21,18 @@ logger = logging.getLogger(__name__)
 # Registry of provider name → factory callable.
 # Each factory receives (config: dict) and returns a WorkspaceProvider.
 _REGISTRY: Dict[str, Any] = {}
+_PARAMETER_SCHEMAS: Dict[str, list[ProviderParameter]] = {}
 
 
-def register_workspace_provider(name: str, factory: Any) -> None:
+def register_workspace_provider(
+    name: str,
+    factory: Any,
+    *,
+    parameters: Optional[list[ProviderParameter]] = None,
+) -> None:
     """Register a workspace provider factory by name."""
     _REGISTRY[name] = factory
+    _PARAMETER_SCHEMAS[name] = list(parameters or [])
 
 
 def _git_worktree_factory(config: Dict[str, Any]) -> WorkspaceProvider:
@@ -33,7 +41,25 @@ def _git_worktree_factory(config: Dict[str, Any]) -> WorkspaceProvider:
 
 
 # Register built-in providers
-register_workspace_provider("git-worktree", _git_worktree_factory)
+register_workspace_provider(
+    "git-worktree",
+    _git_worktree_factory,
+    parameters=[
+        {
+            "name": "base_dir",
+            "type": "string",
+            "required": False,
+            "description": "Directory where worktrees are created",
+        },
+        {
+            "name": "keep_days",
+            "type": "number",
+            "required": False,
+            "default": 7,
+            "description": "How long to keep inactive worktrees",
+        },
+    ],
+)
 
 
 def create_workspace_provider(
@@ -71,9 +97,30 @@ def list_workspace_providers() -> list[str]:
     return sorted(_REGISTRY.keys())
 
 
+def get_workspace_provider_parameters(provider_name: str) -> list[ProviderParameter]:
+    """Return provider parameter schema for dynamic config forms."""
+    if provider_name not in _REGISTRY:
+        available = ", ".join(sorted(_REGISTRY.keys())) or "(none)"
+        raise ValueError(
+            f"Unknown workspace provider '{provider_name}'. "
+            f"Available: {available}"
+        )
+    return list(_PARAMETER_SCHEMAS.get(provider_name, []))
+
+
+def list_workspace_provider_parameters() -> Dict[str, list[ProviderParameter]]:
+    """Return parameter schemas for all registered workspace providers."""
+    return {
+        name: list(_PARAMETER_SCHEMAS.get(name, []))
+        for name in sorted(_REGISTRY.keys())
+    }
+
+
 __all__ = [
     "GitWorktreeProvider",
     "create_workspace_provider",
     "list_workspace_providers",
+    "list_workspace_provider_parameters",
+    "get_workspace_provider_parameters",
     "register_workspace_provider",
 ]

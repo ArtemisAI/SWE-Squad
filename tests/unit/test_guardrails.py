@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import threading
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Any, List
 from unittest.mock import MagicMock
 
 import pytest
 
+from src.swe_team.cost_tracker import BudgetPolicy, CostEvent, InMemoryCostTracker
 from src.swe_team.guardrails import (
     GuardrailDecision,
     GuardrailHealth,
@@ -334,6 +336,91 @@ class TestCombinedGates:
         assert "circuit_breaker" in d.evaluated_gates
         assert "all_clear" in d.evaluated_gates
 
+
+# ── Per-team overrides ────────────────────────────────────────────
+
+
+class TestPerTeamOverrides:
+    def _mock_governor(self, max_agents=5):
+        gov = MagicMock()
+        decision = MagicMock()
+        decision.allow_new_work = True
+        decision.max_agents = max_agents
+        decision.priority_floor = 4
+        decision.audit_trail = "test"
+        gov.get_concurrency_decision.return_value = decision
+        return gov
+
+    def test_team_budget_isolated(self):
+        tracker = InMemoryCostTracker()
+        tracker.set_budget_policy(BudgetPolicy(team_id="alpha", daily_budget_cents=5000))
+        tracker.set_budget_policy(BudgetPolicy(team_id="beta", daily_budget_cents=5000))
+        tracker._events.append(CostEvent(
+            team_id="alpha",
+            model="sonnet",
+            input_tokens=0,
+            output_tokens=0,
+            cost_cents=200.0,
+            operation="develop",
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        ))
+        tracker._events.append(CostEvent(
+            team_id="beta",
+            model="sonnet",
+            input_tokens=0,
+            output_tokens=0,
+            cost_cents=200.0,
+            operation="develop",
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        ))
+
+        coordinator = GuardrailsCoordinator(
+            config={"teams": {"alpha": {"budget_daily": 1.0}, "beta": {"budget_daily": 10.0}}}
+        )
+        coordinator.set_cost_tracker(tracker)
+
+        alpha = coordinator.evaluate(team_id="alpha")
+        beta = coordinator.evaluate(team_id="beta")
+
+        assert alpha.allowed is False
+        assert alpha.gate == "budget_gate"
+        assert beta.allowed is True
+
+    def test_team_circuit_breaker_state_isolated(self):
+        coordinator = GuardrailsCoordinator()
+        alpha_cb = MagicMock(is_paused=True, failure_rate=0.9, _paused_until="later")
+        beta_cb = MagicMock(is_paused=False, failure_rate=0.1, _paused_until=None)
+        coordinator.set_circuit_breaker(alpha_cb, team_id="alpha")
+        coordinator.set_circuit_breaker(beta_cb, team_id="beta")
+
+        alpha = coordinator.evaluate(team_id="alpha")
+        beta = coordinator.evaluate(team_id="beta")
+
+        assert alpha.allowed is False
+        assert alpha.gate == "circuit_breaker"
+        assert beta.allowed is True
+
+    def test_global_fallback_used_when_team_missing_overrides(self):
+        coordinator = GuardrailsCoordinator(config={"max_concurrent": 2})
+        coordinator.set_usage_governor(self._mock_governor(max_agents=6))
+
+        team_without_override = coordinator.evaluate(team_id="gamma", current_agents=2)
+        assert team_without_override.allowed is False
+        assert "max 2" in team_without_override.reason
+
+    def test_team_circuit_breaker_threshold_override(self):
+        coordinator = GuardrailsCoordinator(
+            config={"circuit_breaker_threshold": 0.95, "teams": {"alpha": {"circuit_breaker_threshold": 0.5}}}
+        )
+        cb = MagicMock(is_paused=False, failure_rate=0.6)
+        coordinator.set_circuit_breaker(cb)
+
+        alpha = coordinator.evaluate(team_id="alpha")
+        gamma = coordinator.evaluate(team_id="gamma")
+
+        assert alpha.allowed is False
+        assert alpha.gate == "circuit_breaker"
+        assert gamma.allowed is True
 
 # ── GuardrailDecision ──────────────────────────────────────────
 

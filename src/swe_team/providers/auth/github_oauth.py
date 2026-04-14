@@ -8,10 +8,13 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import time
 import urllib.parse
 import urllib.request
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 _GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 _GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
@@ -50,7 +53,7 @@ class GitHubOAuthProvider:
         """Return the GitHub OAuth authorize URL with the given state token."""
         params = urllib.parse.urlencode({
             "client_id": self._client_id,
-            "scope": "read:org",
+            "scope": "read:user read:org repo",
             "state": state,
         })
         return f"{_GITHUB_AUTHORIZE_URL}?{params}"
@@ -65,6 +68,7 @@ class GitHubOAuthProvider:
         user_info = self._fetch_user(token)
         orgs = self._fetch_orgs(token)
         user_info["orgs"] = orgs
+        user_info["access_token"] = token
         return user_info
 
     # ------------------------------------------------------------------
@@ -126,14 +130,26 @@ class GitHubOAuthProvider:
         }
 
     def is_authorized(self, user_info: dict) -> bool:
-        """Return True if the user belongs to at least one of the allowed orgs.
+        """Return True if the user is allowed to access the dashboard.
 
-        If ``allowed_orgs`` is empty, all authenticated users are allowed.
+        Authorization passes if ANY of these conditions are met:
+        1. ``allowed_orgs`` is empty — all authenticated users are allowed
+        2. User's login matches an entry in ``allowed_orgs`` (covers org owners
+           and personal accounts that don't show up in /user/orgs)
+        3. User belongs to at least one of the allowed orgs
+
+        This ensures the org owner, org members, and explicitly-allowed
+        individual accounts can all log in.
         """
         if not self._allowed_orgs:
             return True
+        allowed = set(self._allowed_orgs)
+        # Check if the user's own login is in the allowed list
+        if user_info.get("login", "") in allowed:
+            return True
+        # Check org memberships
         user_orgs = set(user_info.get("orgs", []))
-        return bool(user_orgs & set(self._allowed_orgs))
+        return bool(user_orgs & allowed)
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -211,8 +227,13 @@ class GitHubOAuthProvider:
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read().decode())
-        except Exception:
+        except Exception as exc:
+            # GitHub /user/orgs can fail if the org has not granted OAuth app access.
+            # Log a warning so it is visible in the server log, then fall through.
+            # is_authorized() will still return True when allowed_orgs is empty.
+            logger.warning("GitHub /user/orgs fetch failed (org may have restricted OAuth access): %s", exc)
             return []
         if not isinstance(data, list):
+            logger.warning("GitHub /user/orgs returned unexpected type: %r", type(data))
             return []
         return [org.get("login", "") for org in data if org.get("login")]

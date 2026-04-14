@@ -44,7 +44,7 @@ from src.swe_team.models import SWETicket, TicketSeverity, TicketStatus
 from src.swe_team.investigator import InvestigatorAgent
 from src.swe_team.developer import DeveloperAgent
 from src.swe_team.config import RateLimitConfig
-from src.swe_team.rate_limiter import RateLimitTracker
+from src.swe_team.rate_limiter import RateLimitCooldown, RateLimitTracker
 
 
 logging.logAsyncioTasks = False
@@ -540,9 +540,10 @@ class TestGeminiCLIAdapter:
     """GeminiCLIAdapter: Gemini-specific config and invocation."""
 
     def test_default_config(self):
+        from src.a2a.adapters.gemini_adapter import _DEFAULT_GEMINI_PATH
         adapter = GeminiCLIAdapter()
         assert adapter._name == "gemini-cli"
-        assert adapter._command == "/usr/bin/gemini"
+        assert adapter._command == _DEFAULT_GEMINI_PATH
         assert adapter._default_model == "gemini-2.5-flash"
         assert adapter._prompt_via_stdin is False
 
@@ -587,7 +588,8 @@ class TestGeminiCLIAdapter:
 
         assert result == "gemini says hello"
         cmd = mock_run.call_args[0][0]
-        assert cmd[0] == "/usr/bin/gemini"
+        from src.a2a.adapters.gemini_adapter import _DEFAULT_GEMINI_PATH
+        assert cmd[0] == _DEFAULT_GEMINI_PATH
         assert "-p" in cmd
 
     def test_invoke_with_model_override(self):
@@ -1042,9 +1044,9 @@ class TestInvestigatorFallback:
                 rate_limit_config=rl_config,
                 fallback_agents=[mock_fallback],
             )
-            result = agent.investigate(ticket)
+            with pytest.raises(RateLimitCooldown):
+                agent.investigate(ticket)
 
-        assert result is False
         assert ticket.metadata.get("rate_limited") is True
 
     def test_investigator_fallback_skips_unavailable(self, tmp_path):
@@ -1116,9 +1118,16 @@ class TestInvestigatorFallback:
         ticket.transition(TicketStatus.TRIAGED)
 
         def claude_success(*args, **kwargs):
+            _valid_report = (
+                "Root Cause: A retry loop silently swallowed a timeout from the upstream proxy, "
+                "so the worker emitted incomplete diagnostics and the orchestrator persisted an invalid response.\n\n"
+                "Affected Files: src/swe_team/investigator.py, src/swe_team/developer.py, tests/unit/test_investigator.py\n\n"
+                "Fix Plan: Validate report structure before persistence, reject known Claude error envelopes, "
+                "require minimum report length, and keep sectioned investigation output for downstream automation."
+            )
             result = MagicMock()
             result.returncode = 0
-            result.stdout = "Root cause: found\n"
+            result.stdout = _valid_report + "\n"
             result.stderr = ""
             return result
 

@@ -43,3 +43,17 @@ SWE_SQUAD_DIR=/path/to/SWE-Squad
 # Prevents Supabase free-tier from pausing after 7 days of inactivity.
 # Only fires a ping if no organic traffic in the last 5 days.
 0 12 * * * cd $SWE_SQUAD_DIR && python scripts/ops/swe_team_runner.py --keep-alive -v >> logs/cron.log 2>&1
+
+# ── Webhook listener (persistent, via systemd — preferred) ─────────────────
+# The webhook listener is best run as a systemd user service:
+#   systemctl --user enable --now swe-webhook.service
+# If systemd is not available, run via cron @reboot:
+# @reboot cd $SWE_SQUAD_DIR && python3 scripts/ops/webhook_listener.py >> logs/webhook.log 2>&1 &
+
+# PR sync — links PRs to knowledge graph (runs every 5 min)
+*/5 * * * * cd $SWE_SQUAD_DIR && python3 scripts/ops/pr_sync.py >> logs/pr_sync.log 2>&1
+
+# ── Manual code propagation (fallback if webhook is down) ──────────────────
+# Propagate code to all workers every 15 min as a safety net.
+# Not needed if webhook_listener.py or git_push_propagate.sh is in use.
+# */15 * * * * cd $SWE_SQUAD_DIR && bash scripts/ops/propagate.sh >> logs/propagate.log 2>&1

@@ -183,16 +183,16 @@ class RateLimitConfig:
     Controls retry behaviour when the CLI returns a rate limit error.
     """
 
-    max_retries_on_429: int = 3
-    initial_backoff_seconds: float = 30
-    max_backoff_seconds: float = 300
+    max_retries_on_429: int = 5
+    initial_backoff_seconds: float = 60
+    max_backoff_seconds: float = 900
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RateLimitConfig":
         return cls(
-            max_retries_on_429=data.get("max_retries_on_429", 3),
-            initial_backoff_seconds=data.get("initial_backoff_seconds", 30),
-            max_backoff_seconds=data.get("max_backoff_seconds", 300),
+            max_retries_on_429=data.get("max_retries_on_429", 5),
+            initial_backoff_seconds=data.get("initial_backoff_seconds", 60),
+            max_backoff_seconds=data.get("max_backoff_seconds", 900),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -239,9 +239,12 @@ class CycleConfig:
     severity_filter: str = "high"   # Ignore tickets below this severity
     max_investigation_workers: int = 8  # Thread-pool size for parallel investigations
     max_reinvestigations: int = 1   # Max re-investigation attempts after developer failure
+    blocked_ticket_timeout_hours: int = 4
+    blocked_ticket_escalation_hours: int = 24
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CycleConfig":
+        stale_cfg = data.get("stale_ticket_timeouts", {}) or {}
         return cls(
             max_new_tickets_per_cycle=data.get("max_new_tickets_per_cycle", 20),
             max_investigations_per_cycle=data.get("max_investigations_per_cycle", 5),
@@ -250,6 +253,14 @@ class CycleConfig:
             severity_filter=data.get("severity_filter", "high"),
             max_investigation_workers=data.get("max_investigation_workers", 8),
             max_reinvestigations=data.get("max_reinvestigations", 1),
+            blocked_ticket_timeout_hours=data.get(
+                "blocked_ticket_timeout_hours",
+                stale_cfg.get("blocked_ticket_timeout_hours", 4),
+            ),
+            blocked_ticket_escalation_hours=data.get(
+                "blocked_ticket_escalation_hours",
+                stale_cfg.get("blocked_ticket_escalation_hours", 24),
+            ),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -261,6 +272,10 @@ class CycleConfig:
             "severity_filter": self.severity_filter,
             "max_investigation_workers": self.max_investigation_workers,
             "max_reinvestigations": self.max_reinvestigations,
+            "stale_ticket_timeouts": {
+                "blocked_ticket_timeout_hours": self.blocked_ticket_timeout_hours,
+                "blocked_ticket_escalation_hours": self.blocked_ticket_escalation_hours,
+            },
         }
 
 
@@ -331,7 +346,7 @@ class FallbackAgentConfig:
 
 @dataclass
 class MemoryConfig:
-    """Settings for semantic ticket memory (pgvector embeddings)."""
+    """Settings for semantic ticket memory (pgvector embeddings) and memory worker service."""
 
     embedding_model: str = "bge-m3"
     embedding_dimensions: int = 1024
@@ -342,6 +357,10 @@ class MemoryConfig:
     cluster_threshold: float = 0.85
     dedup_threshold: float = 0.92
     similarity_edge_threshold: float = 0.80
+    # Memory worker service (claude-mem Supabase adaptation)
+    enabled: bool = False
+    worker_host: str = "127.0.0.1"
+    worker_port: int = 37777
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MemoryConfig":
@@ -358,6 +377,17 @@ class MemoryConfig:
             cluster_threshold=data.get("cluster_threshold", 0.85),
             dedup_threshold=data.get("dedup_threshold", 0.92),
             similarity_edge_threshold=data.get("similarity_edge_threshold", 0.80),
+            enabled=data.get("enabled", False),
+            worker_host=data.get(
+                "worker_host",
+                os.environ.get("MEMORY_WORKER_HOST", "127.0.0.1"),
+            ),
+            worker_port=int(
+                data.get(
+                    "worker_port",
+                    os.environ.get("MEMORY_WORKER_PORT", 37777),
+                )
+            ),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -371,6 +401,9 @@ class MemoryConfig:
             "cluster_threshold": self.cluster_threshold,
             "dedup_threshold": self.dedup_threshold,
             "similarity_edge_threshold": self.similarity_edge_threshold,
+            "enabled": self.enabled,
+            "worker_host": self.worker_host,
+            "worker_port": self.worker_port,
         }
 
 
@@ -450,6 +483,92 @@ class RoutingConfig:
         }
 
 
+@dataclass
+class TeamConfig:
+    """Configuration for an execution team in the SWE fleet."""
+
+    name: str
+    vm: str = ""
+    github_account: str = ""
+    role: str = "full"  # developer | investigator | full
+    max_concurrent: int = 3
+    cost_budget_daily: float = 50.0
+    specialization: List[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, name: str, data: Dict[str, Any]) -> "TeamConfig":
+        role = data.get("role", "full")
+        if role not in {"developer", "investigator", "full"}:
+            raise ValueError(
+                f"Team {name!r} has invalid role {role!r}: expected one of developer|investigator|full"
+            )
+
+        max_concurrent = int(data.get("max_concurrent", 3))
+        if max_concurrent <= 0:
+            raise ValueError(
+                f"Team {name!r} has invalid max_concurrent={max_concurrent}: expected > 0"
+            )
+
+        cost_budget_daily = float(data.get("cost_budget_daily", 50.0))
+        if cost_budget_daily <= 0:
+            raise ValueError(
+                f"Team {name!r} has invalid cost_budget_daily={cost_budget_daily}: expected > 0"
+            )
+
+        raw_specialization = data.get("specialization")
+        if raw_specialization is not None and not isinstance(raw_specialization, list):
+            raise ValueError(
+                f"Team {name!r} has invalid specialization: expected list, got {type(raw_specialization).__name__}"
+            )
+        return cls(
+            name=name,
+            vm=data.get("vm", ""),
+            github_account=data.get("github_account", ""),
+            role=role,
+            max_concurrent=max_concurrent,
+            cost_budget_daily=cost_budget_daily,
+            specialization=raw_specialization or [],
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "vm": self.vm,
+            "github_account": self.github_account,
+            "role": self.role,
+            "max_concurrent": self.max_concurrent,
+            "cost_budget_daily": self.cost_budget_daily,
+            "specialization": self.specialization,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Stale ticket timeout settings
+# ---------------------------------------------------------------------------
+
+@dataclass
+class StaleTicketTimeoutsConfig:
+    """Timeout thresholds for stale ticket recovery."""
+
+    investigating_hours: int = 4
+    in_development_hours: int = 2
+    in_review_hours: int = 24
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "StaleTicketTimeoutsConfig":
+        return cls(
+            investigating_hours=int(data.get("investigating_hours", 4)),
+            in_development_hours=int(data.get("in_development_hours", 2)),
+            in_review_hours=int(data.get("in_review_hours", 24)),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "investigating_hours": self.investigating_hours,
+            "in_development_hours": self.in_development_hours,
+            "in_review_hours": self.in_review_hours,
+        }
+
+
 # ---------------------------------------------------------------------------
 # Top-level SWE team configuration
 # ---------------------------------------------------------------------------
@@ -471,7 +590,13 @@ class SWETeamConfig:
     throttle: ThrottleConfig = field(default_factory=ThrottleConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     routing: RoutingConfig = field(default_factory=RoutingConfig)
+    # Fleet team registry keyed by team id (e.g., "alpha", "beta", "gamma")
+    teams: Dict[str, TeamConfig] = field(default_factory=dict)
+    stale_ticket_timeouts: StaleTicketTimeoutsConfig = field(
+        default_factory=StaleTicketTimeoutsConfig
+    )
     repos: List[Dict[str, Any]] = field(default_factory=list)
+    github_repos: List[str] = field(default_factory=list)
     ticket_store_path: str = "data/swe_team/tickets.json"
     a2a_hub_url: str = "http://localhost:18790"
     enabled: bool = False
@@ -500,6 +625,14 @@ class SWETeamConfig:
         throttle = ThrottleConfig.from_dict(data.get("throttle", {}))
         execution = ExecutionConfig.from_dict(data.get("execution", {}))
         routing = RoutingConfig.from_dict(data.get("routing", {}))
+        raw_teams = data.get("teams") or {}
+        teams = {
+            team_name: TeamConfig.from_dict(team_name, team_data or {})
+            for team_name, team_data in raw_teams.items()
+        }
+        stale_ticket_timeouts = StaleTicketTimeoutsConfig.from_dict(
+            data.get("stale_ticket_timeouts", {})
+        )
         return cls(
             agents=agents,
             governance=gov,
@@ -513,7 +646,10 @@ class SWETeamConfig:
             throttle=throttle,
             execution=execution,
             routing=routing,
+            teams=teams,
+            stale_ticket_timeouts=stale_ticket_timeouts,
             repos=data.get("repos", []),
+            github_repos=data.get("github_repos", []),
             ticket_store_path=data.get(
                 "ticket_store_path", "data/swe_team/tickets.json"
             ),
@@ -538,7 +674,10 @@ class SWETeamConfig:
             "fallback_agents": [f.to_dict() for f in self.fallback_agents],
             "timing": self.timing.to_dict(),
             "execution": self.execution.to_dict(),
+            "teams": {name: team.to_dict() for name, team in self.teams.items()},
+            "stale_ticket_timeouts": self.stale_ticket_timeouts.to_dict(),
             "repos": self.repos,
+            "github_repos": self.github_repos,
             "ticket_store_path": self.ticket_store_path,
             "a2a_hub_url": self.a2a_hub_url,
             "enabled": self.enabled,

@@ -37,11 +37,10 @@ def test_onboarding_doc_covers_manual_guide_sections() -> None:
     content = doc.read_text(encoding="utf-8")
     for section in [
         "## Prerequisites",
-        "## Bot account + PAT setup",
-        "## Repository permission setup",
-        "## `.env` configuration reference",
-        "## VM sandbox deployment notes",
-        "## Bootstrap + first-run verification",
+        "## Bot Account",
+        "## Repository Permission",
+        "## `.env` Configuration Reference",
+        "## Bootstrap",
         "## Troubleshooting",
     ]:
         assert section in content

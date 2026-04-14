@@ -9,7 +9,7 @@ Usage::
 
     from src.swe_team.worktree_manager import WorktreeManager
 
-    manager = WorktreeManager(repo_root="/home/agent/SWE-Squad", pool_size=4)
+    manager = WorktreeManager(repo_root="/path/to/your-project", pool_size=4)
     wt = manager.acquire(ticket_id="abc123", branch="swe-fix/ticket-abc123")
     # ... run Claude CLI in wt.path ...
     manager.release(wt)

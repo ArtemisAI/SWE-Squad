@@ -7,69 +7,169 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- **Provider-agnostic plugin architecture** — 12 domain interfaces with 20+ built-in implementations; every external dependency is a swappable plugin registered via `swe_team.yaml`
-- **Multi-team support** — assignee-based issue isolation enables alpha/beta squad coexistence on shared infrastructure without ticket collisions
-- **Session lifecycle management** — `SessionStore` persists Claude Code sessions across daemon cycles; developer sessions fork from investigator sessions via `--fork-session`, carrying full context forward
-- **Parallel executor with graceful timeout handling** — `ParallelExecutor` runs fix attempts in isolated git worktrees with configurable concurrency and per-attempt timeouts
-- **Knowledge store with semantic similarity scoring** — `KnowledgeStore` wraps pgvector retrieval with graph-based relationship scoring for non-obvious cross-ticket connections
-- **A2A inter-agent protocol** — JSON-RPC 2.0 event bus with server, client, hub dispatch, and adapters for Gemini CLI, OpenCode, and generic CLI agents
-- **GitHub OAuth dashboard** — optional WebUI (`control_plane_api.py`) with live ticket metrics, session browser, project configuration editor, and role-based user management
-- **Control plane API** — runtime configuration of model tiers, project priority weights, and sandbox paths without daemon restart
-- **Circuit breaker** — rolling 80% development failure rate triggers a 30-minute pause; all LLM calls use capped exponential backoff
-- **Credential scanner** — pre-commit and inline scanner detects secrets (API keys, tokens, private IPs) before they reach git history
-- **Automated code review** — every fix PR is reviewed with a fail-closed merge policy; review failures block merge
-- **Multi-repo scanning** — `github_multi_repo.py` aggregates issues across all configured sandbox repos with repo-scoped fingerprints
-- **GitHub invite management** — `github_invites.py` handles bot account onboarding to new repos automatically
-- **Orchestrator agent** — dedicated `orchestrator.py` coordinates sub-agent dispatch for CRITICAL tickets; Opus orchestrates, Sonnet/Haiku implement
-- **Guardrails coordinator** — `guardrails.py` unifies circuit breaker, deployment governor, stability gate, and rate limiter into a single decision point
-- **Log formatter** — structured log output with severity coloring and machine-readable JSON mode
-- **Model probe** — runtime probe validates configured model tiers before the daemon starts
-- **Rate limiter** — token-bucket rate limiter with per-model and per-team buckets
-- **Proxy model policy** — declarative mapping of logical tier names to provider-specific model IDs
-- **Batch resolution** — bulk-resolve stale or false-positive tickets via `swe-cli batch-resolve`
-- **Scheduler** — cron-style task scheduler for recurring health checks and report generation
-- **RBAC middleware** — `@require_permission` and `@require_sandbox` decorators for all privileged agent operations
-- **Queued dispatcher** — `QueuedDispatcher` bridges `TaskQueueProvider` and `ParallelExecutor` for backpressure-safe task dispatch
-
-## [0.3.0] - 2026-03-17
-
-### Added
-- **mem0-style semantic memory** — full extraction, dedup, and confidence lifecycle
-  - `extract_memory_facts()`: distils resolved tickets into structured facts (root cause, fix, module, tags) via `gemini-3-flash` on BASE_LLM proxy before embedding — cleaner, denser embeddings
-  - `store_embedding_with_dedup()`: 0.92 cosine-similarity threshold prevents duplicate memories; `_memory_detail_score()` tuple comparison chooses richer content on merge
-  - Memory lifecycle: `memory_confidence` and `memory_accessed_at` columns; confidence increments (+0.1, cap 2.0) each time a memory is used; stale memories filtered by `max_age_days` (default 180)
-  - `match_similar_tickets` RPC updated: confidence-weighted ranking, `raw_similarity` for transparency, TTL filter
-  - `record_memory_hit()` called from investigator on every semantic context hit
-- **Standalone Telegram module** (`src/swe_team/telegram.py`) — stdlib-only Bot API client, no external deps
-- **CLI tools** (`scripts/ops/swe_cli.py`) — 6 subcommands: `status`, `tickets`, `issues`, `repos`, `summary`, `report`; all support `--json` for machine-readable output
-- **Cron support** — `crontab.example` with recommended schedules for continuous monitoring and daily reports
-- `--report daily|cycle|status` modes added to runner for cron integration
-- Cost-tracking aggregation in daily summaries
+- **React WebUI** — full-featured management dashboard built with React, TypeScript, and Vite
+  - Dashboard with real-time metrics, PR pipeline chart, and configurable refresh interval
+  - Tickets page with Kanban drag-and-drop, bulk actions, and properties panel
+  - Teams management with live status, inline editing, and VM connectivity indicators
+  - Engines page with 4-step Add Engine wizard, health checks, and BYOK API key config
+  - Visual pipeline editor using React Flow for workflow graph design
+  - Integrations hub with configure dialog, test connection, and credential management
+  - MCP Server management UI with full CRUD operations
+  - Projects page with GitHub repo linking and inline editing
+  - Activity page with filters, timeline chart, CSV export, and expandable rows
+  - Settings page with governance, cycle, and memory configuration
+  - Agents page with enable/disable toggle and inline description editing
+  - RBAC page with roles, permissions matrix, and bypass warning
+  - Organization Admin page with member management
+  - Per-account and per-project secrets management with TTL support
+  - Environment Config UI for per-project environment variables
+  - Execution Mode section on Control page
+  - Goal tree view toggle and sidebar notification badges
+  - Budget warning banner and cost limits editor
+  - Ticket activity feed with inline diffs and comments
+  - GitHub label trigger CRUD endpoints and UI
+  - Task templates and automations inbox (Scheduler)
+  - Onboarding wizard for first-time setup
+  - Mobile-responsive sidebar with slide-out drawer
+  - Error boundaries on all routes to prevent blank pages
+  - Keyboard shortcuts (j/k navigation, Enter to open, / to search, t to toggle theme)
+  - Toast notifications for ticket state changes
+  - SSE real-time updates with polling fallback
+- **GitHub OAuth authentication** — email signup + GitHub OAuth login with auto-created personal accounts
+- **Account isolation** — multi-tenant account schema with org-level scoping and team rail context
+- **Approvals API** — `/api/approvals` backend endpoints and Approvals UI page
+- **Rate limit lifecycle** — `RateLimitLifecycle` state machine with full cooldown/recovery cycle
+- **Model probe endpoint** — `POST /api/models/probe` with fallback parsing for live model testing
+- **Self-describing provider schemas** — dynamic config forms driven by provider parameter definitions
+- **Connector catalog** — Slack, Vercel, and Supabase direct connectors with catalog API
+- **Cloud VM providers** — sandbox providers for cloud platforms with instance creation methods
+- **Graph executor** — workflow graph executor with team workflow loading and runner gating
+- **Daily DB backup script** — Supabase + SQLite backup with 7-day retention
+- **Comprehensive E2E test suite** — Playwright-based, 3100+ tests at 99.7% pass rate
 
 ### Changed
-- `notifier.py` and `developer.py` rewired to use new `telegram.py` module
-- `match_similar_tickets` Supabase RPC now returns `memory_confidence` and `raw_similarity` columns
-- 327 unit tests (up from 243)
+- Sidebar reorganized into 6 clear sections with proper hierarchy
+- Pricing page uses shared config with inline editing and model management
+- Dashboard caches `costs_extended` and governor data to eliminate 3.5s response time
+- Test count: 3,766+ (up from 827 at v0.4.0)
+
+### Fixed
+- **Auth login bug** — normalized server auth response format; auto-create personal account on first OAuth login
+- **XSS via Mermaid** — sanitized Mermaid diagram rendering with audit report and tests
+- **Team rail context switching** — org scope, query invalidation, clear team on switch
+- **Mobile sidebar** — hamburger toggle and slide-out drawer with backdrop
+- **Blank pages** — ErrorBoundary on all routes; graph API payload normalization
+- **PR pipeline chart** — uses real data with graceful empty state
+- **Budget wiring** — cost tracker connected to dashboard server with API error handling
+- **Embeddings timeout** — increased timeout for large model extraction
+- **Internal references scrubbed** — removed hardcoded IPs, secrets, internal org names, and bot accounts from UI, SQL migrations, and CI/CD tooling for public repo readiness
+
+### Security
+- **Public repo scrub (Phase 5)** — removed hardcoded IPs and secrets, scrubbed internal org names from WebUI, sanitized SQL migrations, cleaned CI/CD tooling
+- **XSS prevention** — Mermaid rendering sanitization with comprehensive test coverage
+- **Time-limited secret exposure (TTL)** — setup-only secrets auto-expire after configured duration
+- **Dead code removal** — unreachable code after RBAC fix removed to reduce attack surface
+
+---
+
+## [0.5.0] - 2026-03-29 (Multi-Team Fleet & Observability)
+
+### Added
+- **Fleet orchestrator** (`scripts/ops/swe_orchestrator.py`) — pipeline intelligence + auto-remediation across multiple SWE teams
+- **VM health monitor** (`scripts/ops/swe_vm_monitor.sh`) — cron-based health monitoring for fleet infrastructure
+- **Atomic task checkout** (`src/swe_team/atomic_checkout.py`) — prevents duplicate work across VMs; `CheckoutProvider` protocol with memory + Supabase backends
+- **Fix verifier** (`src/swe_team/fix_verifier.py`) — post-merge fix verification (VERIFYING state); ensures deployed fixes actually work
+- **Audit trail system** (`src/swe_team/audit_trail.py`) — structured audit trail with file + Supabase backends; `AuditProvider` protocol
+- **Cost tracker** (`src/swe_team/cost_tracker.py`) — per-agent cost tracking with budget hard-stops; `CostTrackerProvider` protocol
+- **Migration schemas** — Supabase migrations for atomic checkout, audit trail, and cost tracking
+- **Gamma team config** — additional SWE team configuration for economy-tier operations
+
+---
+
+## [0.4.0] - 2026-03-27 (Architecture Hardening)
+
+### Added
+- **Provider-agnostic plugin architecture** — all external services behind Protocol interfaces; `EnvProvider`, `WorkspaceProvider`, `RepoMapProvider`, `SandboxProvider`, `NotificationProvider`, `IssueTracker`, `CodingEngine`, `AuthProvider` protocols with concrete adapters
+- **`ClaudeCodeEngine`** — pluggable CodingEngine wrapping the Claude CLI; injected via constructor; `shutil.which("claude")` discovery replaces hardcoded paths
+- **`AuthProvider` + `InMemoryAuthProvider`** — thread-safe per-provider auth state tracking with 3-failure circuit breaker, key rotation, and TTL expiry
+- **Session lifecycle** — `SessionStore` persists named Claude sessions; supports resume/fork across daemon restarts
+- **Projects/Repos management** — REST endpoints + CLI subcommands + dashboard UI
+- **AgentRegistry routing** — CRITICAL/complex tickets dispatched to external agents via A2A
+- **Unified GuardrailsCoordinator** — single entry point for all safety gates (circuit breaker, governor, stability, throttle)
+- **TaskQueueProvider abstraction** — in-memory priority queue with dead-letter, auto-retry, and lease heartbeat
+- **QueuedDispatcher bridge** — decouples ticket producers from consumers
+- **RBAC middleware** — `@require_permission` and `@require_sandbox` decorators with structured audit logging
+- **RepoRouter sandbox enforcement** — fail-closed routing of tickets to configured sandbox repos
+- **GitHub Actions CI workflow** — `.github/workflows/test.yml` automates PR test runs
+- **Dashboard features**: ticket detail modal, SVG donut chart, CSV export, keyboard shortcuts, skeleton screens, toast notifications, SSE real-time updates, cost trend chart, agent activity feed, responsive layout, ticket search/filter, similarity graph, auth status panel, settings tab, scheduler Gantt, RBAC viewer
+- **Rich CLI output** — color-coded tables/panels with graceful fallback
+- **Portfolio website** — static site for GitHub Pages with animated hero and feature cards
+- **219 provider tests** across 6 previously untested provider domains
+
+### Fixed
+- Architecture violations resolved — core agents refactored to use `CodingEngine` and `IssueTracker` interfaces
+- Claude CLI permission mode changed from `dangerously-skip` to secure mode with three options
+- `claim_ticket()` returns `False` on error for graceful fallback
+- Governor budget caps actively enforced at runtime
+- GitHub comment idempotency via `find_comment_by_text()` + `update_github_comment()`
+- Investigation template restructured with mandatory Fix Plan section
+- Developer `--allowedTools` format corrected to comma-separated
+- EDT-aware throttle scheduling with granular `time_bands` configuration
+
+### Security
+- Default `--dangerously-skip-permissions` changed to `False` — explicit opt-in required
+- `permission_mode` configuration: `strict`, `auto`, `bypass` modes
+
+### Changed
+- Test count: **827 to 3,766+** across this release cycle
+
+---
+
+## [0.3.0] - 2026-03-21
+
+### Added
+- **Gemini CLI fallback chain** — automatic failover when Claude Code is rate-limited; sanitizes prompts before forwarding
+- **Live model probing** — real API requests to validate each candidate model before committing
+- **Per-cycle throttle config** — `severity_filter`, `max_new_tickets_per_cycle`, `max_investigations_per_cycle` tunable via YAML
+- **Backlog pickup** — runner fetches all OPEN/TRIAGED tickets each cycle instead of skipping when no new logs detected
+- **Repo-aware investigator** — `cwd` set to correct local clone based on `ticket.repo`
+- **DeepWiki + Playwright MCP servers** — available in all agent subprocesses
+- **A2A server/client** — full JSON-RPC 2.0 implementation
+- **Rate limiter** — `ExponentialBackoff` and `RateLimitTracker`
+- **mem0-style semantic memory** — fact extraction, dedup, and confidence lifecycle
+- **Standalone Telegram module** — stdlib-only Bot API client, no external deps
+- **CLI tools** (`swe-cli`) — 6 subcommands: `status`, `tickets`, `issues`, `repos`, `summary`, `report`
+- **Cron support** with recommended schedules
+
+### Fixed
+- **False regression loop (CRITICAL)** — inverted guard caused every resolved ticket to re-file as regression
+- Investigator eligibility now accepts `OPEN` status for backlog tickets
+- Ralph Wiggum gate loosened from 0/3 to 20/50 critical/high thresholds
+
+### Changed
+- Default `EXTRACTION_MODEL`: `gemini-3-flash` to `gemini-2.5-flash-thinking`
+- 511 unit tests (up from 327)
+
+---
 
 ## [0.2.0] - 2026-03-17
 
 ### Added
-- **Opus orchestrator pattern** — Opus acts as orchestrator only for CRITICAL tickets; launches Sonnet/Haiku sub-agents for all implementation work
-- **Model tiers** (`ModelTiers` dataclass in `config.py`) — T1/T2/T3 with env var overrides (`SWE_MODEL_T1/T2/T3`); defaults: T1=haiku, T2=sonnet, T3=opus
-- **pgvector semantic memory** — bge-m3 (1024-dim) embeddings via BASE_LLM proxy stored in Supabase; `find_similar()` retrieves top-k resolved tickets by cosine similarity at investigation time
-- **Monitor self-scan recursion fix** — defense-in-depth: `exclude_patterns` config, hardcoded path guard, line-level `_SELF_LOG_RE` regex filter; prevents exponential ticket growth from agents scanning their own logs
-- **PreflightCheck gate** — validates git identity, repo accessibility, clean working tree, and required env vars before DeveloperAgent commits
-- **Closed-loop fix validation** — post-fix regression monitoring watches resolved tickets for recurrence within a configurable window; re-investigation path with parent context injection
-- **HITL escalation** — after 3 failed fix attempts or regressions, fires alert to operator
-- **Regression routing** — regression tickets always escalate to T3 (Opus) regardless of severity
-- **`orchestrate.md` program** — generic orchestration prompt for Opus with CRITICAL RULES section enforcing anti-recursion
-- **Multi-repo support** — each ticket carries a `repo` field; investigator and developer use it to set the correct working directory for coding engine invocations
-- Supabase schema: pgvector extension, `embedding vector(1024)` column, IVFFlat index, `match_similar_tickets` RPC, `swe_ticket_events` audit trail
+- **Opus orchestrator pattern** — Opus acts as orchestrator only for CRITICAL tickets; launches sub-agents for implementation
+- **Model tiers** (`ModelTiers` dataclass) — T1/T2/T3 with env var overrides
+- **pgvector semantic memory** — bge-m3 embeddings via BASE_LLM proxy stored in Supabase
+- **Monitor self-scan recursion fix** — defense-in-depth prevents agents from scanning their own logs
+- **PreflightCheck gate** — validates git identity, repo accessibility, clean tree, and env vars
+- **Closed-loop fix validation** — post-fix regression monitoring with re-investigation
+- **HITL escalation** — Telegram alert after 3 failed fix attempts
+- **Multi-repo support** — each ticket carries a `repo` field
 - 243 unit tests (up from 132)
 
 ### Fixed
 - Monitor agent scanning its own log file causing recursive ticket creation
 - Preflight validation preventing agents from operating in wrong directory context
+
+---
 
 ## [0.1.0] - 2026-03-17
 
@@ -83,7 +183,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - GitHub integration (issue creation, commenting, assignment)
 - Telegram notifications (alerts, HITL escalation, daily summaries)
 - Remote log collection via SSH/rsync
-- Model routing: Haiku (cheap) → Sonnet (routine) → Opus (critical)
+- Model routing: Haiku (cheap) to Sonnet (routine) to Opus (critical)
 - Keep/discard fix loop with git branch isolation
 - Deployment governor with complexity gates
 - Creative agent for proactive improvement proposals

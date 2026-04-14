@@ -222,6 +222,179 @@ class TestReviewBatch:
 
 
 # ---------------------------------------------------------------------------
+# Tests: _resolve_repo_root — per-ticket sandbox repo resolution
+# ---------------------------------------------------------------------------
+
+class TestResolveRepoRoot:
+    def test_returns_repo_root_when_no_repos_map(self):
+        reviewer = ReviewerAgent(repo_root="/fallback/root")
+        ticket = _ticket(metadata={"resolution_note": "fix_succeeded", "repo": "sandbox-a"})
+        assert reviewer._resolve_repo_root(ticket) == "/fallback/root"
+
+    def test_resolves_from_repos_map_by_ticket_repo_name(self):
+        reviewer = ReviewerAgent(
+            repos_map={"sandbox-a": "/path/to/sandbox-a", "sandbox-b": "/path/to/sandbox-b"},
+        )
+        ticket = _ticket(metadata={"resolution_note": "fix_succeeded", "repo": "sandbox-a"})
+        assert reviewer._resolve_repo_root(ticket) == "/path/to/sandbox-a"
+
+    def test_falls_back_to_first_entry_when_repo_not_in_map(self):
+        reviewer = ReviewerAgent(
+            repos_map={"sandbox-a": "/path/to/sandbox-a"},
+        )
+        ticket = _ticket(metadata={"resolution_note": "fix_succeeded", "repo": "unknown-repo"})
+        assert reviewer._resolve_repo_root(ticket) == "/path/to/sandbox-a"
+
+    def test_falls_back_to_first_entry_when_no_repo_metadata(self):
+        reviewer = ReviewerAgent(
+            repos_map={"sandbox-a": "/path/to/sandbox-a"},
+        )
+        ticket = _ticket(metadata={"resolution_note": "fix_succeeded"})  # no "repo" key
+        assert reviewer._resolve_repo_root(ticket) == "/path/to/sandbox-a"
+
+    def test_per_ticket_repo_root_passed_to_code_reviewer(self):
+        """review_batch must pass the per-ticket resolved path, not a single global one."""
+        reviewer = ReviewerAgent(
+            repos_map={
+                "repo-x": "/sandbox/repo-x",
+                "repo-y": "/sandbox/repo-y",
+            },
+            repo_root="/wrong/project/root",
+        )
+        store = _store()
+        t1 = _ticket(ticket_id="t1", metadata={"resolution_note": "fix_succeeded", "repo": "repo-x"})
+        t2 = _ticket(ticket_id="t2", metadata={"resolution_note": "fix_succeeded", "repo": "repo-y"})
+
+        captured_roots: list = []
+
+        def _capture_root(ticket, store, repo_root=""):
+            captured_roots.append(repo_root)
+            return True, "ok"
+
+        mock_cr = MagicMock()
+        mock_cr.review.side_effect = _capture_root
+
+        with patch(_CR_PATCH, return_value=mock_cr):
+            reviewer.review_batch([t1, t2], store)
+
+        assert captured_roots == ["/sandbox/repo-x", "/sandbox/repo-y"], (
+            f"Expected per-ticket sandbox paths, got: {captured_roots}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests: PR Safety Net in review_batch (issue #367)
+# ---------------------------------------------------------------------------
+
+class TestReviewBatchPRSafetyNet:
+    """Reviewer safety net: RESOLVED tickets without pr_url/pr_number are downgraded.
+
+    This validates the second line of defence (issue #367).  The primary gate
+    is in CodeReviewerAgent._handle_approve(); this safety net catches any code
+    path that bypasses it.
+    """
+
+    def _make_code_reviewer_that_resolves(self):
+        """Return a mock CodeReviewerAgent whose review() transitions ticket to RESOLVED."""
+        def _review_side_effect(ticket, store, repo_root=""):
+            # Simulate what _handle_approve does when it succeeds but no PR existed
+            ticket.metadata["resolution_note"] = "fix_succeeded"
+            ticket.transition(TicketStatus.RESOLVED)
+            return True, "approved: LGTM"
+
+        mock_cr = MagicMock()
+        mock_cr.review.side_effect = _review_side_effect
+        return mock_cr
+
+    def test_resolved_without_pr_downgraded_to_in_development(self):
+        """If CodeReviewerAgent resolves a ticket but no pr_url/pr_number exists,
+        the safety net must downgrade it back to IN_DEVELOPMENT."""
+        reviewer = _reviewer()
+        store = _store()
+        ticket = _ticket()
+        ticket.metadata.pop("pr_url", None)
+        ticket.metadata.pop("pr_number", None)
+
+        mock_cr = self._make_code_reviewer_that_resolves()
+        with patch(_CR_PATCH, return_value=mock_cr):
+            resolved, rejected, hitl = reviewer.review_batch([ticket], store)
+
+        assert ticket not in resolved
+        assert ticket in rejected
+        assert ticket.status == TicketStatus.IN_DEVELOPMENT
+        assert ticket.metadata.get("needs_pr") is True
+
+    def test_resolved_with_pr_url_passes_safety_net(self):
+        """A ticket with pr_url in metadata passes the safety net and stays resolved."""
+        reviewer = _reviewer()
+        store = _store()
+        ticket = _ticket()
+
+        def _review_side_effect(ticket, store, repo_root=""):
+            ticket.metadata["pr_url"] = "https://github.com/owner/repo/pull/9"
+            ticket.metadata["resolution_note"] = "fix_succeeded"
+            ticket.transition(TicketStatus.RESOLVED)
+            return True, "approved"
+
+        mock_cr = MagicMock()
+        mock_cr.review.side_effect = _review_side_effect
+        with patch(_CR_PATCH, return_value=mock_cr):
+            resolved, rejected, hitl = reviewer.review_batch([ticket], store)
+
+        assert ticket in resolved
+        assert rejected == []
+
+    def test_resolved_with_pr_number_passes_safety_net(self):
+        """A ticket with pr_number in metadata passes the safety net."""
+        reviewer = _reviewer()
+        store = _store()
+        ticket = _ticket()
+
+        def _review_side_effect(ticket, store, repo_root=""):
+            ticket.metadata["pr_number"] = 33
+            ticket.metadata["resolution_note"] = "fix_succeeded"
+            ticket.transition(TicketStatus.RESOLVED)
+            return True, "approved"
+
+        mock_cr = MagicMock()
+        mock_cr.review.side_effect = _review_side_effect
+        with patch(_CR_PATCH, return_value=mock_cr):
+            resolved, rejected, hitl = reviewer.review_batch([ticket], store)
+
+        assert ticket in resolved
+        assert rejected == []
+
+    def test_downgraded_ticket_persisted_to_store(self):
+        """When safety net fires, the downgraded ticket is persisted."""
+        reviewer = _reviewer()
+        store = _store()
+        ticket = _ticket()
+        ticket.metadata.pop("pr_url", None)
+        ticket.metadata.pop("pr_number", None)
+
+        mock_cr = self._make_code_reviewer_that_resolves()
+        with patch(_CR_PATCH, return_value=mock_cr):
+            reviewer.review_batch([ticket], store)
+
+        store.save.assert_called_with(ticket)
+
+    def test_safety_net_sets_review_feedback_metadata(self):
+        """The safety net must record why the ticket was downgraded."""
+        reviewer = _reviewer()
+        store = _store()
+        ticket = _ticket()
+        ticket.metadata.pop("pr_url", None)
+        ticket.metadata.pop("pr_number", None)
+
+        mock_cr = self._make_code_reviewer_that_resolves()
+        with patch(_CR_PATCH, return_value=mock_cr):
+            reviewer.review_batch([ticket], store)
+
+        assert "review_feedback" in ticket.metadata
+        assert "pr" in ticket.metadata["review_feedback"].lower()
+
+
+# ---------------------------------------------------------------------------
 # Tests: _store_save helper
 # ---------------------------------------------------------------------------
 

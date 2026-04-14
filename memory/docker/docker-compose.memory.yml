@@ -1,0 +1,47 @@
+# =============================================================================
+# SWE-Squad Memory Service — Docker Compose overlay
+#
+# Usage:
+#   docker compose -f docker/swe-squad/docker-compose.yml \
+#                  -f memory/docker/docker-compose.memory.yml up
+# =============================================================================
+
+services:
+  memory-worker:
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile.memory
+    container_name: swe-memory-worker
+    restart: unless-stopped
+    ports:
+      - "37777:37777"
+    environment:
+      - CLAUDE_MEM_WORKER_HOST=0.0.0.0
+      - CLAUDE_MEM_WORKER_PORT=37777
+      - CLAUDE_MEM_DATA_DIR=/data/claude-mem
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      - SWE_TEAM_ID=${SWE_TEAM_ID:-default}
+      - MEMORY_API_KEY=${MEMORY_API_KEY:-}
+      # Chroma remote mode (optional)
+      - CLAUDE_MEM_CHROMA_MODE=${CLAUDE_MEM_CHROMA_MODE:-disabled}
+      - CLAUDE_MEM_CHROMA_HOST=${CLAUDE_MEM_CHROMA_HOST:-}
+      - CLAUDE_MEM_CHROMA_PORT=${CLAUDE_MEM_CHROMA_PORT:-8000}
+    volumes:
+      - memory-data:/data/claude-mem
+    networks:
+      - swe-network
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:37777/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  memory-data:
+    driver: local
+
+networks:
+  swe-network:
+    external: true

@@ -61,6 +61,7 @@ class AdaptiveUsageGovernor:
         self._alert_throttle_minutes = alert_throttle_minutes
         # Alert state: threshold_key -> last_alert_time (monotonic)
         self._alert_times: dict[str, float] = {}
+        self._no_tracker_warned: bool = False  # suppress repeated fail-closed warnings
 
         # Build governance rules for the RuleEngine
         self._hard_limits = hard_limits or {}
@@ -174,10 +175,12 @@ class AdaptiveUsageGovernor:
         """Compute concurrency decision from tier + hierarchical rule engine."""
         # Fail-closed: no tracker means we cannot assess quota, so be conservative
         if self._token_tracker is None:
-            logger.warning(
-                "UsageGovernor: no TokenTracker — fail-closed: "
-                "max_agents=1, allow_new_work=False"
-            )
+            if not self._no_tracker_warned:
+                logger.warning(
+                    "UsageGovernor: no TokenTracker — fail-closed: "
+                    "max_agents=1, allow_new_work=False"
+                )
+                self._no_tracker_warned = True
             return ConcurrencyDecision(
                 max_parallel_agents=1,
                 reason="no TokenTracker attached (fail-closed)",

@@ -363,6 +363,61 @@ class TestRecordAfterPause:
         assert cb._paused_until is None
 
 
+class TestRecordSkip:
+    """record_skip() must never affect failure rate or trip the breaker."""
+
+    def test_skip_does_not_increment_results(self, tmp_path):
+        cb = CircuitBreaker(state_path=str(tmp_path / "cb.json"))
+        cb.record_skip()
+        assert cb._results == []
+        assert cb.failure_rate == 0.0
+
+    def test_skip_does_not_trip_breaker(self, tmp_path):
+        """Even 100 skips should not trip the circuit breaker."""
+        cb = CircuitBreaker(state_path=str(tmp_path / "cb.json"))
+        for _ in range(100):
+            cb.record_skip()
+        assert cb.is_paused is False
+        assert cb.failure_rate == 0.0
+
+    def test_skip_interleaved_with_successes_does_not_affect_rate(self, tmp_path):
+        """Skips between real successes should leave failure_rate at 0."""
+        cb = CircuitBreaker(state_path=str(tmp_path / "cb.json"))
+        for _ in range(3):
+            cb.record_result(True)
+            cb.record_skip()
+        assert cb.failure_rate == 0.0
+        assert cb.is_paused is False
+
+    def test_skip_does_not_clear_existing_failures(self, tmp_path):
+        """Skips should neither add failures nor wash out existing ones."""
+        cb = CircuitBreaker(state_path=str(tmp_path / "cb.json"))
+        cb.record_result(True)
+        cb.record_result(False)
+        cb.record_result(False)
+        rate_before = cb.failure_rate
+        cb.record_skip()
+        assert cb.failure_rate == pytest.approx(rate_before)
+        assert len(cb._results) == 3  # unchanged
+
+    def test_skip_does_not_trip_already_near_threshold(self, tmp_path):
+        """4 failures + many skips must not cross the 5-result minimum."""
+        cb = CircuitBreaker(state_path=str(tmp_path / "cb.json"))
+        for _ in range(4):
+            cb.record_result(False)
+        # 4 results — below the minimum-5 guard, should not be paused yet
+        assert cb.is_paused is False
+        for _ in range(20):
+            cb.record_skip()
+        # Still should not be paused — skips didn't push results to 5
+        assert cb.is_paused is False
+
+    def test_skip_method_exists(self, tmp_path):
+        """record_skip is a public method on CircuitBreaker."""
+        cb = CircuitBreaker(state_path=str(tmp_path / "cb.json"))
+        assert callable(getattr(cb, "record_skip", None))
+
+
 class TestCustomParameters:
     """Custom window_size, threshold, and pause_duration."""
 

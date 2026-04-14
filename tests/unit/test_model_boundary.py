@@ -1,9 +1,9 @@
 """
-Unit tests for model boundary enforcement (SEC-68).
+Unit tests for model boundary enforcement.
 
 Validates that:
 - Only Claude models can do code generation
-- kimi-k2.5 and other blocked models are always rejected
+- Blocked models are always rejected
 - Read-only tasks (investigate, review) allow non-Claude models
 - Unknown tasks default to Claude-only (fail-secure)
 - Spoofed names (haiku-openai, sonnet-local) are rejected

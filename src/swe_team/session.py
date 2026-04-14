@@ -5,10 +5,12 @@ Every SWE-Squad operation (investigation, development, review) gets a
 unique session tag for end-to-end tracing across logs, GitHub comments,
 commits, and the Claude Code console.
 
-Format: SWE-SQUAD-{TYPE}-{ID}
-  - SWE-SQUAD-ISSUE#42      — working on GitHub issue #42
-  - SWE-SQUAD-TICKET-a1b2c3  — working on ticket a1b2c3 (no GH issue)
-  - SWE-SQUAD-CYCLE-20260318T1300 — routine monitoring cycle
+Format: SWE-SQUAD-{TYPE}-{ID} [trace:{uuid8}]
+  - SWE-SQUAD-ISSUE#42 [trace:...]      — working on GitHub issue #42
+  - SWE-SQUAD-TICKET-a1b2c3 [trace:...] — working on ticket a1b2c3 (no GH issue)
+  - SWE-SQUAD-CYCLE-20260318T1300 [trace:...] — routine monitoring cycle
+
+The [trace:...] suffix is always appended for end-to-end correlation.
 """
 from __future__ import annotations
 
@@ -29,10 +31,10 @@ def make_session_tag(
 
     Priority: issue_number > ticket_id > cycle timestamp.
     """
-    trace = str(uuid.uuid4())[:12]
+    trace = str(uuid.uuid4())[:8]
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M")
 
-    if issue_number is not None:
+    if issue_number:
         tag = f"SWE-SQUAD-ISSUE#{issue_number}"
     elif ticket_id:
         tag = f"SWE-SQUAD-TICKET-{ticket_id[:12]}"
@@ -44,12 +46,11 @@ def make_session_tag(
     return f"{tag} [trace:{trace}]"
 
 
-def session_header(tag: str, started_at: Optional[datetime] = None) -> str:
+def session_header(tag: str) -> str:
     """Format a session header for GitHub comments and log entries."""
-    ts = started_at if started_at is not None else datetime.now(timezone.utc)
     return (
         f"**Session:** `{tag}`\n"
-        f"**Started:** {ts.strftime('%Y-%m-%d %H:%M UTC')}\n"
+        f"**Started:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n"
         f"**Agent:** SWE-Squad (Claude Code)\n"
     )
 

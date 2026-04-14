@@ -445,3 +445,147 @@ class TestSeverityFilter:
 
         assert ticket.status == TicketStatus.CLOSED
         assert ticket.metadata["close_reason"] == "low_severity_auto_close"
+
+
+# ---------------------------------------------------------------------------
+# WindsurfCLIEngine tests
+# ---------------------------------------------------------------------------
+
+
+class TestWindsurfCLIEngineBasics:
+    def test_name_is_windsurf(self):
+        from src.swe_team.providers.coding_engine.windsurf import WindsurfCLIEngine
+        engine = WindsurfCLIEngine()
+        assert engine.name == "windsurf"
+
+    def test_model_returns_default(self):
+        from src.swe_team.providers.coding_engine.windsurf import WindsurfCLIEngine
+        engine = WindsurfCLIEngine(default_model="cascade-model")
+        assert engine.model() == "cascade-model"
+
+    def test_is_available_returns_bool(self):
+        from src.swe_team.providers.coding_engine.windsurf import WindsurfCLIEngine
+        engine = WindsurfCLIEngine()
+        assert isinstance(engine.is_available(), bool)
+
+    def test_health_check_returns_bool(self):
+        from src.swe_team.providers.coding_engine.windsurf import WindsurfCLIEngine
+        engine = WindsurfCLIEngine()
+        assert isinstance(engine.health_check(), bool)
+
+    def test_is_available_true_when_binary_exists(self):
+        from src.swe_team.providers.coding_engine.windsurf import WindsurfCLIEngine
+        engine = WindsurfCLIEngine(binary="/bin/sh")
+        assert engine.is_available() is True
+
+    def test_protocol_compliance(self):
+        from src.swe_team.providers.coding_engine.windsurf import WindsurfCLIEngine
+        engine = WindsurfCLIEngine()
+        assert isinstance(engine, CodingEngine)
+
+    def test_cascade_mode_initialization(self):
+        from src.swe_team.providers.coding_engine.windsurf import WindsurfCLIEngine
+        # Cascade subcommand only added when binary is "windsurf" (not "cascade")
+        engine = WindsurfCLIEngine(cascade_mode=True, binary="windsurf")
+        cmd = engine._build_cmd("test", None)
+        # In cascade mode with windsurf binary, "cascade" should be added
+        assert "cascade" in cmd
+        assert "windsurf" in cmd
+
+    def test_non_cascade_mode(self):
+        from src.swe_team.providers.coding_engine.windsurf import WindsurfCLIEngine
+        engine = WindsurfCLIEngine(cascade_mode=False)
+        cmd = engine._build_cmd("test", None)
+        # Without cascade mode, "cascade" should not be added
+        assert "cascade" not in cmd
+
+
+class TestWindsurfCLIEngineRun:
+    @patch("src.swe_team.providers.coding_engine.windsurf.subprocess.run")
+    def test_run_success(self, mock_run):
+        from src.swe_team.providers.coding_engine.windsurf import WindsurfCLIEngine
+
+        mock_run.return_value = MagicMock(
+            stdout="code changes made",
+            stderr="",
+            returncode=0,
+        )
+        engine = WindsurfCLIEngine(default_model="cascade-model", default_timeout=60)
+        result = engine.run("fix this bug")
+
+        assert result.success is True
+        assert result.stdout == "code changes made"
+        assert result.returncode == 0
+        assert result.model == "cascade-model"
+
+    @patch("src.swe_team.providers.coding_engine.windsurf.subprocess.run")
+    def test_run_failure(self, mock_run):
+        from src.swe_team.providers.coding_engine.windsurf import WindsurfCLIEngine
+
+        mock_run.return_value = MagicMock(
+            stdout="",
+            stderr="cascade workflow failed",
+            returncode=1,
+        )
+        engine = WindsurfCLIEngine()
+        result = engine.run("prompt")
+
+        assert result.success is False
+        assert result.returncode == 1
+        assert "cascade workflow failed" in result.stderr
+
+    @patch("src.swe_team.providers.coding_engine.windsurf.subprocess.run")
+    def test_run_timeout_raises(self, mock_run):
+        from src.swe_team.providers.coding_engine.windsurf import WindsurfCLIEngine
+
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="windsurf", timeout=60)
+        engine = WindsurfCLIEngine(default_timeout=60)
+        with pytest.raises(subprocess.TimeoutExpired):
+            engine.run("prompt")
+
+    @patch("src.swe_team.providers.coding_engine.windsurf.subprocess.run")
+    def test_run_binary_not_found(self, mock_run):
+        from src.swe_team.providers.coding_engine.windsurf import WindsurfCLIEngine
+
+        mock_run.side_effect = FileNotFoundError("No such file")
+        engine = WindsurfCLIEngine(binary="/nonexistent/windsurf")
+        result = engine.run("prompt")
+
+        assert result.success is False
+        assert result.returncode == -1
+        assert "not found" in result.stderr.lower()
+
+    @patch("src.swe_team.providers.coding_engine.windsurf.subprocess.run")
+    def test_run_passes_timeout_override(self, mock_run):
+        from src.swe_team.providers.coding_engine.windsurf import WindsurfCLIEngine
+
+        mock_run.return_value = MagicMock(stdout="ok", stderr="", returncode=0)
+        engine = WindsurfCLIEngine(default_timeout=300)
+        engine.run("prompt", timeout=120)
+
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs["timeout"] == 120
+
+    @patch("src.swe_team.providers.coding_engine.windsurf.subprocess.run")
+    def test_run_passes_cwd_and_env(self, mock_run):
+        from src.swe_team.providers.coding_engine.windsurf import WindsurfCLIEngine
+
+        mock_run.return_value = MagicMock(stdout="ok", stderr="", returncode=0)
+        engine = WindsurfCLIEngine(env_vars={"CODEIUM_API_KEY": "test-key"})
+        engine.run("prompt", cwd="/tmp/worktree", env={"PATH": "/usr/bin"})
+
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs["cwd"] == "/tmp/worktree"
+        assert call_kwargs["env"]["CODEIUM_API_KEY"] == "test-key"
+        assert call_kwargs["env"]["PATH"] == "/usr/bin"
+
+    @patch("src.swe_team.providers.coding_engine.windsurf.subprocess.run")
+    def test_run_sends_prompt_via_stdin(self, mock_run):
+        from src.swe_team.providers.coding_engine.windsurf import WindsurfCLIEngine
+
+        mock_run.return_value = MagicMock(stdout="ok", stderr="", returncode=0)
+        engine = WindsurfCLIEngine()
+        engine.run("my coding task")
+
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs["input"] == "my coding task"

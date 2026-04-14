@@ -141,7 +141,7 @@ class TestCreate:
             env_vars={
                 "SAFE_VAR": "ok",
                 "SUPABASE_ANON_KEY": "secret123",
-                "GH_TOKEN": "fake-token-xxx",
+                "GH_TOKEN": "ghp_xxx",
                 "TELEGRAM_BOT_TOKEN": "bot_tok",
             },
         )

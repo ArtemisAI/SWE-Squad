@@ -157,7 +157,8 @@ class SessionStore:
             raise ValueError(f"Invalid status '{status}'; must be one of {_VALID_STATUSES}")
         record = self._sessions.get(session_id)
         if record is None:
-            raise KeyError(f"Session not found: {session_id}")
+            logger.warning("Session not found for status update (may have been created by another process): %s", session_id)
+            return
         record.status = status
         record.last_active = time.time()
         self._save()
@@ -302,7 +303,7 @@ class SessionStore:
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        data = [rec.to_dict() for rec in self._sessions.values()]
+        data = [rec.to_dict() for rec in list(self._sessions.values())]
         lock_path = self._path.with_suffix(".lock")
         with self._lock:
             try:

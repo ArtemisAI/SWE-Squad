@@ -27,6 +27,8 @@ import io
 import json
 import logging
 import os
+import threading
+import time
 import uuid
 import urllib.error
 import urllib.request
@@ -34,7 +36,50 @@ from typing import Any, Callable, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Process-wide rate limiter — single point of control for ALL Telegram sends
+# regardless of call path (notifier, investigator, developer, supabase_store)
+# ---------------------------------------------------------------------------
+_rl_lock = threading.Lock()
+_rl_cache: dict = {}          # message-key -> last sent timestamp
+_rl_timestamps: list = []     # rolling 60-second send window
+_RL_COOLDOWN_SECONDS = 300    # same message type: 5-min cooldown
+_RL_MAX_PER_MINUTE = 6        # hard cap: 6 msgs/min regardless of type
+
+
+def _rate_limited(text: str) -> bool:
+    """Return True and suppress if this message should be rate-limited.
+
+    Groups messages by their first 80 chars (captures alert type/title).
+    Enforces both per-type cooldown and a global per-minute hard cap.
+    """
+    now = time.monotonic()
+    key = text[:80]
+    with _rl_lock:
+        # Per-type cooldown
+        if now - _rl_cache.get(key, 0) < _RL_COOLDOWN_SECONDS:
+            logger.debug("Telegram suppressed (cooldown): %.40s…", key)
+            return True
+        # Global per-minute cap
+        cutoff = now - 60
+        _rl_timestamps[:] = [t for t in _rl_timestamps if t > cutoff]
+        if len(_rl_timestamps) >= _RL_MAX_PER_MINUTE:
+            logger.warning("Telegram global cap hit (%d/min) — suppressing", _RL_MAX_PER_MINUTE)
+            return True
+        _rl_cache[key] = now
+        _rl_timestamps.append(now)
+        return False
+
 _API_BASE = "https://api.telegram.org"
+
+# Optional auth provider for recording Telegram auth state transitions.
+_auth_provider: object | None = None
+
+
+def set_auth_provider(provider: object) -> None:
+    """Set the module-level auth provider for recording auth state."""
+    global _auth_provider
+    _auth_provider = provider
 
 # Default STT/TTS models — overridable via env vars
 _DEFAULT_TTS_MODEL = "kokoro"
@@ -116,15 +161,28 @@ def _api_request(
         with urllib.request.urlopen(req, timeout=10) as resp:
             body = json.loads(resp.read().decode("utf-8"))
             if body.get("ok"):
+                if _auth_provider is not None:
+                    try:
+                        _auth_provider.record_auth_success("telegram")
+                    except Exception:
+                        pass
                 return body.get("result")
             logger.warning("Telegram API returned ok=false: %s", body)
             return None
     except urllib.error.HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace")[:200]
         logger.warning(
             "Telegram HTTP error %d: %s",
             exc.code,
-            exc.read().decode("utf-8", errors="replace")[:200],
+            error_body,
         )
+        if _auth_provider is not None and exc.code in (401, 403):
+            try:
+                _auth_provider.record_auth_failure(
+                    "telegram", f"HTTP {exc.code}: {error_body}"
+                )
+            except Exception:
+                pass
         return None
     except urllib.error.URLError as exc:
         logger.warning("Telegram connection error: %s", exc.reason)
@@ -266,6 +324,8 @@ def send_message(
         ``True`` if the message was sent successfully, ``False`` otherwise.
         Never raises — all errors are logged and swallowed.
     """
+    if _rate_limited(text):
+        return False
     token, default_chat_id = _get_credentials()
     target_chat = chat_id or default_chat_id
     if not token or not target_chat:

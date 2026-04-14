@@ -15,11 +15,11 @@ in two tiers:
     • Regression explosion (>5 regression tickets in 35 min)
     • Any issue self_heal cannot fix automatically
 
-Outputs: logs/self_heal.log  (structured, human-readable)
+Outputs: logs/self_heal.log  (via cron stdout/stderr redirect)
          Telegram notification on any action taken
 
 Usage (cron, every 5 min):
-    */5 * * * * cd /home/agent/SWE-Squad && ./.venv/bin/python3 scripts/ops/self_heal.py >> logs/self_heal.log 2>&1
+    */5 * * * * cd /path/to/swe-squad && ./.venv/bin/python3 scripts/ops/self_heal.py >> logs/self_heal.log 2>&1
 """
 
 from __future__ import annotations
@@ -60,6 +60,11 @@ REGRESSION_BURST_THRESHOLD = 5   # >N regression tickets in 35 min → invoke Cl
 PYTHON           = sys.executable
 
 # ── Logging ───────────────────────────────────────────────────────────────────
+# Log output goes to stdout/stderr, captured to logs/self_heal.log by the cron
+# entry (see docstring line 22). No FileHandler here to avoid double-write with
+# the shell redirect.
+REPO_ROOT.joinpath("logs").mkdir(exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] self_heal: %(message)s",
@@ -185,7 +190,8 @@ def reset_stalled_tickets() -> list[str]:
         if not url or not key:
             return []
 
-        store = SupabaseTicketStore(supabase_url=url, supabase_key=key, team_id="swe-squad-1")
+        team_id = os.environ.get("SWE_TEAM_ID", "default")
+        store = SupabaseTicketStore(supabase_url=url, supabase_key=key, team_id=team_id)
         all_tickets = store.list_all()
         now = _now()
 
@@ -229,7 +235,8 @@ def clear_false_regressions() -> list[str]:
         if not url or not key:
             return []
 
-        store = SupabaseTicketStore(supabase_url=url, supabase_key=key, team_id="swe-squad-1")
+        team_id = os.environ.get("SWE_TEAM_ID", "default")
+        store = SupabaseTicketStore(supabase_url=url, supabase_key=key, team_id=team_id)
         all_tickets = store.list_all()
 
         false_reg = [
@@ -339,7 +346,8 @@ def count_regression_burst() -> int:
         if not url or not key:
             return 0
 
-        store = SupabaseTicketStore(supabase_url=url, supabase_key=key, team_id="swe-squad-1")
+        team_id = os.environ.get("SWE_TEAM_ID", "default")
+        store = SupabaseTicketStore(supabase_url=url, supabase_key=key, team_id=team_id)
         cutoff = _now() - timedelta(minutes=35)
         return sum(
             1 for t in store.list_all()

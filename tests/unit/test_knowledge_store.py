@@ -55,10 +55,10 @@ def _make_edge(
     )
 
 
-def _make_pr(pr_id: str = "example-org/example-repo#42") -> PRNode:
+def _make_pr(pr_id: str = "your-org/example-app#42") -> PRNode:
     return PRNode(
         pr_id=pr_id,
-        repo="example-org/example-repo",
+        repo="your-org/example-app",
         number=42,
         title="Fix something",
         files_changed=["src/foo.py", "src/bar.py"],
@@ -250,9 +250,9 @@ class TestPRNodeOperations:
         store = _make_store()
         pr = _make_pr()
         with patch("urllib.request.urlopen", return_value=_mock_response([pr.to_dict()])):
-            result = store.get_pr_node("example-org/example-repo#42")
+            result = store.get_pr_node("your-org/example-app#42")
         assert result is not None
-        assert result.pr_id == "example-org/example-repo#42"
+        assert result.pr_id == "your-org/example-app#42"
 
     def test_get_pr_node_returns_none_on_miss(self) -> None:
         store = _make_store()
@@ -375,7 +375,7 @@ class TestClusterOperations:
 class TestCodeModuleOperations:
     def test_upsert_module_posts(self) -> None:
         store = _make_store()
-        module = CodeModule(module_id="scraper.py", repo="example-org/example-repo")
+        module = CodeModule(module_id="scraper.py", repo="your-org/example-app")
         captured = []
 
         def fake_urlopen(req, timeout=None):
@@ -388,7 +388,7 @@ class TestCodeModuleOperations:
 
     def test_get_module_returns_module(self) -> None:
         store = _make_store()
-        module = CodeModule(module_id="scraper.py", repo="example-org/example-repo")
+        module = CodeModule(module_id="scraper.py", repo="your-org/example-app")
         with patch("urllib.request.urlopen", return_value=_mock_response([module.to_dict()])):
             result = store.get_module("scraper.py")
         assert result is not None

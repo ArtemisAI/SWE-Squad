@@ -92,6 +92,38 @@ def dispatch_swe_events(events: List[SWEEvent], agent: Optional[str] = None) -> 
 class SWETeamAdapter(AgentAdapter):
     """A2A adapter that routes messages to the SWE team toolchain."""
 
+    # Dispatch table: action name -> (handler method name, accepts_payload)
+    _ACTION_HANDLERS: Dict[str, tuple] = {
+        "monitor_scan": ("_monitor_scan", False),
+        "triage_ticket": ("_triage_ticket", True),
+        "investigate_ticket": ("_investigate_ticket", True),
+        "check_stability": ("_check_stability", True),
+    }
+
+    # Metadata for agent_card skill generation
+    _ACTION_SKILLS: Dict[str, Dict[str, Any]] = {
+        "monitor_scan": {
+            "name": "Monitor Scan",
+            "description": "Scan logs and emit SWE tickets",
+            "tags": ["swe", "monitor", "scan", "tickets"],
+        },
+        "triage_ticket": {
+            "name": "Triage Ticket",
+            "description": "Classify and assign a SWE ticket",
+            "tags": ["swe", "triage", "ticket"],
+        },
+        "investigate_ticket": {
+            "name": "Investigate Ticket",
+            "description": "Run investigation on a SWE ticket",
+            "tags": ["swe", "investigate", "diagnose"],
+        },
+        "check_stability": {
+            "name": "Check Stability",
+            "description": "Run Ralph-Wiggum stability gate check",
+            "tags": ["swe", "stability", "governance"],
+        },
+    }
+
     def __init__(
         self,
         *,
@@ -108,29 +140,12 @@ class SWETeamAdapter(AgentAdapter):
     def agent_card(self) -> AgentCard:
         skills = [
             AgentSkill(
-                id="monitor_scan",
-                name="Monitor Scan",
-                description="Scan logs and emit SWE tickets",
-                tags=["swe", "monitor", "scan", "tickets"],
-            ),
-            AgentSkill(
-                id="triage_ticket",
-                name="Triage Ticket",
-                description="Classify and assign a SWE ticket",
-                tags=["swe", "triage", "ticket"],
-            ),
-            AgentSkill(
-                id="investigate_ticket",
-                name="Investigate Ticket",
-                description="Run investigation on a SWE ticket",
-                tags=["swe", "investigate", "diagnose"],
-            ),
-            AgentSkill(
-                id="check_stability",
-                name="Check Stability",
-                description="Run Ralph-Wiggum stability gate check",
-                tags=["swe", "stability", "governance"],
-            ),
+                id=action_id,
+                name=meta["name"],
+                description=meta["description"],
+                tags=meta["tags"],
+            )
+            for action_id, meta in self._ACTION_SKILLS.items()
         ]
         return AgentCard(
             name="SWE-Squad",
@@ -140,6 +155,10 @@ class SWETeamAdapter(AgentAdapter):
             skills=skills,
             provider={},
         )
+
+    def list_actions(self) -> List[str]:
+        """Return available action names for discovery."""
+        return list(self._ACTION_HANDLERS.keys())
 
     def handle_action(self, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Synchronously execute a SWE team action (test helper; no async work)."""
@@ -177,15 +196,15 @@ class SWETeamAdapter(AgentAdapter):
         return task
 
     def _handle_action(self, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        if action == "monitor_scan":
-            return self._monitor_scan()
-        if action == "triage_ticket":
-            return self._triage_ticket(payload)
-        if action == "investigate_ticket":
-            return self._investigate_ticket(payload)
-        if action == "check_stability":
-            return self._check_stability(payload)
-        raise ValueError(f"Unknown SWE Team action: {action}")
+        entry = self._ACTION_HANDLERS.get(action)
+        if entry is None:
+            raise ValueError(
+                f"Unknown SWE Team action: {action}. "
+                f"Available: {list(self._ACTION_HANDLERS.keys())}"
+            )
+        handler_name, accepts_payload = entry
+        handler = getattr(self, handler_name)
+        return handler(payload) if accepts_payload else handler()
 
     def _monitor_scan(self) -> Dict[str, Any]:
         monitor = MonitorAgent(

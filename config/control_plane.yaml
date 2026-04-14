@@ -1,0 +1,44 @@
+# =============================================================================
+# Control Plane Configuration — Per-Project Orchestration
+# =============================================================================
+# Dynamic, hot-reloadable configuration for the SWE-Squad Control Plane API.
+# Changes to this file apply without restarting the pipeline.
+#
+# Managed via:
+#   GET  /api/config/projects        — list all project configs
+#   PUT  /api/config/projects        — update project settings
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Global pipeline defaults
+# ---------------------------------------------------------------------------
+pipeline:
+  paused: false
+  cycle_interval_minutes: 15
+  model_routing:
+    t1_heavy: "opus"
+    t2_standard: "sonnet"
+    t3_fast: "haiku"
+
+# ---------------------------------------------------------------------------
+# Per-project configuration
+# ---------------------------------------------------------------------------
+projects:
+  # Replace these keys with your actual repo identifiers (owner/repo format)
+  "your-org/your-main-app":
+    max_concurrent_agents: 3
+    budget_cap_daily: 50.0
+    budget_cap_weekly: 200.0
+    priority_weight: 0.7
+    model_tier: "T2"
+    cycle_interval_minutes: 15
+    enabled: true
+
+  "your-org/swe-squad":
+    max_concurrent_agents: 2
+    budget_cap_daily: 30.0
+    budget_cap_weekly: 150.0
+    priority_weight: 0.3
+    model_tier: "T2"
+    cycle_interval_minutes: 30
+    enabled: true

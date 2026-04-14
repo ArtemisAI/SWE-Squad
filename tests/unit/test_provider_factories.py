@@ -21,14 +21,26 @@ class TestNotificationProviderFactory:
         assert provider is not None
         assert provider.name == "telegram"
 
+    def test_create_slack(self):
+        from src.swe_team.providers.notification import create_notification_provider
+        provider = create_notification_provider("slack", {"token": "x", "channel": "C123"})
+        assert provider is not None
+        assert provider.name == "slack"
+
+    def test_create_slack_with_empty_config_is_unhealthy(self):
+        from src.swe_team.providers.notification import create_notification_provider
+        provider = create_notification_provider("slack", {})
+        assert provider.name == "slack"
+        assert provider.health_check() is False
+
     def test_create_unknown_raises_value_error(self):
         from src.swe_team.providers.notification import create_notification_provider
-        with pytest.raises(ValueError, match="Unknown notification provider 'slack'"):
-            create_notification_provider("slack")
+        with pytest.raises(ValueError, match="Unknown notification provider 'discord'"):
+            create_notification_provider("discord")
 
     def test_unknown_error_lists_available(self):
         from src.swe_team.providers.notification import create_notification_provider
-        with pytest.raises(ValueError, match="telegram"):
+        with pytest.raises(ValueError, match="slack, telegram"):
             create_notification_provider("nonexistent")
 
     def test_list_returns_telegram(self):
@@ -178,6 +190,27 @@ class TestSandboxProviderFactory:
         assert sandbox is not None
         assert sandbox.name == "proxmox"
 
+    def test_create_aws(self):
+        from src.swe_team.providers.sandbox import create_sandbox_provider
+
+        sandbox = create_sandbox_provider("aws")
+        assert sandbox is not None
+        assert sandbox.name == "aws"
+
+    def test_create_gcp(self):
+        from src.swe_team.providers.sandbox import create_sandbox_provider
+
+        sandbox = create_sandbox_provider("gcp")
+        assert sandbox is not None
+        assert sandbox.name == "gcp"
+
+    def test_create_azure(self):
+        from src.swe_team.providers.sandbox import create_sandbox_provider
+
+        sandbox = create_sandbox_provider("azure")
+        assert sandbox is not None
+        assert sandbox.name == "azure"
+
     def test_create_unknown_raises_value_error(self):
         from src.swe_team.providers.sandbox import create_sandbox_provider
         with pytest.raises(ValueError, match="Unknown sandbox provider 'kubernetes'"):
@@ -194,6 +227,9 @@ class TestSandboxProviderFactory:
         assert "local" in providers
         assert "docker" in providers
         assert "proxmox" in providers
+        assert "aws" in providers
+        assert "gcp" in providers
+        assert "azure" in providers
 
     def test_list_is_sorted(self):
         from src.swe_team.providers.sandbox import list_sandbox_providers
@@ -372,3 +408,98 @@ class TestRepoMapProviderFactory:
         provider = create_repomap_provider("fake-repomap")
         assert isinstance(provider, _FakeRepoMap)
         assert "fake-repomap" in list_repomap_providers()
+
+
+# ---------------------------------------------------------------------------
+# Deployment
+# ---------------------------------------------------------------------------
+
+class TestDeploymentProviderFactory:
+    def test_create_vercel(self):
+        from src.swe_team.providers.deployment import create_deployment_provider
+        provider = create_deployment_provider("vercel", {"token": "x", "team_id": "team"})
+        assert provider is not None
+        assert provider.name == "vercel"
+
+    def test_create_unknown_raises_value_error(self):
+        from src.swe_team.providers.deployment import create_deployment_provider
+        with pytest.raises(ValueError, match="Unknown deployment provider 'render'"):
+            create_deployment_provider("render")
+
+    def test_list_returns_vercel(self):
+        from src.swe_team.providers.deployment import list_deployment_providers
+        providers = list_deployment_providers()
+        assert "vercel" in providers
+
+
+# ---------------------------------------------------------------------------
+# Supabase direct
+# ---------------------------------------------------------------------------
+
+class TestSupabaseDirectProviderFactory:
+    def test_create_rest(self):
+        from src.swe_team.providers.supabase_direct import create_supabase_direct_provider
+        provider = create_supabase_direct_provider("rest", {"url": "https://db.example", "key": "k"})
+        assert provider is not None
+        assert provider.name == "supabase-direct"
+
+    def test_create_unknown_raises_value_error(self):
+        from src.swe_team.providers.supabase_direct import create_supabase_direct_provider
+        with pytest.raises(ValueError, match="Unknown supabase direct provider 'graphql'"):
+            create_supabase_direct_provider("graphql")
+
+    def test_list_returns_rest(self):
+        from src.swe_team.providers.supabase_direct import list_supabase_direct_providers
+        providers = list_supabase_direct_providers()
+        assert "rest" in providers
+
+
+# ---------------------------------------------------------------------------
+# Provider parameter schemas
+# ---------------------------------------------------------------------------
+
+class TestProviderParameterSchemas:
+    def test_notification_parameters_include_telegram_token(self):
+        from src.swe_team.providers.notification import get_notification_provider_parameters
+
+        params = get_notification_provider_parameters("telegram")
+        assert any(p.get("name") == "token" for p in params)
+
+    def test_issue_tracker_parameters_include_repo(self):
+        from src.swe_team.providers.issue_tracker import get_issue_tracker_parameters
+
+        params = get_issue_tracker_parameters("github")
+        assert any(p.get("name") == "repo" for p in params)
+
+    def test_sandbox_parameter_maps_include_proxmox(self):
+        from src.swe_team.providers.sandbox import list_sandbox_provider_parameters
+
+        params = list_sandbox_provider_parameters()
+        assert "proxmox" in params
+        assert any(p.get("name") == "gateway_url" for p in params["proxmox"])
+
+    def test_workspace_parameters_include_git_worktree(self):
+        from src.swe_team.providers.workspace import list_workspace_provider_parameters
+
+        params = list_workspace_provider_parameters()
+        assert "git-worktree" in params
+
+    def test_repomap_parameters_include_ctags_binary(self):
+        from src.swe_team.providers.repomap import get_repomap_provider_parameters
+
+        params = get_repomap_provider_parameters("ctags")
+        assert any(p.get("name") == "ctags_binary" for p in params)
+
+    def test_task_queue_parameters_list_memory(self):
+        from src.swe_team.providers.task_queue import list_task_queue_parameters
+
+        params = list_task_queue_parameters()
+        assert "memory" in params
+        assert params["memory"] == []
+
+    def test_log_query_parameters_include_local(self):
+        from src.swe_team.providers.log_query import list_log_query_provider_parameters
+
+        params = list_log_query_provider_parameters()
+        assert "local" in params
+        assert any(p.get("name") == "log_directories" for p in params["local"])

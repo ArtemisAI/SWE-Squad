@@ -1,0 +1,3 @@
+include:
+  - docker/openclaw/docker-compose.yml
+  - docker/swe-squad/docker-compose.yml

@@ -24,6 +24,45 @@ from src.swe_team.models import SWETicket, TicketSeverity, TicketStatus, Stabili
 from src.swe_team.ticket_store import TicketStore
 
 
+@pytest.fixture(autouse=True)
+def _no_openclaw_subprocess(monkeypatch):
+    """Prevent all tests from actually calling docker/openclaw subprocess.
+
+    Makes _send_via_openclaw return False immediately so tests exercise
+    the direct Telegram fallback path unless they explicitly patch
+    _send_via_openclaw themselves.
+
+    Also clears the process-wide rate-limit caches in telegram.py and
+    notifier.py so each test starts with a clean slate.
+    """
+    import subprocess as _sp
+    import src.swe_team.telegram as _tg
+    import src.swe_team.notifier as _n
+
+    # Clear rate-limit state before each test
+    _tg._rl_cache.clear()
+    _tg._rl_timestamps.clear()
+    _n._rate_limit_cache.clear()
+    _n._send_timestamps.clear()
+
+    original_run = _sp.run
+
+    def _fake_run(args, **kwargs):
+        if isinstance(args, (list, tuple)) and len(args) > 1 and "openclaw" in str(args):
+            raise FileNotFoundError("docker mocked away in tests")
+        return original_run(args, **kwargs)
+
+    monkeypatch.setattr(_sp, "run", _fake_run)
+
+    yield
+
+    # Clear again after test to avoid cross-test contamination
+    _tg._rl_cache.clear()
+    _tg._rl_timestamps.clear()
+    _n._rate_limit_cache.clear()
+    _n._send_timestamps.clear()
+
+
 # ======================================================================
 # telegram.py — standalone Telegram Bot API client
 # ======================================================================
@@ -171,7 +210,8 @@ class TestNotifierUsesTelegram:
     def test_send_delegates_to_telegram_module(self):
         from src.swe_team.notifier import _send
 
-        with patch("src.swe_team.telegram.send_message", return_value=True) as mock_send:
+        with patch("src.swe_team.notifier._send_via_openclaw", return_value=False), \
+             patch("src.swe_team.telegram.send_message", return_value=True) as mock_send:
             result = _send("test message")
 
         assert result is True
@@ -180,7 +220,8 @@ class TestNotifierUsesTelegram:
     def test_send_returns_false_on_failure(self):
         from src.swe_team.notifier import _send
 
-        with patch("src.swe_team.telegram.send_message", return_value=False):
+        with patch("src.swe_team.notifier._send_via_openclaw", return_value=False), \
+             patch("src.swe_team.telegram.send_message", return_value=False):
             result = _send("test message")
 
         assert result is False
@@ -188,7 +229,8 @@ class TestNotifierUsesTelegram:
     def test_send_catches_exceptions(self):
         from src.swe_team.notifier import _send
 
-        with patch("src.swe_team.telegram.send_message", side_effect=RuntimeError("boom")):
+        with patch("src.swe_team.notifier._send_via_openclaw", return_value=False), \
+             patch("src.swe_team.telegram.send_message", side_effect=RuntimeError("boom")):
             result = _send("test message")
 
         assert result is False
@@ -199,7 +241,8 @@ class TestNotifierUsesTelegram:
         tickets = [
             SWETicket(title="Critical bug", description="d", severity=TicketSeverity.CRITICAL),
         ]
-        with patch("src.swe_team.telegram.send_message", return_value=True) as mock_send:
+        with patch("src.swe_team.notifier._send_via_openclaw", return_value=False), \
+             patch("src.swe_team.telegram.send_message", return_value=True) as mock_send:
             notify_new_tickets(tickets)
 
         mock_send.assert_called_once()
@@ -226,7 +269,8 @@ class TestNotifierUsesTelegram:
             failing_tests=1,
             details="Too many bugs",
         )
-        with patch("src.swe_team.telegram.send_message", return_value=True) as mock_send:
+        with patch("src.swe_team.notifier._send_via_openclaw", return_value=False), \
+             patch("src.swe_team.telegram.send_message", return_value=True) as mock_send:
             notify_stability_gate(report)
 
         mock_send.assert_called_once()
@@ -248,12 +292,13 @@ class TestNotifierUsesTelegram:
         ticket = SWETicket(
             title="Test bug",
             description="desc",
-            severity=TicketSeverity.HIGH,
+            severity=TicketSeverity.CRITICAL,
             source_module="scraping",
         )
         ticket.investigation_report = "Root cause: bad regex"
 
-        with patch("src.swe_team.telegram.send_message", return_value=True) as mock_send:
+        with patch("src.swe_team.notifier._send_via_openclaw", return_value=False), \
+             patch("src.swe_team.telegram.send_message", return_value=True) as mock_send:
             notify_investigation_summary(ticket)
 
         mock_send.assert_called_once()

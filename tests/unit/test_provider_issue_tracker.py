@@ -57,9 +57,9 @@ class TestConstruction:
         assert tracker.name == "github"
 
     def test_construction_with_config(self):
-        tracker = GitHubIssueTracker(repo="acme/widgets", token="fake-token-xyz")
+        tracker = GitHubIssueTracker(repo="acme/widgets", token="ghp_xyz")
         assert tracker._repo == "acme/widgets"
-        assert tracker._token == "fake-token-xyz"
+        assert tracker._token == "ghp_xyz"
         assert tracker.name == "github"
 
     def test_health_check_true_when_repo_set(self):

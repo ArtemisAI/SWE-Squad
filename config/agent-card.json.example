@@ -1,0 +1,39 @@
+{
+  "name": "SWE-Squad",
+  "description": "Autonomous SWE team — monitor, triage, investigate, fix",
+  "url": "http://<YOUR_IP>:18791",
+  "version": "0.3.0",
+  "skills": [
+    {
+      "id": "monitor_scan",
+      "name": "Monitor Scan",
+      "description": "Scan logs for errors and emit SWE tickets",
+      "tags": ["swe", "monitor", "scan", "tickets"]
+    },
+    {
+      "id": "triage_ticket",
+      "name": "Triage",
+      "description": "Classify and assign a ticket",
+      "tags": ["swe", "triage", "ticket"]
+    },
+    {
+      "id": "investigate_ticket",
+      "name": "Investigate",
+      "description": "Root cause analysis on a ticket",
+      "tags": ["swe", "investigate", "diagnose"]
+    },
+    {
+      "id": "check_stability",
+      "name": "Stability Check",
+      "description": "Ralph Wiggum stability gate evaluation",
+      "tags": ["swe", "stability", "governance"]
+    }
+  ],
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false
+  },
+  "provider": {
+    "organization": "SWE-Squad"
+  }
+}
