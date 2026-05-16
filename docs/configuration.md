@@ -78,9 +78,9 @@ The primary configuration file is `config/swe_team.yaml`. It controls:
 ```yaml
 monitor:
   remote_workers:
-    - name: worker-node-1
-      ssh: "worker-node-1"            # must match Host in ssh_workers.conf
-      log_dir: "~/Projects/MyApp/logs"
+    - name: linkedai-browser-2
+      ssh: "linkedai-browser-2"       # must match Host in ssh_workers.conf
+      log_dir: "~/Projects/LinkedAi/logs"
 ```
 
 ### Fallback agent chain example
